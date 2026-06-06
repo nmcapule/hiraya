@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"mime"
 	"net/http"
 	"os"
 	"path"
@@ -49,6 +50,7 @@ func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/tree", s.handleTree)
 	mux.HandleFunc("GET /api/file", s.handleReadFile)
+	mux.HandleFunc("GET /api/raw", s.handleRawFile)
 	mux.HandleFunc("PUT /api/file", s.handleWriteFile)
 	mux.HandleFunc("POST /api/file", s.handleCreateFile)
 	mux.HandleFunc("POST /api/dir", s.handleCreateDir)
@@ -152,6 +154,31 @@ func (s *Server) handleReadFile(w http.ResponseWriter, r *http.Request) {
 		"size":    info.Size(),
 		"mtime":   info.ModTime().UTC().Format("2006-01-02T15:04:05Z"),
 	})
+}
+
+func (s *Server) handleRawFile(w http.ResponseWriter, r *http.Request) {
+	target, _, err := s.resolve(r.URL.Query().Get("path"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		writeError(w, statusForErr(err), err)
+		return
+	}
+	if info.IsDir() {
+		writeError(w, http.StatusBadRequest, errors.New("path is a directory"))
+		return
+	}
+	contentType, ok := previewContentType(target)
+	if !ok {
+		writeError(w, http.StatusUnsupportedMediaType, errors.New("file type cannot be previewed"))
+		return
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Disposition", "inline")
+	http.ServeFile(w, r, target)
 }
 
 func (s *Server) handleWriteFile(w http.ResponseWriter, r *http.Request) {
@@ -356,6 +383,29 @@ func isText(data []byte) bool {
 		}
 	}
 	return true
+}
+
+func previewContentType(filePath string) (string, bool) {
+	ext := strings.ToLower(filepath.Ext(filePath))
+	switch ext {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".ico", ".pdf":
+		contentType := mime.TypeByExtension(ext)
+		if contentType == "" {
+			switch ext {
+			case ".svg":
+				contentType = "image/svg+xml"
+			case ".ico":
+				contentType = "image/x-icon"
+			case ".pdf":
+				contentType = "application/pdf"
+			default:
+				contentType = "application/octet-stream"
+			}
+		}
+		return contentType, true
+	default:
+		return "", false
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

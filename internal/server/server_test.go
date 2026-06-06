@@ -97,6 +97,48 @@ func TestTree(t *testing.T) {
 	}
 }
 
+func TestRawFilePreview(t *testing.T) {
+	srv, root := newTestServer(t)
+	if err := os.WriteFile(filepath.Join(root, "image.png"), []byte{0x89, 'P', 'N', 'G'}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/raw?path=/image.png", nil)
+	rr := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("raw status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if got := rr.Header().Get("Content-Type"); got != "image/png" {
+		t.Fatalf("content type = %q", got)
+	}
+}
+
+func TestRawFilePreviewRejectsUnsupportedType(t *testing.T) {
+	srv, root := newTestServer(t)
+	if err := os.WriteFile(filepath.Join(root, "archive.bin"), []byte{0, 1, 2}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/raw?path=/archive.bin", nil)
+	rr := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestRawFilePreviewRejectsDirectory(t *testing.T) {
+	srv, root := newTestServer(t)
+	if err := os.Mkdir(filepath.Join(root, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/raw?path=/src", nil)
+	rr := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestRejectsTraversal(t *testing.T) {
 	srv, _ := newTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/file?path=/../../etc/passwd", nil)
@@ -117,6 +159,23 @@ func TestRejectsSymlinkEscape(t *testing.T) {
 		t.Fatal(err)
 	}
 	req := httptest.NewRequest(http.MethodGet, "/api/file?path=/link.txt", nil)
+	rr := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestRawFilePreviewRejectsSymlinkEscape(t *testing.T) {
+	srv, root := newTestServer(t)
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret.png"), []byte("secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "secret.png"), filepath.Join(root, "link.png")); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/raw?path=/link.png", nil)
 	rr := httptest.NewRecorder()
 	srv.Routes().ServeHTTP(rr, req)
 	if rr.Code != http.StatusBadRequest {

@@ -42,7 +42,8 @@ type Entry = {
   mtime: string;
 };
 
-type SaveState = 'idle' | 'dirty' | 'saving' | 'saved' | 'error';
+type FileKind = 'text' | 'image' | 'pdf' | 'unsupported';
+type SaveState = 'idle' | 'dirty' | 'saving' | 'saved' | 'preview' | 'error';
 type Mode = 'editor' | 'terminal';
 
 function viewportHeight(): number {
@@ -118,6 +119,29 @@ function basename(filePath: string): string {
   return parts.at(-1) ?? '/';
 }
 
+function previewKindFor(path: string): FileKind | null {
+  const ext = path.toLowerCase().split('.').at(-1);
+  switch (ext) {
+    case 'png':
+    case 'jpg':
+    case 'jpeg':
+    case 'gif':
+    case 'webp':
+    case 'bmp':
+    case 'svg':
+    case 'ico':
+      return 'image';
+    case 'pdf':
+      return 'pdf';
+    default:
+      return null;
+  }
+}
+
+function rawFileURL(path: string): string {
+  return `/api/raw?path=${encodeURIComponent(path)}`;
+}
+
 function languageFor(path: string): LanguageSupport | null {
   const ext = path.toLowerCase().split('.').at(-1);
   switch (ext) {
@@ -159,6 +183,7 @@ function App() {
   const [currentDir, setCurrentDir] = useState('/');
   const [entries, setEntries] = useState<Entry[]>([]);
   const [currentFile, setCurrentFile] = useState<string | null>(null);
+  const [currentFileKind, setCurrentFileKind] = useState<FileKind>('text');
   const [content, setContent] = useState('');
   const [documentVersion, setDocumentVersion] = useState(0);
   const [saveState, setSaveState] = useState<SaveState>('idle');
@@ -167,6 +192,7 @@ function App() {
   const [editorView, setEditorView] = useState<EditorView | null>(null);
 
   const title = currentFile ? basename(currentFile) : 'No file open';
+  const isEditable = mode === 'editor' && currentFileKind === 'text';
   const handleEditorReady = useCallback((view: EditorView | null) => {
     editorRef.current = view;
     setEditorView(view);
@@ -190,17 +216,43 @@ function App() {
 
   const openFile = useCallback(async (path: string) => {
     setError(null);
-    const data = await api<{ content: string; path: string }>(`/api/file?path=${encodeURIComponent(path)}`);
-    setCurrentFile(data.path);
-    setContent(data.content);
-    setDocumentVersion((version) => version + 1);
-    setSaveState('saved');
-    setDrawerOpen(false);
-    setMode('editor');
+    const previewKind = previewKindFor(path);
+    if (previewKind) {
+      setCurrentFile(path);
+      setCurrentFileKind(previewKind);
+      setContent('');
+      setDocumentVersion((version) => version + 1);
+      setSaveState('preview');
+      setDrawerOpen(false);
+      setMode('editor');
+      return;
+    }
+    try {
+      const data = await api<{ content: string; path: string }>(`/api/file?path=${encodeURIComponent(path)}`);
+      setCurrentFile(data.path);
+      setCurrentFileKind('text');
+      setContent(data.content);
+      setDocumentVersion((version) => version + 1);
+      setSaveState('saved');
+      setDrawerOpen(false);
+      setMode('editor');
+    } catch (err) {
+      if (err instanceof Error && err.message === 'file does not appear to be text') {
+        setCurrentFile(path);
+        setCurrentFileKind('unsupported');
+        setContent('');
+        setDocumentVersion((version) => version + 1);
+        setSaveState('preview');
+        setDrawerOpen(false);
+        setMode('editor');
+        return;
+      }
+      throw err;
+    }
   }, []);
 
   const saveFile = useCallback(async () => {
-    if (!currentFile || !editorRef.current) return;
+    if (!currentFile || currentFileKind !== 'text' || !editorRef.current) return;
     setSaveState('saving');
     setError(null);
     try {
@@ -216,7 +268,7 @@ function App() {
       setSaveState('error');
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, [currentFile, loadTree]);
+  }, [currentFile, currentFileKind, loadTree]);
 
   const createPath = useCallback(
     async (kind: 'file' | 'dir') => {
@@ -262,6 +314,7 @@ function App() {
         await api(`/api/path?path=${encodeURIComponent(entry.path)}`, { method: 'DELETE' });
         if (currentFile === entry.path) {
           setCurrentFile(null);
+          setCurrentFileKind('text');
           setContent('');
           setDocumentVersion((version) => version + 1);
           setSaveState('idle');
@@ -294,13 +347,13 @@ function App() {
           <div className={`save-state ${saveState}`}>{mode === 'editor' ? saveStateLabel(saveState) : 'host shell'}</div>
         </div>
         <div className="right-actions">
-          <button className="icon-button" onClick={() => editorRef.current && undo(editorRef.current)} disabled={mode !== 'editor'} title="Undo">
+          <button className="icon-button" onClick={() => editorRef.current && undo(editorRef.current)} disabled={!isEditable} title="Undo">
             <Undo2 size={19} />
           </button>
-          <button className="icon-button" onClick={() => editorRef.current && redo(editorRef.current)} disabled={mode !== 'editor'} title="Redo">
+          <button className="icon-button" onClick={() => editorRef.current && redo(editorRef.current)} disabled={!isEditable} title="Redo">
             <Redo2 size={19} />
           </button>
-          <button className="icon-button primary" onClick={saveFile} disabled={!currentFile || mode !== 'editor'} title="Save">
+          <button className="icon-button primary" onClick={saveFile} disabled={!currentFile || !isEditable} title="Save">
             <Save size={19} />
           </button>
         </div>
@@ -317,8 +370,9 @@ function App() {
 
       <main className="workspace">
         <div className={`workspace-panel ${mode === 'editor' ? 'active' : ''}`} aria-hidden={mode !== 'editor'} inert={mode !== 'editor'}>
-          <CodeEditor
+          <FileSurface
             path={currentFile}
+            kind={currentFileKind}
             content={content}
             version={documentVersion}
             onReady={handleEditorReady}
@@ -335,7 +389,7 @@ function App() {
         )}
       </main>
 
-      {mode === 'editor' && currentFile && <AccessoryBar editor={editorView} />}
+      {isEditable && currentFile && <AccessoryBar editor={editorView} />}
 
       <aside className={`drawer ${drawerOpen ? 'open' : ''}`} aria-hidden={!drawerOpen} inert={!drawerOpen}>
         <div className="drawer-header">
@@ -396,11 +450,56 @@ function saveStateLabel(state: SaveState): string {
       return 'saving';
     case 'saved':
       return 'saved';
+    case 'preview':
+      return 'preview';
     case 'error':
       return 'save failed';
     default:
       return 'ready';
   }
+}
+
+function FileSurface({
+  path,
+  kind,
+  content,
+  version,
+  onReady,
+  onChange
+}: {
+  path: string | null;
+  kind: FileKind;
+  content: string;
+  version: number;
+  onReady: (view: EditorView | null) => void;
+  onChange: (content: string) => void;
+}) {
+  if (!path || kind === 'text') {
+    return <CodeEditor path={path} content={content} version={version} onReady={onReady} onChange={onChange} />;
+  }
+
+  if (kind === 'image') {
+    return (
+      <div className="preview-host">
+        <img className="image-preview" src={rawFileURL(path)} alt={basename(path)} />
+      </div>
+    );
+  }
+
+  if (kind === 'pdf') {
+    return (
+      <div className="preview-host">
+        <iframe className="pdf-preview" src={rawFileURL(path)} title={basename(path)} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="empty-state">
+      <X size={28} />
+      <p>This file cannot be previewed or edited.</p>
+    </div>
+  );
 }
 
 function CodeEditor({
