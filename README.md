@@ -2,6 +2,14 @@
 
 Mobile-focused web code editor with a host terminal.
 
+## Screenshots
+
+![Hiraya editor with README.md open](docs/screenshots/editor-readme.png)
+
+![Hiraya file drawer](docs/screenshots/file-drawer.png)
+
+![Hiraya terminal](docs/screenshots/terminal-desktop.png)
+
 ## Build
 
 ```sh
