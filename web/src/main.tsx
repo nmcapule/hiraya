@@ -588,23 +588,27 @@ function App() {
           <div className={`save-state ${saveState}`}>{mode === 'editor' ? saveStateLabel(saveState) : 'host shell'}</div>
         </div>
         <div className="right-actions">
-          <button className="icon-button" onClick={() => editorRef.current && undo(editorRef.current)} disabled={!isEditable} title="Undo">
-            <Undo2 size={19} />
-          </button>
-          <button className="icon-button" onClick={() => editorRef.current && redo(editorRef.current)} disabled={!isEditable} title="Redo">
-            <Redo2 size={19} />
-          </button>
-          <button
-            className={`icon-button ${searchPanelOpen ? 'active' : ''}`}
-            onClick={() => setSearchPanelOpen((open) => !open)}
-            disabled={!isEditable || !currentFile}
-            title="Find and replace"
-          >
-            <SearchIcon size={19} />
-          </button>
-          <button className="icon-button primary" onClick={saveFile} disabled={!currentFile || !isEditable} title="Save">
-            <Save size={19} />
-          </button>
+          {mode === 'editor' && (
+            <>
+              <button className="icon-button" onClick={() => editorRef.current && undo(editorRef.current)} disabled={!isEditable} title="Undo">
+                <Undo2 size={19} />
+              </button>
+              <button className="icon-button" onClick={() => editorRef.current && redo(editorRef.current)} disabled={!isEditable} title="Redo">
+                <Redo2 size={19} />
+              </button>
+              <button
+                className={`icon-button ${searchPanelOpen ? 'active' : ''}`}
+                onClick={() => setSearchPanelOpen((open) => !open)}
+                disabled={!isEditable || !currentFile}
+                title="Find and replace"
+              >
+                <SearchIcon size={19} />
+              </button>
+              <button className="icon-button primary" onClick={saveFile} disabled={!currentFile || !isEditable} title="Save">
+                <Save size={19} />
+              </button>
+            </>
+          )}
           <div className="editor-menu-wrap" ref={editorMenuRef}>
             <button
               className={`icon-button ${editorMenuOpen ? 'active' : ''}`}
