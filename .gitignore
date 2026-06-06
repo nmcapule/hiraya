@@ -1,0 +1,4 @@
+/hiraya
+web/node_modules/
+web/.vite/
+web/tsconfig.tsbuildinfo
