@@ -45,6 +45,41 @@ type Entry = {
 type SaveState = 'idle' | 'dirty' | 'saving' | 'saved' | 'error';
 type Mode = 'editor' | 'terminal';
 
+function viewportHeight(): number {
+  return window.visualViewport?.height ?? window.innerHeight;
+}
+
+function syncAppViewportHeight() {
+  document.documentElement.style.setProperty('--app-viewport-height', `${viewportHeight()}px`);
+}
+
+function onAppViewportChange(callback?: () => void): () => void {
+  let frame = 0;
+  const update = () => {
+    if (frame) cancelAnimationFrame(frame);
+    frame = requestAnimationFrame(() => {
+      frame = 0;
+      syncAppViewportHeight();
+      callback?.();
+    });
+  };
+  const visualViewport = window.visualViewport;
+
+  syncAppViewportHeight();
+  window.addEventListener('resize', update);
+  window.addEventListener('orientationchange', update);
+  visualViewport?.addEventListener('resize', update);
+  visualViewport?.addEventListener('scroll', update);
+
+  return () => {
+    if (frame) cancelAnimationFrame(frame);
+    window.removeEventListener('resize', update);
+    window.removeEventListener('orientationchange', update);
+    visualViewport?.removeEventListener('resize', update);
+    visualViewport?.removeEventListener('scroll', update);
+  };
+}
+
 async function api<T>(url: string, options?: RequestInit): Promise<T> {
   const res = await fetch(url, {
     ...options,
@@ -135,6 +170,8 @@ function App() {
     editorRef.current = view;
     setEditorView(view);
   }, []);
+
+  useEffect(() => onAppViewportChange(), []);
 
   const loadTree = useCallback(async (path: string) => {
     const data = await api<{ path: string; entries: Entry[] }>(`/api/tree?path=${encodeURIComponent(path)}`);
@@ -497,10 +534,10 @@ function TerminalView() {
         socket.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
       }
     };
-    window.addEventListener('resize', resize);
+    const stopViewportResize = onAppViewportChange(resize);
     return () => {
       disposed = true;
-      window.removeEventListener('resize', resize);
+      stopViewportResize();
       socket.close();
       term.dispose();
     };
@@ -523,6 +560,8 @@ function TerminalView() {
     </div>
   );
 }
+
+syncAppViewportHeight();
 
 createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
