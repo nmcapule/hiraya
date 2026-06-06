@@ -24,6 +24,12 @@ not include built-in authentication.
 
 ![Hiraya terminal](docs/screenshots/terminal-desktop.png)
 
+## Video Walkthrough
+
+[![Hiraya mobile walkthrough](docs/videos/hiraya-mobile-walkthrough-poster.png)](docs/videos/hiraya-mobile-walkthrough.mp4)
+
+[Watch the mobile walkthrough](docs/videos/hiraya-mobile-walkthrough.mp4)
+
 ## Requirements
 
 - Go
