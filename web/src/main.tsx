@@ -154,6 +154,7 @@ function languageFor(path: string): LanguageSupport | null {
 
 function App() {
   const [mode, setMode] = useState<Mode>('editor');
+  const [terminalStarted, setTerminalStarted] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [currentDir, setCurrentDir] = useState('/');
   const [entries, setEntries] = useState<Entry[]>([]);
@@ -182,6 +183,10 @@ function App() {
   useEffect(() => {
     loadTree('/').catch((err) => setError(err.message));
   }, [loadTree]);
+
+  useEffect(() => {
+    if (mode === 'terminal') setTerminalStarted(true);
+  }, [mode]);
 
   const openFile = useCallback(async (path: string) => {
     setError(null);
@@ -311,7 +316,7 @@ function App() {
       )}
 
       <main className="workspace">
-        {mode === 'editor' ? (
+        <div className={`workspace-panel ${mode === 'editor' ? 'active' : ''}`} aria-hidden={mode !== 'editor'} inert={mode !== 'editor'}>
           <CodeEditor
             path={currentFile}
             content={content}
@@ -322,8 +327,11 @@ function App() {
               setSaveState('dirty');
             }}
           />
-        ) : (
-          <TerminalView />
+        </div>
+        {terminalStarted && (
+          <div className={`workspace-panel ${mode === 'terminal' ? 'active' : ''}`} aria-hidden={mode !== 'terminal'} inert={mode !== 'terminal'}>
+            <TerminalView active={mode === 'terminal'} />
+          </div>
         )}
       </main>
 
@@ -479,10 +487,11 @@ function AccessoryBar({ editor }: { editor: EditorView | null }) {
   );
 }
 
-function TerminalView() {
+function TerminalView({ active }: { active: boolean }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<XTerm | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
+  const fitRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     if (!hostRef.current) return;
@@ -511,6 +520,7 @@ function TerminalView() {
         // xterm can briefly report missing dimensions while mounting or disposing.
       }
     };
+    fitRef.current = fitTerminal;
     requestAnimationFrame(fitTerminal);
 
     const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
@@ -537,11 +547,25 @@ function TerminalView() {
     const stopViewportResize = onAppViewportChange(resize);
     return () => {
       disposed = true;
+      fitRef.current = null;
       stopViewportResize();
       socket.close();
       term.dispose();
     };
   }, []);
+
+  useEffect(() => {
+    if (!active) return;
+    requestAnimationFrame(() => {
+      fitRef.current?.();
+      const socket = socketRef.current;
+      const term = termRef.current;
+      if (socket?.readyState === WebSocket.OPEN && term) {
+        socket.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+      }
+      term?.focus();
+    });
+  }, [active]);
 
   const send = (data: string) => {
     const socket = socketRef.current;
