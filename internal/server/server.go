@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"hiraya/internal/server/static"
 )
@@ -56,6 +58,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/dir", s.handleCreateDir)
 	mux.HandleFunc("PATCH /api/path", s.handleRename)
 	mux.HandleFunc("DELETE /api/path", s.handleDelete)
+	mux.HandleFunc("POST /api/replace", s.handleReplace)
 	mux.HandleFunc("GET /api/terminal", s.handleTerminal)
 	mux.HandleFunc("/", s.handleStatic)
 	return mux
@@ -67,6 +70,28 @@ type entry struct {
 	Type  string `json:"type"`
 	Size  int64  `json:"size"`
 	MTime string `json:"mtime"`
+}
+
+type replaceRequest struct {
+	Path          string `json:"path"`
+	Search        string `json:"search"`
+	Replace       string `json:"replace"`
+	CaseSensitive bool   `json:"caseSensitive"`
+	WholeWord     bool   `json:"wholeWord"`
+	PreviewOnly   bool   `json:"previewOnly"`
+}
+
+type replaceMatch struct {
+	Path  string `json:"path"`
+	Count int    `json:"count"`
+}
+
+type replaceResponse struct {
+	Path         string         `json:"path"`
+	FilesScanned int            `json:"filesScanned"`
+	FilesMatched int            `json:"filesMatched"`
+	Replacements int            `json:"replacements"`
+	Matches      []replaceMatch `json:"matches"`
 }
 
 func (s *Server) handleTree(w http.ResponseWriter, r *http.Request) {
@@ -300,6 +325,38 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"path": rel})
 }
 
+func (s *Server) handleReplace(w http.ResponseWriter, r *http.Request) {
+	var body replaceRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if body.Search == "" {
+		writeError(w, http.StatusBadRequest, errors.New("search text is required"))
+		return
+	}
+	target, rel, err := s.resolve(body.Path)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		writeError(w, statusForErr(err), err)
+		return
+	}
+	if !info.IsDir() {
+		writeError(w, http.StatusBadRequest, errors.New("path is not a directory"))
+		return
+	}
+	result, err := s.replaceInTree(target, rel, body)
+	if err != nil {
+		writeError(w, statusForErr(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
 func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
 	staticFS, err := fs.Sub(static.FS, "dist")
 	if err != nil {
@@ -314,6 +371,61 @@ func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
 	}
 	r.URL.Path = "/"
 	http.FileServer(http.FS(staticFS)).ServeHTTP(w, r)
+}
+
+func (s *Server) replaceInTree(root, rel string, req replaceRequest) (replaceResponse, error) {
+	result := replaceResponse{Path: rel, Matches: []replaceMatch{}}
+	err := filepath.WalkDir(root, func(filePath string, item fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		if item.Type()&os.ModeSymlink != 0 {
+			if item.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if item.IsDir() {
+			return nil
+		}
+		info, err := item.Info()
+		if err != nil || !info.Mode().IsRegular() || info.Size() > maxEditableBytes {
+			return nil
+		}
+		if err := s.ensureInside(filePath); err != nil {
+			return nil
+		}
+		data, err := os.ReadFile(filePath)
+		if err != nil || !isText(data) {
+			return nil
+		}
+		result.FilesScanned++
+		content := string(data)
+		next, count := replaceLiteral(content, req.Search, req.Replace, req.CaseSensitive, req.WholeWord)
+		if count == 0 {
+			return nil
+		}
+		matchPath := s.slashPath(filePath)
+		result.FilesMatched++
+		result.Replacements += count
+		result.Matches = append(result.Matches, replaceMatch{Path: matchPath, Count: count})
+		if req.PreviewOnly {
+			return nil
+		}
+		if len(next) > maxEditableBytes {
+			return fmt.Errorf("replacement would make %s larger than 2 MiB", matchPath)
+		}
+		return os.WriteFile(filePath, []byte(next), info.Mode().Perm())
+	})
+	return result, err
+}
+
+func (s *Server) slashPath(filePath string) string {
+	rel, err := filepath.Rel(s.root, filePath)
+	if err != nil || rel == "." {
+		return "/"
+	}
+	return cleanSlash(filepath.ToSlash(rel))
 }
 
 func (s *Server) resolve(input string) (string, string, error) {
@@ -383,6 +495,78 @@ func isText(data []byte) bool {
 		}
 	}
 	return true
+}
+
+func replaceLiteral(content, search, replacement string, caseSensitive, wholeWord bool) (string, int) {
+	if search == "" {
+		return content, 0
+	}
+	var out strings.Builder
+	pos := 0
+	count := 0
+	for {
+		index := findLiteralAt(content, search, pos, caseSensitive, wholeWord)
+		if index < 0 {
+			break
+		}
+		out.WriteString(content[pos:index])
+		out.WriteString(replacement)
+		pos = index + len(search)
+		count++
+	}
+	if count == 0 {
+		return content, 0
+	}
+	out.WriteString(content[pos:])
+	return out.String(), count
+}
+
+func findLiteralAt(content, search string, start int, caseSensitive, wholeWord bool) int {
+	if start > len(content) {
+		return -1
+	}
+	haystack := content[start:]
+	needle := search
+	if !caseSensitive {
+		haystack = strings.ToLower(haystack)
+		needle = strings.ToLower(search)
+	}
+	offset := 0
+	for {
+		index := strings.Index(haystack[offset:], needle)
+		if index < 0 {
+			return -1
+		}
+		index += start + offset
+		if !wholeWord || isWholeWordMatch(content, index, index+len(search)) {
+			return index
+		}
+		offset = index - start + len(search)
+	}
+}
+
+func isWholeWordMatch(content string, from, to int) bool {
+	return !wordCharBefore(content, from) && !wordCharAfter(content, to)
+}
+
+func wordCharBefore(content string, index int) bool {
+	if index <= 0 {
+		return false
+	}
+	r, _ := utf8.DecodeLastRuneInString(content[:index])
+	return isSearchWordChar(r)
+}
+
+func wordCharAfter(content string, index int) bool {
+	if index >= len(content) {
+		return false
+	}
+	r, _ := utf8.DecodeRuneInString(content[index:])
+	return isSearchWordChar(r)
+}
+
+func isSearchWordChar(r rune) bool {
+	return r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r)
 }
 
 func previewContentType(filePath string) (string, bool) {

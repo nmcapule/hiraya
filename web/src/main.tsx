@@ -4,6 +4,7 @@ import { EditorState } from '@codemirror/state';
 import { EditorView, keymap, lineNumbers } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap, undo, redo } from '@codemirror/commands';
 import { syntaxHighlighting, defaultHighlightStyle, LanguageSupport } from '@codemirror/language';
+import { search, searchKeymap } from '@codemirror/search';
 import { javascript } from '@codemirror/lang-javascript';
 import { json } from '@codemirror/lang-json';
 import { html } from '@codemirror/lang-html';
@@ -29,6 +30,7 @@ import {
   Plus,
   Redo2,
   Save,
+  Search as SearchIcon,
   Terminal,
   Trash2,
   Undo2,
@@ -48,12 +50,35 @@ type Entry = {
 type FileKind = 'text' | 'image' | 'pdf' | 'unsupported';
 type SaveState = 'idle' | 'dirty' | 'saving' | 'saved' | 'preview' | 'error';
 type Mode = 'editor' | 'terminal';
+type ReplaceScope = 'file' | 'folder';
 type InputChangeEvent = { target: HTMLInputElement };
 type EditorOptions = {
   lineWrap: boolean;
   fontSize: number;
   darkMode: boolean;
   lineNumbers: boolean;
+};
+
+type ReplaceRequest = {
+  path: string;
+  search: string;
+  replace: string;
+  caseSensitive: boolean;
+  wholeWord: boolean;
+  previewOnly: boolean;
+};
+
+type ReplaceMatch = {
+  path: string;
+  count: number;
+};
+
+type ReplaceResponse = {
+  path: string;
+  filesScanned: number;
+  filesMatched: number;
+  replacements: number;
+  matches: ReplaceMatch[];
 };
 
 const defaultEditorOptions: EditorOptions = {
@@ -223,6 +248,74 @@ function languageFor(path: string): LanguageSupport | null {
   }
 }
 
+function isWordChar(value: string | undefined): boolean {
+  return !!value && /[\p{L}\p{N}_]/u.test(value);
+}
+
+function isWholeWordMatch(text: string, from: number, to: number): boolean {
+  return !isWordChar(text[from - 1]) && !isWordChar(text[to]);
+}
+
+function findLiteralMatch(
+  text: string,
+  query: string,
+  start: number,
+  direction: 'next' | 'previous',
+  caseSensitive: boolean,
+  wholeWord: boolean
+): { from: number; to: number } | null {
+  if (!query) return null;
+  const haystack = caseSensitive ? text : text.toLowerCase();
+  const needle = caseSensitive ? query : query.toLowerCase();
+  const step = direction === 'next' ? needle.length : -1;
+  let index = direction === 'next' ? haystack.indexOf(needle, start) : haystack.lastIndexOf(needle, Math.max(0, start));
+
+  while (index >= 0) {
+    const to = index + query.length;
+    if (!wholeWord || isWholeWordMatch(text, index, to)) return { from: index, to };
+    index = direction === 'next' ? haystack.indexOf(needle, index + step) : haystack.lastIndexOf(needle, index - 1);
+  }
+
+  const wrappedStart = direction === 'next' ? 0 : text.length;
+  index = direction === 'next' ? haystack.indexOf(needle, wrappedStart) : haystack.lastIndexOf(needle, wrappedStart);
+  while (index >= 0) {
+    const to = index + query.length;
+    if (!wholeWord || isWholeWordMatch(text, index, to)) return { from: index, to };
+    index = direction === 'next' ? haystack.indexOf(needle, index + step) : haystack.lastIndexOf(needle, index - 1);
+  }
+
+  return null;
+}
+
+function countLiteralMatches(text: string, query: string, caseSensitive: boolean, wholeWord: boolean): number {
+  if (!query) return 0;
+  let count = 0;
+  let start = 0;
+  while (start <= text.length) {
+    const match = findLiteralMatch(text, query, start, 'next', caseSensitive, wholeWord);
+    if (!match || match.from < start) break;
+    count++;
+    start = match.to;
+  }
+  return count;
+}
+
+function replaceAllLiteralMatches(text: string, query: string, replacement: string, caseSensitive: boolean, wholeWord: boolean) {
+  if (!query) return { text, count: 0 };
+  let next = '';
+  let start = 0;
+  let count = 0;
+  while (start <= text.length) {
+    const match = findLiteralMatch(text, query, start, 'next', caseSensitive, wholeWord);
+    if (!match || match.from < start) break;
+    next += text.slice(start, match.from) + replacement;
+    start = match.to;
+    count++;
+  }
+  if (count === 0) return { text, count: 0 };
+  return { text: next + text.slice(start), count };
+}
+
 function App() {
   const [mode, setMode] = useState<Mode>('editor');
   const [terminalStarted, setTerminalStarted] = useState(false);
@@ -237,6 +330,7 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [editorOptions, setEditorOptions] = useState<EditorOptions>(readEditorOptions());
   const [editorMenuOpen, setEditorMenuOpen] = useState(false);
+  const [searchPanelOpen, setSearchPanelOpen] = useState(false);
   const editorMenuRef = useRef<HTMLDivElement | null>(null);
   const editorRef = useRef<EditorView | null>(null);
   const [editorView, setEditorView] = useState<EditorView | null>(null);
@@ -274,10 +368,12 @@ function App() {
   useEffect(() => {
     if (mode === 'terminal') setTerminalStarted(true);
     setEditorMenuOpen(false);
+    if (mode === 'terminal') setSearchPanelOpen(false);
   }, [mode]);
 
   useEffect(() => {
     setEditorMenuOpen(false);
+    setSearchPanelOpen(false);
   }, [currentFile]);
 
   const openFile = useCallback(async (path: string) => {
@@ -393,6 +489,26 @@ function App() {
     [currentDir, currentFile, loadTree]
   );
 
+  const replaceInFolder = useCallback(
+    async (request: ReplaceRequest) => {
+      if (!request.previewOnly && saveState === 'dirty') {
+        throw new Error('Save the open file before replacing across a folder.');
+      }
+      const result = await api<ReplaceResponse>('/api/replace', {
+        method: 'POST',
+        body: JSON.stringify(request)
+      });
+      if (!request.previewOnly) {
+        await loadTree(currentDir);
+        if (currentFile && result.matches.some((match) => match.path === currentFile)) {
+          await openFile(currentFile);
+        }
+      }
+      return result;
+    },
+    [currentDir, currentFile, loadTree, openFile, saveState]
+  );
+
   return (
     <div className={`app ${editorOptions.darkMode ? 'dark' : ''}`}>
       <header className="topbar">
@@ -419,6 +535,14 @@ function App() {
           <button className="icon-button" onClick={() => editorRef.current && redo(editorRef.current)} disabled={!isEditable} title="Redo">
             <Redo2 size={19} />
           </button>
+          <button
+            className={`icon-button ${searchPanelOpen ? 'active' : ''}`}
+            onClick={() => setSearchPanelOpen((open) => !open)}
+            disabled={!isEditable || !currentFile}
+            title="Find and replace"
+          >
+            <SearchIcon size={19} />
+          </button>
           <button className="icon-button primary" onClick={saveFile} disabled={!currentFile || !isEditable} title="Save">
             <Save size={19} />
           </button>
@@ -441,6 +565,16 @@ function App() {
           </div>
         </div>
       </header>
+
+      {searchPanelOpen && isEditable && currentFile && (
+        <SearchReplacePanel
+          editor={editorView}
+          currentDir={currentDir}
+          currentFile={currentFile}
+          onClose={() => setSearchPanelOpen(false)}
+          onFolderReplace={replaceInFolder}
+        />
+      )}
 
       {error && (
         <div className="error-banner">
@@ -588,6 +722,226 @@ function FileSurface({
   );
 }
 
+function SearchReplacePanel({
+  editor,
+  currentDir,
+  currentFile,
+  onClose,
+  onFolderReplace
+}: {
+  editor: EditorView | null;
+  currentDir: string;
+  currentFile: string;
+  onClose: () => void;
+  onFolderReplace: (request: ReplaceRequest) => Promise<ReplaceResponse>;
+}) {
+  const [scope, setScope] = useState<ReplaceScope>('file');
+  const [query, setQuery] = useState('');
+  const [replacement, setReplacement] = useState('');
+  const [caseSensitive, setCaseSensitive] = useState(false);
+  const [wholeWord, setWholeWord] = useState(false);
+  const [status, setStatus] = useState('Ready');
+  const [folderPreview, setFolderPreview] = useState<ReplaceResponse | null>(null);
+
+  const fileMatchCount = useMemo(() => {
+    if (!editor || !query) return 0;
+    return countLiteralMatches(editor.state.doc.toString(), query, caseSensitive, wholeWord);
+  }, [editor, query, caseSensitive, wholeWord]);
+
+  useEffect(() => {
+    setFolderPreview(null);
+    setStatus(query ? `${fileMatchCount} in file` : 'Ready');
+  }, [query, replacement, caseSensitive, wholeWord, scope, fileMatchCount]);
+
+  const selectMatch = (direction: 'next' | 'previous') => {
+    if (!editor || !query) return;
+    const selection = editor.state.selection.main;
+    const text = editor.state.doc.toString();
+    const start = direction === 'next' ? selection.to : selection.from - 1;
+    const match = findLiteralMatch(text, query, start, direction, caseSensitive, wholeWord);
+    if (!match) {
+      setStatus('No matches');
+      editor.focus();
+      return;
+    }
+    editor.dispatch({
+      selection: { anchor: match.from, head: match.to },
+      scrollIntoView: true
+    });
+    editor.focus();
+    setStatus(`${fileMatchCount} in file`);
+  };
+
+  const replaceCurrent = () => {
+    if (!editor || !query) return;
+    const selection = editor.state.selection.main;
+    const selected = editor.state.doc.sliceString(selection.from, selection.to);
+    const matchesSelection =
+      selected.length === query.length &&
+      (caseSensitive ? selected === query : selected.toLowerCase() === query.toLowerCase()) &&
+      (!wholeWord || isWholeWordMatch(editor.state.doc.toString(), selection.from, selection.to));
+
+    if (!matchesSelection) {
+      selectMatch('next');
+      return;
+    }
+
+    editor.dispatch({
+      changes: { from: selection.from, to: selection.to, insert: replacement },
+      selection: { anchor: selection.from + replacement.length },
+      scrollIntoView: true
+    });
+    editor.focus();
+    setStatus('Replaced 1 match');
+  };
+
+  const replaceAllInFile = () => {
+    if (!editor || !query) return;
+    const text = editor.state.doc.toString();
+    const result = replaceAllLiteralMatches(text, query, replacement, caseSensitive, wholeWord);
+    if (result.count === 0) {
+      setStatus('No matches');
+      return;
+    }
+    editor.dispatch({
+      changes: { from: 0, to: editor.state.doc.length, insert: result.text },
+      selection: { anchor: 0 },
+      scrollIntoView: true
+    });
+    editor.focus();
+    setStatus(`Replaced ${result.count} in file`);
+  };
+
+  const previewFolder = async () => {
+    if (!query) return;
+    setStatus('Scanning folder');
+    const result = await onFolderReplace({
+      path: currentDir,
+      search: query,
+      replace: replacement,
+      caseSensitive,
+      wholeWord,
+      previewOnly: true
+    });
+    setFolderPreview(result);
+    setStatus(`${result.replacements} matches in ${result.filesMatched} files`);
+  };
+
+  const replaceFolder = async () => {
+    if (!query) return;
+    const preview =
+      folderPreview ??
+      (await onFolderReplace({
+        path: currentDir,
+        search: query,
+        replace: replacement,
+        caseSensitive,
+        wholeWord,
+        previewOnly: true
+      }));
+    setFolderPreview(preview);
+    if (preview.replacements === 0) {
+      setStatus('No folder matches');
+      return;
+    }
+    if (!window.confirm(`Replace ${preview.replacements} matches in ${preview.filesMatched} files under ${currentDir}?`)) {
+      setStatus('Folder replace canceled');
+      return;
+    }
+    setStatus('Replacing folder matches');
+    const result = await onFolderReplace({
+      path: currentDir,
+      search: query,
+      replace: replacement,
+      caseSensitive,
+      wholeWord,
+      previewOnly: false
+    });
+    setFolderPreview(result);
+    setStatus(`Replaced ${result.replacements} in ${result.filesMatched} files`);
+  };
+
+  const runFolderAction = (action: () => Promise<void>) => {
+    action().catch((err) => setStatus(err instanceof Error ? err.message : String(err)));
+  };
+
+  return (
+    <section className="search-panel" aria-label="Find and replace">
+      <div className="search-panel-header">
+        <div className="scope-tabs" role="tablist" aria-label="Find scope">
+          <button className={scope === 'file' ? 'active' : ''} onClick={() => setScope('file')} role="tab" aria-selected={scope === 'file'}>
+            File
+          </button>
+          <button className={scope === 'folder' ? 'active' : ''} onClick={() => setScope('folder')} role="tab" aria-selected={scope === 'folder'}>
+            Folder
+          </button>
+        </div>
+        <div className="search-context">{scope === 'file' ? basename(currentFile) : currentDir}</div>
+        <button className="mini-button" onClick={onClose} title="Close find and replace">
+          <X size={16} />
+        </button>
+      </div>
+      <div className="search-grid">
+        <label>
+          <span>Find</span>
+          <input value={query} onChange={(event: InputChangeEvent) => setQuery(event.target.value)} autoFocus />
+        </label>
+        <label>
+          <span>Replace</span>
+          <input value={replacement} onChange={(event: InputChangeEvent) => setReplacement(event.target.value)} />
+        </label>
+      </div>
+      <div className="search-options">
+        <label>
+          <input type="checkbox" checked={caseSensitive} onChange={(event: InputChangeEvent) => setCaseSensitive(event.target.checked)} />
+          <span>Match case</span>
+        </label>
+        <label>
+          <input type="checkbox" checked={wholeWord} onChange={(event: InputChangeEvent) => setWholeWord(event.target.checked)} />
+          <span>Whole word</span>
+        </label>
+      </div>
+      {scope === 'file' ? (
+        <div className="search-actions">
+          <button onClick={() => selectMatch('previous')} disabled={!editor || !query}>
+            Previous
+          </button>
+          <button onClick={() => selectMatch('next')} disabled={!editor || !query}>
+            Next
+          </button>
+          <button onClick={replaceCurrent} disabled={!editor || !query}>
+            Replace
+          </button>
+          <button onClick={replaceAllInFile} disabled={!editor || !query}>
+            Replace all
+          </button>
+        </div>
+      ) : (
+        <div className="search-actions">
+          <button onClick={() => runFolderAction(previewFolder)} disabled={!query}>
+            Preview
+          </button>
+          <button className="danger-action" onClick={() => runFolderAction(replaceFolder)} disabled={!query}>
+            Replace folder
+          </button>
+        </div>
+      )}
+      <div className="search-status">{status}</div>
+      {scope === 'folder' && folderPreview && folderPreview.matches.length > 0 && (
+        <div className="search-results">
+          {folderPreview.matches.slice(0, 5).map((match) => (
+            <div key={match.path}>
+              <span>{match.path}</span>
+              <strong>{match.count}</strong>
+            </div>
+          ))}
+          {folderPreview.matches.length > 5 && <div>{folderPreview.matches.length - 5} more files</div>}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function CodeEditor({
   path,
   content,
@@ -630,7 +984,8 @@ function CodeEditor({
         };
     return [
       history(),
-      keymap.of([...defaultKeymap, ...historyKeymap]),
+      search({ top: true }),
+      keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap]),
       syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
       ...(editorOptions.lineNumbers ? [lineNumbers()] : []),
       ...(editorOptions.lineWrap ? [EditorView.lineWrapping] : []),
