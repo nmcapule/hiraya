@@ -30,6 +30,11 @@ button {
   background: #f7f7f4;
 }
 
+.app.dark {
+  background: #181812;
+  color: #eee9dc;
+}
+
 .topbar {
   align-items: center;
   background: #faf9f2;
@@ -75,6 +80,12 @@ button {
   color: #ffffff;
 }
 
+.icon-button.active {
+  background: #22221e;
+  border-color: #22221e;
+  color: #ffffff;
+}
+
 .mode-button.active {
   background: #22221e;
   border-color: #22221e;
@@ -107,6 +118,145 @@ button {
 
 .save-state.saved {
   color: #276247;
+}
+
+.app.dark .topbar,
+.app.dark .drawer {
+  background: #202018;
+  border-color: #3a372f;
+}
+
+.app.dark .icon-button,
+.app.dark .mode-button,
+.app.dark .mini-button,
+.app.dark .accessory-bar button,
+.app.dark .terminal-keys button {
+  background: #2a291f;
+  border-color: #4a453a;
+}
+
+.app.dark .icon-button.primary {
+  background: #2d7257;
+  border-color: #2d7257;
+}
+
+.app.dark .icon-button.active,
+.app.dark .mode-button.active {
+  background: #eee9dc;
+  border-color: #eee9dc;
+  color: #181812;
+}
+
+.app.dark .save-state,
+.app.dark .drawer-path,
+.app.dark .empty-state {
+  color: #bdb5a6;
+}
+
+.app.dark .save-state.dirty,
+.app.dark .save-state.error {
+  color: #ffb197;
+}
+
+.app.dark .save-state.saved {
+  color: #9ad7b7;
+}
+
+.editor-menu-wrap {
+  position: relative;
+}
+
+.editor-menu {
+  background: #fffefa;
+  border: 1px solid #d8d4c8;
+  border-radius: 8px;
+  box-shadow: 0 16px 42px rgba(20, 20, 18, 0.18);
+  min-width: 228px;
+  padding: 6px;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  z-index: 30;
+}
+
+.editor-menu-row {
+  align-items: center;
+  border-radius: 7px;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  min-height: 42px;
+  padding: 6px 8px;
+}
+
+.editor-menu-row span {
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.2;
+  min-width: 0;
+}
+
+.editor-menu-row input {
+  flex: 0 0 auto;
+  height: 22px;
+  margin: 0;
+  width: 22px;
+}
+
+.size-stepper {
+  align-items: center;
+  display: grid;
+  flex: 0 0 auto;
+  grid-template-columns: 32px 48px 32px;
+}
+
+.size-stepper button {
+  align-items: center;
+  background: #ffffff;
+  border: 1px solid #d1ccbf;
+  display: inline-flex;
+  height: 32px;
+  justify-content: center;
+  padding: 0;
+}
+
+.size-stepper button:first-child {
+  border-radius: 8px 0 0 8px;
+}
+
+.size-stepper button:last-child {
+  border-radius: 0 8px 8px 0;
+}
+
+.size-stepper button:disabled {
+  color: #a09b8f;
+  opacity: 0.55;
+}
+
+.size-stepper output {
+  align-items: center;
+  border-bottom: 1px solid #d1ccbf;
+  border-top: 1px solid #d1ccbf;
+  display: inline-flex;
+  font-size: 13px;
+  font-weight: 700;
+  height: 32px;
+  justify-content: center;
+}
+
+.app.dark .editor-menu {
+  background: #202018;
+  border-color: #4a453a;
+  box-shadow: 0 16px 42px rgba(0, 0, 0, 0.36);
+}
+
+.app.dark .size-stepper button {
+  background: #2a291f;
+  border-color: #4a453a;
+}
+
+.app.dark .size-stepper output {
+  border-color: #4a453a;
 }
 
 .workspace {
@@ -145,6 +295,10 @@ button {
   padding: 14px;
 }
 
+.app.dark .preview-host {
+  background: #181812;
+}
+
 .image-preview {
   display: block;
   max-height: 100%;
@@ -179,6 +333,12 @@ button {
   gap: 6px;
   overflow-x: auto;
   padding: 7px 8px;
+}
+
+.app.dark .accessory-bar,
+.app.dark .terminal-keys {
+  background: #202018;
+  border-color: #3a372f;
 }
 
 .accessory-bar button,
@@ -292,6 +452,11 @@ button {
   background: #efede5;
 }
 
+.app.dark .file-row:hover,
+.app.dark .file-row:focus-visible {
+  background: #2a291f;
+}
+
 .file-row.parent {
   color: #716c60;
   margin-bottom: 4px;
@@ -338,6 +503,15 @@ button {
   display: inline-flex;
   min-height: 32px;
   min-width: 32px;
+}
+
+@media (max-width: 440px) {
+  .editor-menu {
+    position: fixed;
+    right: 8px;
+    top: 58px;
+    width: min(280px, calc(100vw - 16px));
+  }
 }
 
 @media (min-width: 760px) {

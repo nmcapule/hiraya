@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { EditorState } from '@codemirror/state';
-import { EditorView, keymap } from '@codemirror/view';
+import { EditorView, keymap, lineNumbers } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap, undo, redo } from '@codemirror/commands';
 import { syntaxHighlighting, defaultHighlightStyle, LanguageSupport } from '@codemirror/language';
 import { javascript } from '@codemirror/lang-javascript';
@@ -23,7 +23,10 @@ import {
   FilePlus2,
   FolderPlus,
   Menu,
+  Minus,
+  MoreVertical,
   Pencil,
+  Plus,
   Redo2,
   Save,
   Terminal,
@@ -45,6 +48,50 @@ type Entry = {
 type FileKind = 'text' | 'image' | 'pdf' | 'unsupported';
 type SaveState = 'idle' | 'dirty' | 'saving' | 'saved' | 'preview' | 'error';
 type Mode = 'editor' | 'terminal';
+type InputChangeEvent = { target: HTMLInputElement };
+type EditorOptions = {
+  lineWrap: boolean;
+  fontSize: number;
+  darkMode: boolean;
+  lineNumbers: boolean;
+};
+
+const defaultEditorOptions: EditorOptions = {
+  lineWrap: true,
+  fontSize: 14,
+  darkMode: false,
+  lineNumbers: true
+};
+
+const editorOptionsKey = 'hiraya.editorOptions';
+
+function clampFontSize(size: number): number {
+  return Math.min(22, Math.max(12, size));
+}
+
+function readEditorOptions(): EditorOptions {
+  try {
+    const raw = window.localStorage.getItem(editorOptionsKey);
+    if (!raw) return defaultEditorOptions;
+    const parsed = JSON.parse(raw) as Partial<EditorOptions>;
+    return {
+      lineWrap: typeof parsed.lineWrap === 'boolean' ? parsed.lineWrap : defaultEditorOptions.lineWrap,
+      fontSize: typeof parsed.fontSize === 'number' ? clampFontSize(parsed.fontSize) : defaultEditorOptions.fontSize,
+      darkMode: typeof parsed.darkMode === 'boolean' ? parsed.darkMode : defaultEditorOptions.darkMode,
+      lineNumbers: typeof parsed.lineNumbers === 'boolean' ? parsed.lineNumbers : defaultEditorOptions.lineNumbers
+    };
+  } catch {
+    return defaultEditorOptions;
+  }
+}
+
+function writeEditorOptions(options: EditorOptions) {
+  try {
+    window.localStorage.setItem(editorOptionsKey, JSON.stringify(options));
+  } catch {
+    // Storage can be unavailable in private or restricted browser contexts.
+  }
+}
 
 function viewportHeight(): number {
   return window.visualViewport?.height ?? window.innerHeight;
@@ -188,6 +235,9 @@ function App() {
   const [documentVersion, setDocumentVersion] = useState(0);
   const [saveState, setSaveState] = useState<SaveState>('idle');
   const [error, setError] = useState<string | null>(null);
+  const [editorOptions, setEditorOptions] = useState<EditorOptions>(readEditorOptions());
+  const [editorMenuOpen, setEditorMenuOpen] = useState(false);
+  const editorMenuRef = useRef<HTMLDivElement | null>(null);
   const editorRef = useRef<EditorView | null>(null);
   const [editorView, setEditorView] = useState<EditorView | null>(null);
 
@@ -199,6 +249,17 @@ function App() {
   }, []);
 
   useEffect(() => onAppViewportChange(), []);
+
+  useEffect(() => writeEditorOptions(editorOptions), [editorOptions]);
+
+  useEffect(() => {
+    if (!editorMenuOpen) return;
+    const closeOnOutsideClick = (event: PointerEvent) => {
+      if (!editorMenuRef.current?.contains(event.target as Node)) setEditorMenuOpen(false);
+    };
+    window.addEventListener('pointerdown', closeOnOutsideClick);
+    return () => window.removeEventListener('pointerdown', closeOnOutsideClick);
+  }, [editorMenuOpen]);
 
   const loadTree = useCallback(async (path: string) => {
     const data = await api<{ path: string; entries: Entry[] }>(`/api/tree?path=${encodeURIComponent(path)}`);
@@ -212,7 +273,12 @@ function App() {
 
   useEffect(() => {
     if (mode === 'terminal') setTerminalStarted(true);
+    setEditorMenuOpen(false);
   }, [mode]);
+
+  useEffect(() => {
+    setEditorMenuOpen(false);
+  }, [currentFile]);
 
   const openFile = useCallback(async (path: string) => {
     setError(null);
@@ -328,7 +394,7 @@ function App() {
   );
 
   return (
-    <div className="app">
+    <div className={`app ${editorOptions.darkMode ? 'dark' : ''}`}>
       <header className="topbar">
         <div className="left-actions">
           <button className="icon-button" onClick={() => setDrawerOpen(true)} title="Files">
@@ -356,6 +422,23 @@ function App() {
           <button className="icon-button primary" onClick={saveFile} disabled={!currentFile || !isEditable} title="Save">
             <Save size={19} />
           </button>
+          <div className="editor-menu-wrap" ref={editorMenuRef}>
+            <button
+              className={`icon-button ${editorMenuOpen ? 'active' : ''}`}
+              onClick={() => setEditorMenuOpen((open) => !open)}
+              title="Editor options"
+              aria-haspopup="menu"
+              aria-expanded={editorMenuOpen}
+            >
+              <MoreVertical size={19} />
+            </button>
+            {editorMenuOpen && (
+              <EditorOptionsMenu
+                options={editorOptions}
+                onChange={(next) => setEditorOptions(next)}
+              />
+            )}
+          </div>
         </div>
       </header>
 
@@ -375,6 +458,7 @@ function App() {
             kind={currentFileKind}
             content={content}
             version={documentVersion}
+            editorOptions={editorOptions}
             onReady={handleEditorReady}
             onChange={(next) => {
               setContent(next);
@@ -464,6 +548,7 @@ function FileSurface({
   kind,
   content,
   version,
+  editorOptions,
   onReady,
   onChange
 }: {
@@ -471,11 +556,12 @@ function FileSurface({
   kind: FileKind;
   content: string;
   version: number;
+  editorOptions: EditorOptions;
   onReady: (view: EditorView | null) => void;
   onChange: (content: string) => void;
 }) {
   if (!path || kind === 'text') {
-    return <CodeEditor path={path} content={content} version={version} onReady={onReady} onChange={onChange} />;
+    return <CodeEditor path={path} content={content} version={version} editorOptions={editorOptions} onReady={onReady} onChange={onChange} />;
   }
 
   if (kind === 'image') {
@@ -506,12 +592,14 @@ function CodeEditor({
   path,
   content,
   version,
+  editorOptions,
   onReady,
   onChange
 }: {
   path: string | null;
   content: string;
   version: number;
+  editorOptions: EditorOptions;
   onReady: (view: EditorView | null) => void;
   onChange: (content: string) => void;
 }) {
@@ -521,26 +609,48 @@ function CodeEditor({
 
   const extensions = useMemo(() => {
     const lang = path ? languageFor(path) : null;
+    const palette = editorOptions.darkMode
+      ? {
+          background: '#181812',
+          foreground: '#eee9dc',
+          gutter: '#202018',
+          border: '#3a372f',
+          active: '#2a291f',
+          selection: '#3c4f43',
+          cursor: '#f4c95d'
+        }
+      : {
+          background: '#f7f7f4',
+          foreground: '#26251f',
+          gutter: '#f7f7f4',
+          border: '#dedbd2',
+          active: '#eceae2',
+          selection: '#c9ddd3',
+          cursor: '#185b45'
+        };
     return [
       history(),
       keymap.of([...defaultKeymap, ...historyKeymap]),
       syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
-      EditorView.lineWrapping,
+      ...(editorOptions.lineNumbers ? [lineNumbers()] : []),
+      ...(editorOptions.lineWrap ? [EditorView.lineWrapping] : []),
       EditorView.updateListener.of((update) => {
         if (update.docChanged) onChangeRef.current(update.state.doc.toString());
       }),
       EditorView.theme({
-        '&': { height: '100%' },
+        '&': { height: '100%', backgroundColor: palette.background, color: palette.foreground, fontSize: `${editorOptions.fontSize}px` },
         '.cm-scroller': { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace' },
         '.cm-content': { padding: '18px 0', minHeight: '100%' },
         '.cm-line': { padding: '0 18px' },
-        '.cm-gutters': { backgroundColor: '#f7f7f4', borderRight: '1px solid #dedbd2' },
-        '.cm-activeLine': { backgroundColor: '#eceae2' },
-        '.cm-activeLineGutter': { backgroundColor: '#eceae2' }
+        '.cm-gutters': { backgroundColor: palette.gutter, borderRight: `1px solid ${palette.border}`, color: palette.foreground },
+        '.cm-activeLine': { backgroundColor: palette.active },
+        '.cm-activeLineGutter': { backgroundColor: palette.active },
+        '.cm-cursor, .cm-dropCursor': { borderLeftColor: palette.cursor },
+        '&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection': { backgroundColor: palette.selection }
       }),
       ...(lang ? [lang] : [])
     ];
-  }, [path]);
+  }, [path, editorOptions]);
 
   useEffect(() => {
     if (!hostRef.current) return;
@@ -565,6 +675,46 @@ function CodeEditor({
   }
 
   return <div className="editor-host" ref={hostRef} />;
+}
+
+function EditorOptionsMenu({
+  options,
+  onChange
+}: {
+  options: EditorOptions;
+  onChange: (options: EditorOptions) => void;
+}) {
+  const setOption = (next: Partial<EditorOptions>) => onChange({ ...options, ...next });
+  const setFontSize = (fontSize: number) => setOption({ fontSize: clampFontSize(fontSize) });
+
+  return (
+    <div className="editor-menu" role="menu">
+      <label className="editor-menu-row">
+        <span>Line wrap</span>
+        <input type="checkbox" checked={options.lineWrap} onChange={(event: InputChangeEvent) => setOption({ lineWrap: event.target.checked })} />
+      </label>
+      <div className="editor-menu-row">
+        <span>Text size</span>
+        <div className="size-stepper" aria-label="Text size">
+          <button onClick={() => setFontSize(options.fontSize - 1)} disabled={options.fontSize <= 12} title="Decrease text size">
+            <Minus size={15} />
+          </button>
+          <output>{options.fontSize}px</output>
+          <button onClick={() => setFontSize(options.fontSize + 1)} disabled={options.fontSize >= 22} title="Increase text size">
+            <Plus size={15} />
+          </button>
+        </div>
+      </div>
+      <label className="editor-menu-row">
+        <span>Dark mode</span>
+        <input type="checkbox" checked={options.darkMode} onChange={(event: InputChangeEvent) => setOption({ darkMode: event.target.checked })} />
+      </label>
+      <label className="editor-menu-row">
+        <span>Line numbers</span>
+        <input type="checkbox" checked={options.lineNumbers} onChange={(event: InputChangeEvent) => setOption({ lineNumbers: event.target.checked })} />
+      </label>
+    </div>
+  );
 }
 
 function AccessoryBar({ editor }: { editor: EditorView | null }) {
