@@ -18,10 +18,18 @@ import { xml } from '@codemirror/lang-xml';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import {
+  ArrowDown,
+  ArrowLeft,
+  ArrowRight,
+  ArrowUp,
   Braces,
   Check,
   ChevronDown,
   ChevronLeft,
+  ChevronUp,
+  CornerDownLeft,
+  Delete,
+  Home,
   Keyboard,
   FilePlus2,
   FolderPlus,
@@ -35,9 +43,11 @@ import {
   Search as SearchIcon,
   Terminal,
   Trash2,
+  Type,
   Undo2,
   X
 } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import '@xterm/xterm/css/xterm.css';
 import './styles.css';
 
@@ -59,16 +69,43 @@ type EditorOptions = {
   fontSize: number;
   darkMode: boolean;
   lineNumbers: boolean;
+  terminalCollapsedKeys: TerminalKeyID[];
 };
 
 type TerminalModifier = 'ctrl' | 'alt' | 'shift';
 type TerminalModifiers = Record<TerminalModifier, boolean>;
+type TerminalKeyID =
+  | 'ctrl-c'
+  | 'esc'
+  | 'tab'
+  | 'ctrl-d'
+  | 'ctrl-l'
+  | 'enter'
+  | 'up'
+  | 'down'
+  | 'left'
+  | 'right'
+  | 'home'
+  | 'end'
+  | 'pgup'
+  | 'pgdn';
 type TerminalKey = {
+  id: TerminalKeyID | `f${number}`;
   label: string;
   plain: string;
   final?: string;
   code?: string;
   modifiedBase?: string;
+  icon?: LucideIcon;
+  hint?: string;
+};
+type TerminalAction = {
+  id: TerminalKeyID;
+  label: string;
+  data?: string;
+  key?: TerminalKey;
+  icon?: LucideIcon;
+  hint?: string;
 };
 
 type ReplaceRequest = {
@@ -93,17 +130,26 @@ type ReplaceResponse = {
   matches: ReplaceMatch[];
 };
 
+const defaultTerminalCollapsedKeys: TerminalKeyID[] = ['ctrl-c', 'esc', 'tab'];
+
 const defaultEditorOptions: EditorOptions = {
   lineWrap: true,
   fontSize: 14,
   darkMode: false,
-  lineNumbers: true
+  lineNumbers: true,
+  terminalCollapsedKeys: defaultTerminalCollapsedKeys
 };
 
 const editorOptionsKey = 'hiraya.editorOptions';
 
 function clampFontSize(size: number): number {
   return Math.min(22, Math.max(12, size));
+}
+
+function readTerminalCollapsedKeys(value: unknown): TerminalKeyID[] {
+  if (!Array.isArray(value)) return defaultTerminalCollapsedKeys;
+  const keys = value.filter((key): key is TerminalKeyID => typeof key === 'string' && terminalCollapsedKeyIDs.has(key as TerminalKeyID));
+  return keys.length ? keys : defaultTerminalCollapsedKeys;
 }
 
 function readEditorOptions(): EditorOptions {
@@ -115,7 +161,8 @@ function readEditorOptions(): EditorOptions {
       lineWrap: typeof parsed.lineWrap === 'boolean' ? parsed.lineWrap : defaultEditorOptions.lineWrap,
       fontSize: typeof parsed.fontSize === 'number' ? clampFontSize(parsed.fontSize) : defaultEditorOptions.fontSize,
       darkMode: typeof parsed.darkMode === 'boolean' ? parsed.darkMode : defaultEditorOptions.darkMode,
-      lineNumbers: typeof parsed.lineNumbers === 'boolean' ? parsed.lineNumbers : defaultEditorOptions.lineNumbers
+      lineNumbers: typeof parsed.lineNumbers === 'boolean' ? parsed.lineNumbers : defaultEditorOptions.lineNumbers,
+      terminalCollapsedKeys: readTerminalCollapsedKeys(parsed.terminalCollapsedKeys)
     };
   } catch {
     return defaultEditorOptions;
@@ -562,7 +609,7 @@ function App() {
             <button
               className={`icon-button ${editorMenuOpen ? 'active' : ''}`}
               onClick={() => setEditorMenuOpen((open) => !open)}
-              title="Editor options"
+              title="Options"
               aria-haspopup="menu"
               aria-expanded={editorMenuOpen}
             >
@@ -614,7 +661,7 @@ function App() {
         </div>
         {terminalStarted && (
           <div className={`workspace-panel ${mode === 'terminal' ? 'active' : ''}`} aria-hidden={mode !== 'terminal'} inert={mode !== 'terminal'}>
-            <TerminalView active={mode === 'terminal'} />
+            <TerminalView active={mode === 'terminal'} options={editorOptions} />
           </div>
         )}
       </main>
@@ -1053,6 +1100,12 @@ function EditorOptionsMenu({
 }) {
   const setOption = (next: Partial<EditorOptions>) => onChange({ ...options, ...next });
   const setFontSize = (fontSize: number) => setOption({ fontSize: clampFontSize(fontSize) });
+  const setCollapsedKey = (keyID: TerminalKeyID, checked: boolean) => {
+    const next = checked
+      ? [...options.terminalCollapsedKeys, keyID]
+      : options.terminalCollapsedKeys.filter((current) => current !== keyID);
+    setOption({ terminalCollapsedKeys: next.length ? next : defaultTerminalCollapsedKeys });
+  };
 
   return (
     <div className="editor-menu" role="menu">
@@ -1080,6 +1133,21 @@ function EditorOptionsMenu({
         <span>Line numbers</span>
         <input type="checkbox" checked={options.lineNumbers} onChange={(event: InputChangeEvent) => setOption({ lineNumbers: event.target.checked })} />
       </label>
+      <div className="editor-menu-section" aria-label="Terminal keybar">
+        <div className="editor-menu-section-title">Terminal keybar</div>
+        <div className="keybar-options">
+          {terminalCollapsedActions.map((action) => (
+            <label key={action.id}>
+              <input
+                type="checkbox"
+                checked={options.terminalCollapsedKeys.includes(action.id)}
+                onChange={(event: InputChangeEvent) => setCollapsedKey(action.id, event.target.checked)}
+              />
+              <span>{action.label}</span>
+            </label>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
@@ -1106,30 +1174,42 @@ function AccessoryBar({ editor }: { editor: EditorView | null }) {
 const emptyTerminalModifiers: TerminalModifiers = { ctrl: false, alt: false, shift: false };
 
 const terminalNavKeys: TerminalKey[] = [
-  { label: 'Up', plain: '\u001b[A', final: 'A', modifiedBase: '1' },
-  { label: 'Down', plain: '\u001b[B', final: 'B', modifiedBase: '1' },
-  { label: 'Right', plain: '\u001b[C', final: 'C', modifiedBase: '1' },
-  { label: 'Left', plain: '\u001b[D', final: 'D', modifiedBase: '1' },
-  { label: 'Home', plain: '\u001b[H', final: 'H', modifiedBase: '1' },
-  { label: 'End', plain: '\u001b[F', final: 'F', modifiedBase: '1' },
-  { label: 'PgUp', plain: '\u001b[5~', code: '5' },
-  { label: 'PgDn', plain: '\u001b[6~', code: '6' }
+  { id: 'up', label: 'Up', plain: '\u001b[A', final: 'A', modifiedBase: '1', icon: ArrowUp },
+  { id: 'down', label: 'Down', plain: '\u001b[B', final: 'B', modifiedBase: '1', icon: ArrowDown },
+  { id: 'left', label: 'Left', plain: '\u001b[D', final: 'D', modifiedBase: '1', icon: ArrowLeft },
+  { id: 'right', label: 'Right', plain: '\u001b[C', final: 'C', modifiedBase: '1', icon: ArrowRight },
+  { id: 'home', label: 'Home', plain: '\u001b[H', final: 'H', modifiedBase: '1', icon: Home },
+  { id: 'end', label: 'End', plain: '\u001b[F', final: 'F', modifiedBase: '1', icon: ArrowRight },
+  { id: 'pgup', label: 'PgUp', plain: '\u001b[5~', code: '5', icon: ChevronUp, hint: 'Page up' },
+  { id: 'pgdn', label: 'PgDn', plain: '\u001b[6~', code: '6', icon: ChevronDown, hint: 'Page down' }
 ];
 
 const terminalFunctionKeys: TerminalKey[] = [
-  { label: 'F1', plain: '\u001bOP', final: 'P', modifiedBase: '1' },
-  { label: 'F2', plain: '\u001bOQ', final: 'Q', modifiedBase: '1' },
-  { label: 'F3', plain: '\u001bOR', final: 'R', modifiedBase: '1' },
-  { label: 'F4', plain: '\u001bOS', final: 'S', modifiedBase: '1' },
-  { label: 'F5', plain: '\u001b[15~', code: '15' },
-  { label: 'F6', plain: '\u001b[17~', code: '17' },
-  { label: 'F7', plain: '\u001b[18~', code: '18' },
-  { label: 'F8', plain: '\u001b[19~', code: '19' },
-  { label: 'F9', plain: '\u001b[20~', code: '20' },
-  { label: 'F10', plain: '\u001b[21~', code: '21' },
-  { label: 'F11', plain: '\u001b[23~', code: '23' },
-  { label: 'F12', plain: '\u001b[24~', code: '24' }
+  { id: 'f1', label: 'F1', plain: '\u001bOP', final: 'P', modifiedBase: '1' },
+  { id: 'f2', label: 'F2', plain: '\u001bOQ', final: 'Q', modifiedBase: '1' },
+  { id: 'f3', label: 'F3', plain: '\u001bOR', final: 'R', modifiedBase: '1' },
+  { id: 'f4', label: 'F4', plain: '\u001bOS', final: 'S', modifiedBase: '1' },
+  { id: 'f5', label: 'F5', plain: '\u001b[15~', code: '15' },
+  { id: 'f6', label: 'F6', plain: '\u001b[17~', code: '17' },
+  { id: 'f7', label: 'F7', plain: '\u001b[18~', code: '18' },
+  { id: 'f8', label: 'F8', plain: '\u001b[19~', code: '19' },
+  { id: 'f9', label: 'F9', plain: '\u001b[20~', code: '20' },
+  { id: 'f10', label: 'F10', plain: '\u001b[21~', code: '21' },
+  { id: 'f11', label: 'F11', plain: '\u001b[23~', code: '23' },
+  { id: 'f12', label: 'F12', plain: '\u001b[24~', code: '24' }
 ];
+
+const terminalCollapsedActions: TerminalAction[] = [
+  { id: 'ctrl-c', label: 'Ctrl-C', data: '\u0003', icon: X, hint: 'Interrupt' },
+  { id: 'esc', label: 'Esc', data: '\u001b', icon: Delete, hint: 'Escape' },
+  { id: 'tab', label: 'Tab', data: '\t', icon: Type },
+  { id: 'ctrl-d', label: 'Ctrl-D', data: '\u0004', icon: X, hint: 'End input' },
+  { id: 'ctrl-l', label: 'Ctrl-L', data: '\u000c', icon: Delete, hint: 'Clear screen' },
+  { id: 'enter', label: 'Enter', data: '\r', icon: CornerDownLeft },
+  ...terminalNavKeys.map((key) => ({ id: key.id as TerminalKeyID, label: key.label, key, icon: key.icon, hint: key.hint }))
+];
+const terminalCollapsedActionByID = new Map(terminalCollapsedActions.map((action) => [action.id, action]));
+const terminalCollapsedKeyIDs = new Set<TerminalKeyID>(terminalCollapsedActions.map((action) => action.id));
 
 const hasTerminalModifier = (modifiers: TerminalModifiers) => modifiers.ctrl || modifiers.alt || modifiers.shift;
 
@@ -1144,7 +1224,7 @@ function encodeTerminalKey(key: TerminalKey, modifiers: TerminalModifiers) {
   return key.plain;
 }
 
-function TerminalView({ active }: { active: boolean }) {
+function TerminalView({ active, options }: { active: boolean; options: EditorOptions }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<XTerm | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
@@ -1157,7 +1237,7 @@ function TerminalView({ active }: { active: boolean }) {
     let disposed = false;
     const term = new XTerm({
       cursorBlink: true,
-      fontSize: 14,
+      fontSize: options.fontSize,
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
       theme: {
         background: '#171713',
@@ -1213,29 +1293,34 @@ function TerminalView({ active }: { active: boolean }) {
     };
   }, []);
 
+  const resizeTerminal = useCallback(() => {
+    fitRef.current?.();
+    const socket = socketRef.current;
+    const term = termRef.current;
+    if (socket?.readyState === WebSocket.OPEN && term) {
+      socket.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+    }
+  }, []);
+
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term) return;
+    term.options.fontSize = options.fontSize;
+    requestAnimationFrame(resizeTerminal);
+  }, [options.fontSize, resizeTerminal]);
+
   useEffect(() => {
     if (!active) return;
     requestAnimationFrame(() => {
-      fitRef.current?.();
-      const socket = socketRef.current;
       const term = termRef.current;
-      if (socket?.readyState === WebSocket.OPEN && term) {
-        socket.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
-      }
+      resizeTerminal();
       term?.focus();
     });
-  }, [active]);
+  }, [active, resizeTerminal]);
 
   useEffect(() => {
-    requestAnimationFrame(() => {
-      fitRef.current?.();
-      const socket = socketRef.current;
-      const term = termRef.current;
-      if (socket?.readyState === WebSocket.OPEN && term) {
-        socket.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
-      }
-    });
-  }, [keyboardOpen]);
+    requestAnimationFrame(resizeTerminal);
+  }, [keyboardOpen, resizeTerminal]);
 
   const send = (data: string) => {
     const socket = socketRef.current;
@@ -1253,22 +1338,41 @@ function TerminalView({ active }: { active: boolean }) {
     setModifiers(emptyTerminalModifiers);
   };
 
+  const sendAction = (action: TerminalAction) => {
+    if (action.key) {
+      sendTerminalKey(action.key);
+      return;
+    }
+    send(action.data ?? '');
+    setModifiers(emptyTerminalModifiers);
+  };
+
   const sendEsc = () => {
     send(modifiers.alt ? '\u001b\u001b' : '\u001b');
     setModifiers(emptyTerminalModifiers);
   };
+
+  const collapsedActions = options.terminalCollapsedKeys
+    .map((keyID) => terminalCollapsedActionByID.get(keyID))
+    .filter((action): action is TerminalAction => !!action);
 
   return (
     <div className="terminal-pane">
       <div className="terminal-host" ref={hostRef} />
       <div className="terminal-keys">
         <div className="terminal-keys-header">
-          <button onClick={() => setKeyboardOpen((open) => !open)} title={keyboardOpen ? 'Hide keyboard' : 'Show keyboard'}>
+          <button className="terminal-key-button icon-only" onClick={() => setKeyboardOpen((open) => !open)} title={keyboardOpen ? 'Hide keyboard' : 'Show keyboard'}>
             {keyboardOpen ? <ChevronDown size={16} /> : <Keyboard size={16} />}
           </button>
-          <button onClick={() => send('\u0003')}>Ctrl-C</button>
-          <button onClick={sendEsc}>Esc</button>
-          <button onClick={() => send('\t')}>Tab</button>
+          {collapsedActions.map((action) => {
+            const Icon = action.icon;
+            return (
+              <button key={action.id} className="terminal-key-button" onClick={() => (action.id === 'esc' ? sendEsc() : sendAction(action))} title={action.hint ?? action.label}>
+                {Icon && <Icon size={16} />}
+                <span>{action.label}</span>
+              </button>
+            );
+          })}
         </div>
         {keyboardOpen && (
           <div className="terminal-key-grid">
@@ -1276,25 +1380,29 @@ function TerminalView({ active }: { active: boolean }) {
               {(['ctrl', 'alt', 'shift'] as TerminalModifier[]).map((modifier) => (
                 <button
                   key={modifier}
-                  className={modifiers[modifier] ? 'active' : ''}
+                  className={`terminal-key-button modifier ${modifiers[modifier] ? 'active' : ''}`}
                   onClick={() => toggleModifier(modifier)}
                   aria-pressed={modifiers[modifier]}
                 >
-                  {modifier === 'ctrl' ? 'Ctrl' : modifier === 'alt' ? 'Alt' : 'Shift'}
+                  <span>{modifier === 'ctrl' ? 'Ctrl' : modifier === 'alt' ? 'Alt' : 'Shift'}</span>
                 </button>
               ))}
             </div>
-            <div className="terminal-key-group" aria-label="Navigation keys">
-              {terminalNavKeys.map((key) => (
-                <button key={key.label} onClick={() => sendTerminalKey(key)}>
-                  {key.label}
-                </button>
-              ))}
+            <div className="terminal-key-pad" aria-label="Navigation keys">
+              {terminalNavKeys.map((key) => {
+                const Icon = key.icon;
+                return (
+                  <button key={key.label} className="terminal-key-button nav-key" onClick={() => sendTerminalKey(key)} title={key.hint ?? key.label}>
+                    {Icon && <Icon size={18} />}
+                    <span>{key.label}</span>
+                  </button>
+                );
+              })}
             </div>
             <div className="terminal-key-group function-keys" aria-label="Function keys">
               {terminalFunctionKeys.map((key) => (
-                <button key={key.label} onClick={() => sendTerminalKey(key)}>
-                  {key.label}
+                <button key={key.label} className="terminal-key-button function-key" onClick={() => sendTerminalKey(key)}>
+                  <span>{key.label}</span>
                 </button>
               ))}
             </div>

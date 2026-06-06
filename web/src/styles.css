@@ -203,6 +203,51 @@ button {
   width: 22px;
 }
 
+.editor-menu-section {
+  border-top: 1px solid #e5e1d8;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+  padding: 10px 8px 4px;
+}
+
+.editor-menu-section-title {
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+.keybar-options {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.keybar-options label {
+  align-items: center;
+  display: flex;
+  gap: 7px;
+  min-height: 30px;
+  min-width: 0;
+}
+
+.keybar-options input {
+  flex: 0 0 auto;
+  height: 18px;
+  margin: 0;
+  width: 18px;
+}
+
+.keybar-options span {
+  font-size: 12px;
+  font-weight: 700;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .size-stepper {
   align-items: center;
   display: grid;
@@ -248,6 +293,10 @@ button {
   background: #202018;
   border-color: #4a453a;
   box-shadow: 0 16px 42px rgba(0, 0, 0, 0.36);
+}
+
+.app.dark .editor-menu-section {
+  border-color: #3a372f;
 }
 
 .app.dark .size-stepper button {
@@ -527,7 +576,14 @@ button {
 .terminal-key-grid {
   display: flex;
   flex-direction: column;
+  gap: 8px;
+}
+
+.terminal-key-pad {
+  display: grid;
   gap: 6px;
+  grid-template-columns: repeat(4, minmax(62px, 1fr));
+  max-width: 520px;
 }
 
 .app.dark .accessory-bar,
@@ -547,10 +603,43 @@ button {
   padding: 0 12px;
 }
 
-.terminal-keys button {
+.terminal-keys .terminal-key-button {
   align-items: center;
   display: inline-flex;
+  font-size: 13px;
+  font-weight: 750;
+  gap: 5px;
   justify-content: center;
+  line-height: 1;
+  min-width: 50px;
+  padding: 0 10px;
+}
+
+.terminal-keys .terminal-key-button.icon-only {
+  min-width: 42px;
+  padding: 0;
+}
+
+.terminal-keys .terminal-key-button.nav-key {
+  flex: 1 1 auto;
+  min-height: 52px;
+  min-width: 0;
+}
+
+.terminal-keys .terminal-key-button.function-key {
+  min-width: 48px;
+}
+
+.terminal-keys .terminal-key-button.modifier {
+  background: #f5f3ed;
+  min-width: 64px;
+}
+
+.terminal-keys .terminal-key-button span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .terminal-keys button.active {
@@ -559,12 +648,12 @@ button {
   color: #ffffff;
 }
 
-.terminal-key-group.modifiers button {
-  min-width: 64px;
-}
-
 .terminal-key-group.function-keys button {
   min-width: 50px;
+}
+
+.app.dark .terminal-keys .terminal-key-button.modifier {
+  background: #24231b;
 }
 
 .app.dark .terminal-keys button.active {
