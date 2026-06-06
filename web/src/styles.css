@@ -512,6 +512,24 @@ button {
   padding: 7px 8px;
 }
 
+.terminal-keys {
+  flex-direction: column;
+  overflow-x: visible;
+}
+
+.terminal-keys-header,
+.terminal-key-group {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+}
+
+.terminal-key-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
 .app.dark .accessory-bar,
 .app.dark .terminal-keys {
   background: #202018;
@@ -527,6 +545,32 @@ button {
   min-height: 38px;
   min-width: 42px;
   padding: 0 12px;
+}
+
+.terminal-keys button {
+  align-items: center;
+  display: inline-flex;
+  justify-content: center;
+}
+
+.terminal-keys button.active {
+  background: #22221e;
+  border-color: #22221e;
+  color: #ffffff;
+}
+
+.terminal-key-group.modifiers button {
+  min-width: 64px;
+}
+
+.terminal-key-group.function-keys button {
+  min-width: 50px;
+}
+
+.app.dark .terminal-keys button.active {
+  background: #eee9dc;
+  border-color: #eee9dc;
+  color: #181812;
 }
 
 .terminal-pane {

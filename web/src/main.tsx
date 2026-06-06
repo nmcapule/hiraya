@@ -20,7 +20,9 @@ import { FitAddon } from '@xterm/addon-fit';
 import {
   Braces,
   Check,
+  ChevronDown,
   ChevronLeft,
+  Keyboard,
   FilePlus2,
   FolderPlus,
   Menu,
@@ -57,6 +59,16 @@ type EditorOptions = {
   fontSize: number;
   darkMode: boolean;
   lineNumbers: boolean;
+};
+
+type TerminalModifier = 'ctrl' | 'alt' | 'shift';
+type TerminalModifiers = Record<TerminalModifier, boolean>;
+type TerminalKey = {
+  label: string;
+  plain: string;
+  final?: string;
+  code?: string;
+  modifiedBase?: string;
 };
 
 type ReplaceRequest = {
@@ -1091,11 +1103,54 @@ function AccessoryBar({ editor }: { editor: EditorView | null }) {
   );
 }
 
+const emptyTerminalModifiers: TerminalModifiers = { ctrl: false, alt: false, shift: false };
+
+const terminalNavKeys: TerminalKey[] = [
+  { label: 'Up', plain: '\u001b[A', final: 'A', modifiedBase: '1' },
+  { label: 'Down', plain: '\u001b[B', final: 'B', modifiedBase: '1' },
+  { label: 'Right', plain: '\u001b[C', final: 'C', modifiedBase: '1' },
+  { label: 'Left', plain: '\u001b[D', final: 'D', modifiedBase: '1' },
+  { label: 'Home', plain: '\u001b[H', final: 'H', modifiedBase: '1' },
+  { label: 'End', plain: '\u001b[F', final: 'F', modifiedBase: '1' },
+  { label: 'PgUp', plain: '\u001b[5~', code: '5' },
+  { label: 'PgDn', plain: '\u001b[6~', code: '6' }
+];
+
+const terminalFunctionKeys: TerminalKey[] = [
+  { label: 'F1', plain: '\u001bOP', final: 'P', modifiedBase: '1' },
+  { label: 'F2', plain: '\u001bOQ', final: 'Q', modifiedBase: '1' },
+  { label: 'F3', plain: '\u001bOR', final: 'R', modifiedBase: '1' },
+  { label: 'F4', plain: '\u001bOS', final: 'S', modifiedBase: '1' },
+  { label: 'F5', plain: '\u001b[15~', code: '15' },
+  { label: 'F6', plain: '\u001b[17~', code: '17' },
+  { label: 'F7', plain: '\u001b[18~', code: '18' },
+  { label: 'F8', plain: '\u001b[19~', code: '19' },
+  { label: 'F9', plain: '\u001b[20~', code: '20' },
+  { label: 'F10', plain: '\u001b[21~', code: '21' },
+  { label: 'F11', plain: '\u001b[23~', code: '23' },
+  { label: 'F12', plain: '\u001b[24~', code: '24' }
+];
+
+const hasTerminalModifier = (modifiers: TerminalModifiers) => modifiers.ctrl || modifiers.alt || modifiers.shift;
+
+const terminalModifierCode = (modifiers: TerminalModifiers) =>
+  1 + (modifiers.shift ? 1 : 0) + (modifiers.alt ? 2 : 0) + (modifiers.ctrl ? 4 : 0);
+
+function encodeTerminalKey(key: TerminalKey, modifiers: TerminalModifiers) {
+  if (!hasTerminalModifier(modifiers)) return key.plain;
+  const modifier = terminalModifierCode(modifiers);
+  if (key.code) return `\u001b[${key.code};${modifier}~`;
+  if (key.final) return `\u001b[${key.modifiedBase ?? '1'};${modifier}${key.final}`;
+  return key.plain;
+}
+
 function TerminalView({ active }: { active: boolean }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<XTerm | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const fitRef = useRef<(() => void) | null>(null);
+  const [keyboardOpen, setKeyboardOpen] = useState(false);
+  const [modifiers, setModifiers] = useState<TerminalModifiers>(emptyTerminalModifiers);
 
   useEffect(() => {
     if (!hostRef.current) return;
@@ -1171,19 +1226,80 @@ function TerminalView({ active }: { active: boolean }) {
     });
   }, [active]);
 
+  useEffect(() => {
+    requestAnimationFrame(() => {
+      fitRef.current?.();
+      const socket = socketRef.current;
+      const term = termRef.current;
+      if (socket?.readyState === WebSocket.OPEN && term) {
+        socket.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+      }
+    });
+  }, [keyboardOpen]);
+
   const send = (data: string) => {
     const socket = socketRef.current;
     if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'input', data }));
     termRef.current?.focus();
   };
 
+  const toggleModifier = (modifier: TerminalModifier) => {
+    setModifiers((current) => ({ ...current, [modifier]: !current[modifier] }));
+    termRef.current?.focus();
+  };
+
+  const sendTerminalKey = (key: TerminalKey) => {
+    send(encodeTerminalKey(key, modifiers));
+    setModifiers(emptyTerminalModifiers);
+  };
+
+  const sendEsc = () => {
+    send(modifiers.alt ? '\u001b\u001b' : '\u001b');
+    setModifiers(emptyTerminalModifiers);
+  };
+
   return (
     <div className="terminal-pane">
       <div className="terminal-host" ref={hostRef} />
       <div className="terminal-keys">
-        <button onClick={() => send('\u0003')}>Ctrl-C</button>
-        <button onClick={() => send('\u001b')}>Esc</button>
-        <button onClick={() => send('\t')}>Tab</button>
+        <div className="terminal-keys-header">
+          <button onClick={() => setKeyboardOpen((open) => !open)} title={keyboardOpen ? 'Hide keyboard' : 'Show keyboard'}>
+            {keyboardOpen ? <ChevronDown size={16} /> : <Keyboard size={16} />}
+          </button>
+          <button onClick={() => send('\u0003')}>Ctrl-C</button>
+          <button onClick={sendEsc}>Esc</button>
+          <button onClick={() => send('\t')}>Tab</button>
+        </div>
+        {keyboardOpen && (
+          <div className="terminal-key-grid">
+            <div className="terminal-key-group modifiers" aria-label="Terminal modifiers">
+              {(['ctrl', 'alt', 'shift'] as TerminalModifier[]).map((modifier) => (
+                <button
+                  key={modifier}
+                  className={modifiers[modifier] ? 'active' : ''}
+                  onClick={() => toggleModifier(modifier)}
+                  aria-pressed={modifiers[modifier]}
+                >
+                  {modifier === 'ctrl' ? 'Ctrl' : modifier === 'alt' ? 'Alt' : 'Shift'}
+                </button>
+              ))}
+            </div>
+            <div className="terminal-key-group" aria-label="Navigation keys">
+              {terminalNavKeys.map((key) => (
+                <button key={key.label} onClick={() => sendTerminalKey(key)}>
+                  {key.label}
+                </button>
+              ))}
+            </div>
+            <div className="terminal-key-group function-keys" aria-label="Function keys">
+              {terminalFunctionKeys.map((key) => (
+                <button key={key.label} onClick={() => sendTerminalKey(key)}>
+                  {key.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
