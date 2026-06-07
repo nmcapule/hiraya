@@ -126,6 +126,38 @@ func TestRawFilePreviewRejectsUnsupportedType(t *testing.T) {
 	}
 }
 
+func TestStaticPWAAssets(t *testing.T) {
+	srv, _ := newTestServer(t)
+	handler := srv.Routes()
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("index status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if !bytes.Contains(rr.Body.Bytes(), []byte(`rel="manifest"`)) {
+		t.Fatal("index does not link the web app manifest")
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/manifest.webmanifest", nil)
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("manifest status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if got := rr.Header().Get("Content-Type"); got != "application/manifest+json" {
+		t.Fatalf("manifest content type = %q", got)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/sw.js", nil)
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("service worker status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestRawFilePreviewRejectsDirectory(t *testing.T) {
 	srv, root := newTestServer(t)
 	if err := os.Mkdir(filepath.Join(root, "src"), 0o755); err != nil {

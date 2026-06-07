@@ -20,6 +20,10 @@ import (
 
 const maxEditableBytes = 2 << 20
 
+func init() {
+	_ = mime.AddExtensionType(".webmanifest", "application/manifest+json")
+}
+
 type Config struct {
 	Root  string
 	Shell string

@@ -39,6 +39,7 @@ import {
   Pencil,
   Plus,
   Redo2,
+  RotateCcw,
   Save,
   Search as SearchIcon,
   Terminal,
@@ -74,6 +75,7 @@ type EditorOptions = {
 
 type TerminalModifier = 'ctrl' | 'alt' | 'shift';
 type TerminalModifiers = Record<TerminalModifier, boolean>;
+type TerminalConnectionState = 'connecting' | 'open' | 'closed' | 'error';
 type TerminalKeyID =
   | 'ctrl-c'
   | 'esc'
@@ -106,6 +108,10 @@ type TerminalAction = {
   key?: TerminalKey;
   icon?: LucideIcon;
   hint?: string;
+};
+type TerminalHeaderControls = {
+  reset: () => void;
+  disabled: boolean;
 };
 
 type ReplaceRequest = {
@@ -178,7 +184,8 @@ function writeEditorOptions(options: EditorOptions) {
 }
 
 function viewportHeight(): number {
-  return window.visualViewport?.height ?? window.innerHeight;
+  const visualHeight = window.visualViewport?.height;
+  return visualHeight ? Math.min(visualHeight, window.innerHeight) : window.innerHeight;
 }
 
 function syncAppViewportHeight() {
@@ -390,6 +397,7 @@ function App() {
   const [editorOptions, setEditorOptions] = useState<EditorOptions>(readEditorOptions());
   const [editorMenuOpen, setEditorMenuOpen] = useState(false);
   const [searchPanelOpen, setSearchPanelOpen] = useState(false);
+  const [terminalHeaderControls, setTerminalHeaderControls] = useState<TerminalHeaderControls | null>(null);
   const editorMenuRef = useRef<HTMLDivElement | null>(null);
   const editorRef = useRef<EditorView | null>(null);
   const [editorView, setEditorView] = useState<EditorView | null>(null);
@@ -399,6 +407,9 @@ function App() {
   const handleEditorReady = useCallback((view: EditorView | null) => {
     editorRef.current = view;
     setEditorView(view);
+  }, []);
+  const handleTerminalHeaderControlsChange = useCallback((controls: TerminalHeaderControls | null) => {
+    setTerminalHeaderControls(controls);
   }, []);
 
   useEffect(() => onAppViewportChange(), []);
@@ -609,6 +620,11 @@ function App() {
               </button>
             </>
           )}
+          {mode === 'terminal' && (
+            <button className="icon-button" onClick={terminalHeaderControls?.reset} disabled={!terminalHeaderControls || terminalHeaderControls.disabled} title="Reset terminal">
+              <RotateCcw size={19} />
+            </button>
+          )}
           <div className="editor-menu-wrap" ref={editorMenuRef}>
             <button
               className={`icon-button ${editorMenuOpen ? 'active' : ''}`}
@@ -665,7 +681,7 @@ function App() {
         </div>
         {terminalStarted && (
           <div className={`workspace-panel ${mode === 'terminal' ? 'active' : ''}`} aria-hidden={mode !== 'terminal'} inert={mode !== 'terminal'}>
-            <TerminalView active={mode === 'terminal'} options={editorOptions} />
+            <TerminalView active={mode === 'terminal'} options={editorOptions} onHeaderControlsChange={handleTerminalHeaderControlsChange} />
           </div>
         )}
       </main>
@@ -1228,16 +1244,30 @@ function encodeTerminalKey(key: TerminalKey, modifiers: TerminalModifiers) {
   return key.plain;
 }
 
-function TerminalView({ active, options }: { active: boolean; options: EditorOptions }) {
+function TerminalView({
+  active,
+  options,
+  onHeaderControlsChange
+}: {
+  active: boolean;
+  options: EditorOptions;
+  onHeaderControlsChange: (controls: TerminalHeaderControls | null) => void;
+}) {
   const hostRef = useRef<HTMLDivElement | null>(null);
+  const fitHostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<XTerm | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const fitRef = useRef<(() => void) | null>(null);
+  const resetRef = useRef<(() => void) | null>(null);
+  const sessionRef = useRef(0);
+  const touchYRef = useRef<number | null>(null);
+  const touchRemainderRef = useRef(0);
+  const [connectionState, setConnectionState] = useState<TerminalConnectionState>('connecting');
   const [keyboardOpen, setKeyboardOpen] = useState(false);
   const [modifiers, setModifiers] = useState<TerminalModifiers>(emptyTerminalModifiers);
 
   useEffect(() => {
-    if (!hostRef.current) return;
+    if (!fitHostRef.current) return;
     let disposed = false;
     const term = new XTerm({
       cursorBlink: true,
@@ -1251,11 +1281,11 @@ function TerminalView({ active, options }: { active: boolean; options: EditorOpt
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
-    term.open(hostRef.current);
+    term.open(fitHostRef.current);
     termRef.current = term;
     const fitTerminal = () => {
-      if (disposed || !hostRef.current) return;
-      const bounds = hostRef.current.getBoundingClientRect();
+      if (disposed || !fitHostRef.current) return;
+      const bounds = fitHostRef.current.getBoundingClientRect();
       if (bounds.width < 1 || bounds.height < 1) return;
       try {
         fit.fit();
@@ -1267,23 +1297,58 @@ function TerminalView({ active, options }: { active: boolean; options: EditorOpt
     requestAnimationFrame(fitTerminal);
 
     const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-    const socket = new WebSocket(`${proto}://${window.location.host}/api/terminal`);
-    socketRef.current = socket;
-    socket.addEventListener('open', () => {
-      fitTerminal();
-      socket.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
-    });
-    socket.addEventListener('message', (event) => {
-      const msg = JSON.parse(event.data);
-      if (msg.type === 'output') term.write(msg.data);
-      if (msg.type === 'error') term.writeln(`\r\n${msg.data}`);
-    });
+    const openSocket = () => {
+      const previous = socketRef.current;
+      const session = sessionRef.current + 1;
+      sessionRef.current = session;
+      setConnectionState('connecting');
+      if (previous && previous.readyState !== WebSocket.CLOSED) previous.close();
+      const socket = new WebSocket(`${proto}://${window.location.host}/api/terminal`);
+      socketRef.current = socket;
+      const isCurrent = () => !disposed && sessionRef.current === session && socketRef.current === socket;
+      let endedNoticeWritten = false;
+      const writeEndedNotice = () => {
+        if (!isCurrent() || endedNoticeWritten) return;
+        endedNoticeWritten = true;
+        term.writeln('\r\nTerminal session ended. Use Reset to start a new terminal.');
+      };
+      socket.addEventListener('open', () => {
+        if (!isCurrent()) return;
+        setConnectionState('open');
+        fitTerminal();
+        socket.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+      });
+      socket.addEventListener('message', (event) => {
+        if (!isCurrent()) return;
+        const msg = JSON.parse(event.data);
+        if (msg.type === 'output') term.write(msg.data);
+        if (msg.type === 'error') term.writeln(`\r\n${msg.data}`);
+      });
+      socket.addEventListener('error', () => {
+        if (!isCurrent()) return;
+        setConnectionState('error');
+        writeEndedNotice();
+      });
+      socket.addEventListener('close', () => {
+        if (!isCurrent()) return;
+        setConnectionState((state) => (state === 'error' ? 'error' : 'closed'));
+        writeEndedNotice();
+      });
+    };
+    resetRef.current = () => {
+      term.reset();
+      term.clear();
+      openSocket();
+    };
+    openSocket();
     term.onData((data) => {
-      if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'input', data }));
+      const socket = socketRef.current;
+      if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'input', data }));
     });
     const resize = () => {
       fitTerminal();
-      if (socket.readyState === WebSocket.OPEN) {
+      const socket = socketRef.current;
+      if (socket?.readyState === WebSocket.OPEN) {
         socket.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
       }
     };
@@ -1291,8 +1356,9 @@ function TerminalView({ active, options }: { active: boolean; options: EditorOpt
     return () => {
       disposed = true;
       fitRef.current = null;
+      resetRef.current = null;
       stopViewportResize();
-      socket.close();
+      socketRef.current?.close();
       term.dispose();
     };
   }, []);
@@ -1325,6 +1391,47 @@ function TerminalView({ active, options }: { active: boolean; options: EditorOpt
   useEffect(() => {
     requestAnimationFrame(resizeTerminal);
   }, [keyboardOpen, resizeTerminal]);
+
+  const resetTerminal = useCallback(() => {
+    resetRef.current?.();
+    termRef.current?.focus();
+  }, []);
+  const connecting = connectionState === 'connecting';
+
+  useEffect(() => {
+    onHeaderControlsChange({
+      reset: resetTerminal,
+      disabled: connecting
+    });
+    return () => onHeaderControlsChange(null);
+  }, [connecting, onHeaderControlsChange, resetTerminal]);
+
+  const handleTerminalTouchStart = (event: TouchEvent) => {
+    touchYRef.current = event.touches[0]?.clientY ?? null;
+    touchRemainderRef.current = 0;
+  };
+
+  const handleTerminalTouchMove = (event: TouchEvent) => {
+    const term = termRef.current;
+    const previousY = touchYRef.current;
+    const currentY = event.touches[0]?.clientY;
+    if (!term || previousY == null || currentY == null) return;
+    const delta = previousY - currentY + touchRemainderRef.current;
+    const lineHeight = Math.max(10, Number(term.options.fontSize) || options.fontSize);
+    const lines = delta / lineHeight;
+    const wholeLines = lines > 0 ? Math.floor(lines) : Math.ceil(lines);
+    if (wholeLines !== 0) {
+      term.scrollLines(wholeLines);
+      touchRemainderRef.current = delta - wholeLines * lineHeight;
+      touchYRef.current = currentY;
+      event.preventDefault();
+    }
+  };
+
+  const handleTerminalTouchEnd = () => {
+    touchYRef.current = null;
+    touchRemainderRef.current = 0;
+  };
 
   const send = (data: string) => {
     const socket = socketRef.current;
@@ -1362,7 +1469,16 @@ function TerminalView({ active, options }: { active: boolean; options: EditorOpt
 
   return (
     <div className="terminal-pane">
-      <div className="terminal-host" ref={hostRef} />
+      <div
+        className="terminal-host"
+        ref={hostRef}
+        onTouchStart={handleTerminalTouchStart}
+        onTouchMove={handleTerminalTouchMove}
+        onTouchEnd={handleTerminalTouchEnd}
+        onTouchCancel={handleTerminalTouchEnd}
+      >
+        <div className="terminal-fit-host" ref={fitHostRef} />
+      </div>
       <div className="terminal-keys">
         <div className="terminal-keys-header">
           <button className="terminal-key-button icon-only" onClick={() => setKeyboardOpen((open) => !open)} title={keyboardOpen ? 'Hide keyboard' : 'Show keyboard'}>
@@ -1424,3 +1540,11 @@ createRoot(document.getElementById('root')!).render(
     <App />
   </React.StrictMode>
 );
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch((error) => {
+      console.warn('Service worker registration failed', error);
+    });
+  });
+}

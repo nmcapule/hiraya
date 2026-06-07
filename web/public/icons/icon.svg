@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Hiraya">
+  <rect width="512" height="512" rx="96" fill="#111827"/>
+  <path d="M128 140h224c26.5 0 48 21.5 48 48v132c0 26.5-21.5 48-48 48H128c-26.5 0-48-21.5-48-48V188c0-26.5 21.5-48 48-48Z" fill="#f8fafc"/>
+  <path d="M148 204h80v34h-80v-34Zm114 0h104v34H262v-34ZM148 273h218v34H148v-34Z" fill="#111827"/>
+  <path d="M190 410h132" stroke="#10b981" stroke-width="34" stroke-linecap="round"/>
+</svg>

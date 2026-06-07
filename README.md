@@ -69,6 +69,11 @@ After a production build, run the compiled binary directly:
 The app serves the production React UI, file API, and terminal WebSocket from the
 same port.
 
+Hiraya is also installable as a PWA from supported browsers when served from a
+secure origin, such as localhost during development or the exe.dev HTTPS proxy.
+Open the app in the browser and use the browser's install action to add it to
+the home screen or app launcher.
+
 ## Usage Guide
 
 1. Start Hiraya with `ROOT` pointed at the workspace you want to edit.
