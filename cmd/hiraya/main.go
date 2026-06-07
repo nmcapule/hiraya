@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"hiraya/internal/server"
+	"github.com/nmcapule/hiraya/internal/server"
 )
 
 func main() {

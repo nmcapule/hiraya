@@ -16,7 +16,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"hiraya/internal/server/static"
+	"github.com/nmcapule/hiraya/internal/server/static"
 )
 
 const maxEditableBytes = 2 << 20

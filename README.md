@@ -33,8 +33,7 @@ not include built-in authentication.
 ## Requirements
 
 - Go
-- Bun
-- Make
+- Bun and Make for local frontend development or production builds
 
 ## Build
 
@@ -52,6 +51,19 @@ make build-dev
 ```
 
 ## Run
+
+### Direct from GitHub
+
+Run Hiraya directly with Go:
+
+```sh
+go run github.com/nmcapule/hiraya/cmd/hiraya@main --root /path/to/workspace --addr :8080
+```
+
+Use a tagged version instead of `@main` when one is available for a reproducible
+run.
+
+### Local Development
 
 ```sh
 ROOT=/path/to/workspace ADDR=:8080 make dev
