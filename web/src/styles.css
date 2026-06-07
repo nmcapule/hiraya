@@ -563,26 +563,32 @@ button {
 
 .terminal-keys {
   flex-direction: column;
-  overflow-x: visible;
+  gap: 5px;
+  overflow-x: hidden;
+  padding: 5px 6px calc(5px + env(safe-area-inset-bottom, 0px));
 }
 
 .terminal-keys-header,
 .terminal-key-group {
   display: flex;
-  gap: 6px;
+  gap: 5px;
   overflow-x: auto;
+}
+
+.terminal-keys-header {
+  align-items: center;
 }
 
 .terminal-key-grid {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 5px;
 }
 
 .terminal-key-pad {
   display: grid;
-  gap: 6px;
-  grid-template-columns: repeat(4, minmax(62px, 1fr));
+  gap: 5px;
+  grid-template-columns: repeat(4, minmax(54px, 1fr));
   max-width: 520px;
 }
 
@@ -598,41 +604,81 @@ button {
   border: 1px solid #d1ccbf;
   border-radius: 8px;
   flex: 0 0 auto;
-  min-height: 38px;
-  min-width: 42px;
-  padding: 0 12px;
+  min-height: 32px;
+  min-width: 36px;
+  padding: 0 9px;
 }
 
 .terminal-keys .terminal-key-button {
   align-items: center;
   display: inline-flex;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 750;
-  gap: 5px;
+  gap: 4px;
   justify-content: center;
   line-height: 1;
-  min-width: 50px;
-  padding: 0 10px;
+  min-width: 44px;
+  padding: 0 8px;
 }
 
 .terminal-keys .terminal-key-button.icon-only {
-  min-width: 42px;
+  min-width: 36px;
   padding: 0;
 }
 
 .terminal-keys .terminal-key-button.nav-key {
   flex: 1 1 auto;
-  min-height: 52px;
+  min-height: 40px;
   min-width: 0;
 }
 
 .terminal-keys .terminal-key-button.function-key {
-  min-width: 48px;
+  min-width: 42px;
 }
 
 .terminal-keys .terminal-key-button.modifier {
   background: #f5f3ed;
-  min-width: 64px;
+  min-width: 52px;
+}
+
+.terminal-keys .terminal-key-button.terminal-mode-toggle {
+  gap: 6px;
+  min-width: 72px;
+}
+
+.terminal-mode-indicator {
+  background: #d1ccbf;
+  border-radius: 999px;
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 16px;
+  padding: 2px;
+  position: relative;
+  width: 30px;
+}
+
+.terminal-mode-indicator::after {
+  background: #ffffff;
+  border-radius: 999px;
+  content: "";
+  height: 12px;
+  left: 2px;
+  position: absolute;
+  top: 2px;
+  transition: transform 120ms ease;
+  width: 12px;
+}
+
+.terminal-mode-indicator.full::after {
+  transform: translateX(7px);
+}
+
+.terminal-mode-indicator.byobu::after {
+  transform: translateX(14px);
+}
+
+.terminal-keys .terminal-key-button.byobu-key {
+  min-width: 58px;
 }
 
 .terminal-keys .terminal-key-button span {
@@ -654,11 +700,20 @@ button {
 }
 
 .terminal-key-group.function-keys button {
-  min-width: 50px;
+  min-width: 42px;
+}
+
+.terminal-key-group.byobu-keys {
+  flex-wrap: wrap;
+  overflow-x: visible;
 }
 
 .app.dark .terminal-keys .terminal-key-button.modifier {
   background: #24231b;
+}
+
+.app.dark .terminal-mode-indicator {
+  background: #4a453a;
 }
 
 .app.dark .terminal-keys button.active {

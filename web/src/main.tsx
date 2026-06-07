@@ -71,11 +71,17 @@ type EditorOptions = {
   fontSize: number;
   darkMode: boolean;
   lineNumbers: boolean;
+  terminalKeybarMode: TerminalKeybarMode;
   terminalCollapsedKeys: TerminalKeyID[];
 };
 
+type TerminalKeybarMode = 'collapsed' | 'full' | 'byobu';
 type TerminalModifier = 'ctrl' | 'alt' | 'shift';
 type TerminalModifiers = Record<TerminalModifier, boolean>;
+type TerminalKeyPointerEvent = {
+  pointerType: string;
+  preventDefault: () => void;
+};
 type TerminalConnectionState = 'connecting' | 'open' | 'closed' | 'error';
 type TerminalKeyID =
   | 'ctrl-c'
@@ -110,6 +116,13 @@ type TerminalAction = {
   icon?: LucideIcon;
   hint?: string;
 };
+type ByobuAction = {
+  id: string;
+  label: string;
+  key: TerminalKey;
+  modifiers?: Partial<TerminalModifiers>;
+  hint?: string;
+};
 type TerminalHeaderControls = {
   reset: () => void;
   disabled: boolean;
@@ -142,12 +155,20 @@ type RootResponse = {
 };
 
 const defaultTerminalCollapsedKeys: TerminalKeyID[] = ['ctrl-c', 'esc', 'tab'];
+const defaultTerminalKeybarMode: TerminalKeybarMode = 'collapsed';
+const terminalKeybarModes: TerminalKeybarMode[] = ['collapsed', 'full', 'byobu'];
+const terminalKeybarModeLabels: Record<TerminalKeybarMode, string> = {
+  collapsed: 'Min',
+  full: 'Full',
+  byobu: 'Byobu'
+};
 
 const defaultEditorOptions: EditorOptions = {
   lineWrap: true,
   fontSize: 14,
   darkMode: false,
   lineNumbers: true,
+  terminalKeybarMode: defaultTerminalKeybarMode,
   terminalCollapsedKeys: defaultTerminalCollapsedKeys
 };
 
@@ -163,6 +184,12 @@ function readTerminalCollapsedKeys(value: unknown): TerminalKeyID[] {
   return keys.length ? keys : defaultTerminalCollapsedKeys;
 }
 
+function readTerminalKeybarMode(value: unknown): TerminalKeybarMode {
+  return typeof value === 'string' && terminalKeybarModes.includes(value as TerminalKeybarMode)
+    ? (value as TerminalKeybarMode)
+    : defaultTerminalKeybarMode;
+}
+
 function readEditorOptions(): EditorOptions {
   try {
     const raw = window.localStorage.getItem(editorOptionsKey);
@@ -173,6 +200,7 @@ function readEditorOptions(): EditorOptions {
       fontSize: typeof parsed.fontSize === 'number' ? clampFontSize(parsed.fontSize) : defaultEditorOptions.fontSize,
       darkMode: typeof parsed.darkMode === 'boolean' ? parsed.darkMode : defaultEditorOptions.darkMode,
       lineNumbers: typeof parsed.lineNumbers === 'boolean' ? parsed.lineNumbers : defaultEditorOptions.lineNumbers,
+      terminalKeybarMode: readTerminalKeybarMode(parsed.terminalKeybarMode),
       terminalCollapsedKeys: readTerminalCollapsedKeys(parsed.terminalCollapsedKeys)
     };
   } catch {
@@ -729,7 +757,12 @@ function App() {
         </div>
         {terminalStarted && (
           <div key={terminalSessionKey} className={`workspace-panel ${mode === 'terminal' ? 'active' : ''}`} aria-hidden={mode !== 'terminal'} inert={mode !== 'terminal'}>
-            <TerminalView active={mode === 'terminal'} options={editorOptions} onHeaderControlsChange={handleTerminalHeaderControlsChange} />
+            <TerminalView
+              active={mode === 'terminal'}
+              options={editorOptions}
+              onOptionsChange={setEditorOptions}
+              onHeaderControlsChange={handleTerminalHeaderControlsChange}
+            />
           </div>
         )}
       </main>
@@ -1281,6 +1314,22 @@ const terminalCollapsedActions: TerminalAction[] = [
 ];
 const terminalCollapsedActionByID = new Map(terminalCollapsedActions.map((action) => [action.id, action]));
 const terminalCollapsedKeyIDs = new Set<TerminalKeyID>(terminalCollapsedActions.map((action) => action.id));
+const terminalFunctionKeyByID = new Map(terminalFunctionKeys.map((key) => [key.id, key]));
+const terminalPageUpKey = terminalNavKeys.find((key) => key.id === 'pgup')!;
+const terminalPageDownKey = terminalNavKeys.find((key) => key.id === 'pgdn')!;
+const byobuActions: ByobuAction[] = [
+  { id: 'new', label: 'New', key: terminalFunctionKeyByID.get('f2')!, hint: 'New byobu window' },
+  { id: 'prev', label: 'Prev', key: terminalFunctionKeyByID.get('f3')!, hint: 'Previous byobu window' },
+  { id: 'next', label: 'Next', key: terminalFunctionKeyByID.get('f4')!, hint: 'Next byobu window' },
+  { id: 'detach', label: 'Detach', key: terminalFunctionKeyByID.get('f6')!, hint: 'Detach byobu session' },
+  { id: 'scroll', label: 'Scroll', key: terminalFunctionKeyByID.get('f7')!, hint: 'Byobu scrollback' },
+  { id: 'rename', label: 'Rename', key: terminalFunctionKeyByID.get('f8')!, hint: 'Rename byobu window' },
+  { id: 'menu', label: 'Menu', key: terminalFunctionKeyByID.get('f9')!, hint: 'Byobu menu' },
+  { id: 'split-h', label: 'Split H', key: terminalFunctionKeyByID.get('f2')!, modifiers: { shift: true }, hint: 'Horizontal split' },
+  { id: 'split-v', label: 'Split V', key: terminalFunctionKeyByID.get('f2')!, modifiers: { ctrl: true }, hint: 'Vertical split' },
+  { id: 'pgup', label: 'PgUp', key: terminalPageUpKey, hint: 'Page up' },
+  { id: 'pgdn', label: 'PgDn', key: terminalPageDownKey, hint: 'Page down' }
+];
 
 const hasTerminalModifier = (modifiers: TerminalModifiers) => modifiers.ctrl || modifiers.alt || modifiers.shift;
 
@@ -1298,10 +1347,12 @@ function encodeTerminalKey(key: TerminalKey, modifiers: TerminalModifiers) {
 function TerminalView({
   active,
   options,
+  onOptionsChange,
   onHeaderControlsChange
 }: {
   active: boolean;
   options: EditorOptions;
+  onOptionsChange: (options: EditorOptions) => void;
   onHeaderControlsChange: (controls: TerminalHeaderControls | null) => void;
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -1314,8 +1365,10 @@ function TerminalView({
   const touchYRef = useRef<number | null>(null);
   const touchRemainderRef = useRef(0);
   const [connectionState, setConnectionState] = useState<TerminalConnectionState>('connecting');
-  const [keyboardOpen, setKeyboardOpen] = useState(false);
+  const [softKeyboardOpen, setSoftKeyboardOpen] = useState(false);
   const [modifiers, setModifiers] = useState<TerminalModifiers>(emptyTerminalModifiers);
+  const modifiersRef = useRef<TerminalModifiers>(emptyTerminalModifiers);
+  const isCoarsePointer = () => window.matchMedia('(pointer: coarse)').matches;
 
   useEffect(() => {
     if (!fitHostRef.current) return;
@@ -1435,17 +1488,17 @@ function TerminalView({
     requestAnimationFrame(() => {
       const term = termRef.current;
       resizeTerminal();
-      term?.focus();
+      if (!isCoarsePointer()) term?.focus();
     });
   }, [active, resizeTerminal]);
 
   useEffect(() => {
     requestAnimationFrame(resizeTerminal);
-  }, [keyboardOpen, resizeTerminal]);
+  }, [options.terminalKeybarMode, resizeTerminal]);
 
   const resetTerminal = useCallback(() => {
     resetRef.current?.();
-    termRef.current?.focus();
+    if (!isCoarsePointer()) termRef.current?.focus();
   }, []);
   const connecting = connectionState === 'connecting';
 
@@ -1469,11 +1522,16 @@ function TerminalView({
     if (!term || previousY == null || currentY == null) return;
     const delta = previousY - currentY + touchRemainderRef.current;
     const lineHeight = Math.max(10, Number(term.options.fontSize) || options.fontSize);
-    const lines = delta / lineHeight;
+    const scrollUnit = options.terminalKeybarMode === 'byobu' ? Math.max(48, lineHeight * 3) : lineHeight;
+    const lines = delta / scrollUnit;
     const wholeLines = lines > 0 ? Math.floor(lines) : Math.ceil(lines);
     if (wholeLines !== 0) {
-      term.scrollLines(wholeLines);
-      touchRemainderRef.current = delta - wholeLines * lineHeight;
+      if (options.terminalKeybarMode === 'byobu') {
+        sendInput(encodeTerminalKey(wholeLines > 0 ? terminalPageDownKey : terminalPageUpKey, emptyTerminalModifiers));
+      } else {
+        term.scrollLines(wholeLines);
+      }
+      touchRemainderRef.current = delta - wholeLines * scrollUnit;
       touchYRef.current = currentY;
       event.preventDefault();
     }
@@ -1484,20 +1542,48 @@ function TerminalView({
     touchRemainderRef.current = 0;
   };
 
-  const send = (data: string) => {
+  const sendInput = (data: string) => {
     const socket = socketRef.current;
     if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'input', data }));
-    termRef.current?.focus();
   };
+
+  const focusTerminal = () => {
+    termRef.current?.focus();
+    setSoftKeyboardOpen(true);
+    requestAnimationFrame(resizeTerminal);
+  };
+
+  const blurTerminal = () => {
+    const term = termRef.current;
+    (term as { blur?: () => void } | null)?.blur?.();
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    setSoftKeyboardOpen(false);
+    requestAnimationFrame(resizeTerminal);
+  };
+
+  const toggleSoftKeyboard = () => {
+    if (softKeyboardOpen) {
+      blurTerminal();
+    } else {
+      focusTerminal();
+    }
+  };
+
+  const updateModifiers = (next: TerminalModifiers) => {
+    modifiersRef.current = next;
+    setModifiers(next);
+  };
+
+  const resetModifiers = () => updateModifiers(emptyTerminalModifiers);
 
   const toggleModifier = (modifier: TerminalModifier) => {
-    setModifiers((current) => ({ ...current, [modifier]: !current[modifier] }));
-    termRef.current?.focus();
+    const current = modifiersRef.current;
+    updateModifiers({ ...current, [modifier]: !current[modifier] });
   };
 
-  const sendTerminalKey = (key: TerminalKey) => {
-    send(encodeTerminalKey(key, modifiers));
-    setModifiers(emptyTerminalModifiers);
+  const sendTerminalKey = (key: TerminalKey, nextModifiers = modifiersRef.current) => {
+    sendInput(encodeTerminalKey(key, nextModifiers));
+    resetModifiers();
   };
 
   const sendAction = (action: TerminalAction) => {
@@ -1505,18 +1591,40 @@ function TerminalView({
       sendTerminalKey(action.key);
       return;
     }
-    send(action.data ?? '');
-    setModifiers(emptyTerminalModifiers);
+    sendInput(action.data ?? '');
+    resetModifiers();
   };
 
   const sendEsc = () => {
-    send(modifiers.alt ? '\u001b\u001b' : '\u001b');
-    setModifiers(emptyTerminalModifiers);
+    sendInput(modifiersRef.current.alt ? '\u001b\u001b' : '\u001b');
+    resetModifiers();
+  };
+
+  const sendByobuAction = (action: ByobuAction) => {
+    sendTerminalKey(action.key, { ...emptyTerminalModifiers, ...action.modifiers });
+  };
+
+  const setKeybarMode = (terminalKeybarMode: TerminalKeybarMode) => {
+    onOptionsChange({ ...options, terminalKeybarMode });
+    resetModifiers();
+    handleTerminalTouchEnd();
+  };
+
+  const preventTerminalKeyFocus = (event: TerminalKeyPointerEvent) => {
+    if (event.pointerType === 'touch' || isCoarsePointer()) event.preventDefault();
+  };
+
+  const toggleKeybarMode = () => {
+    const nextIndex = (terminalKeybarModes.indexOf(options.terminalKeybarMode) + 1) % terminalKeybarModes.length;
+    setKeybarMode(terminalKeybarModes[nextIndex]);
   };
 
   const collapsedActions = options.terminalCollapsedKeys
     .map((keyID) => terminalCollapsedActionByID.get(keyID))
     .filter((action): action is TerminalAction => !!action);
+  const showCollapsedKeys = options.terminalKeybarMode === 'collapsed';
+  const showFullKeys = options.terminalKeybarMode === 'full';
+  const showByobuKeys = options.terminalKeybarMode === 'byobu';
 
   return (
     <div className="terminal-pane">
@@ -1532,26 +1640,43 @@ function TerminalView({
       </div>
       <div className="terminal-keys">
         <div className="terminal-keys-header">
-          <button className="terminal-key-button icon-only" onClick={() => setKeyboardOpen((open) => !open)} title={keyboardOpen ? 'Hide keyboard' : 'Show keyboard'}>
-            {keyboardOpen ? <ChevronDown size={16} /> : <Keyboard size={16} />}
+          <button className={`terminal-key-button icon-only ${softKeyboardOpen ? 'active' : ''}`} onClick={toggleSoftKeyboard} title={softKeyboardOpen ? 'Hide keyboard' : 'Show keyboard'}>
+            {softKeyboardOpen ? <ChevronDown size={16} /> : <Keyboard size={16} />}
           </button>
-          {collapsedActions.map((action) => {
+          <button
+            className="terminal-key-button terminal-mode-toggle"
+            onPointerDown={preventTerminalKeyFocus}
+            onClick={toggleKeybarMode}
+            title="Switch terminal keybar mode"
+            aria-label={`Terminal keybar mode: ${terminalKeybarModeLabels[options.terminalKeybarMode]}`}
+          >
+            <span className={`terminal-mode-indicator ${options.terminalKeybarMode}`} aria-hidden="true" />
+            <span>{terminalKeybarModeLabels[options.terminalKeybarMode]}</span>
+          </button>
+          {showCollapsedKeys && collapsedActions.map((action) => {
             const Icon = action.icon;
             return (
-              <button key={action.id} className="terminal-key-button" onClick={() => (action.id === 'esc' ? sendEsc() : sendAction(action))} title={action.hint ?? action.label}>
+              <button
+                key={action.id}
+                className="terminal-key-button"
+                onPointerDown={preventTerminalKeyFocus}
+                onClick={() => (action.id === 'esc' ? sendEsc() : sendAction(action))}
+                title={action.hint ?? action.label}
+              >
                 {Icon && <Icon size={16} />}
                 <span>{action.label}</span>
               </button>
             );
           })}
         </div>
-        {keyboardOpen && (
+        {showFullKeys && (
           <div className="terminal-key-grid">
             <div className="terminal-key-group modifiers" aria-label="Terminal modifiers">
               {(['ctrl', 'alt', 'shift'] as TerminalModifier[]).map((modifier) => (
                 <button
                   key={modifier}
                   className={`terminal-key-button modifier ${modifiers[modifier] ? 'active' : ''}`}
+                  onPointerDown={preventTerminalKeyFocus}
                   onClick={() => toggleModifier(modifier)}
                   aria-pressed={modifiers[modifier]}
                 >
@@ -1563,7 +1688,13 @@ function TerminalView({
               {terminalNavKeys.map((key) => {
                 const Icon = key.icon;
                 return (
-                  <button key={key.label} className="terminal-key-button nav-key" onClick={() => sendTerminalKey(key)} title={key.hint ?? key.label}>
+                  <button
+                    key={key.label}
+                    className="terminal-key-button nav-key"
+                    onPointerDown={preventTerminalKeyFocus}
+                    onClick={() => sendTerminalKey(key)}
+                    title={key.hint ?? key.label}
+                  >
                     {Icon && <Icon size={18} />}
                     <span>{key.label}</span>
                   </button>
@@ -1572,11 +1703,31 @@ function TerminalView({
             </div>
             <div className="terminal-key-group function-keys" aria-label="Function keys">
               {terminalFunctionKeys.map((key) => (
-                <button key={key.label} className="terminal-key-button function-key" onClick={() => sendTerminalKey(key)}>
+                <button
+                  key={key.label}
+                  className="terminal-key-button function-key"
+                  onPointerDown={preventTerminalKeyFocus}
+                  onClick={() => sendTerminalKey(key)}
+                >
                   <span>{key.label}</span>
                 </button>
               ))}
             </div>
+          </div>
+        )}
+        {showByobuKeys && (
+          <div className="terminal-key-group byobu-keys" aria-label="Byobu keys">
+            {byobuActions.map((action) => (
+              <button
+                key={action.id}
+                className="terminal-key-button byobu-key"
+                onPointerDown={preventTerminalKeyFocus}
+                onClick={() => sendByobuAction(action)}
+                title={action.hint ?? action.label}
+              >
+                <span>{action.label}</span>
+              </button>
+            ))}
           </div>
         )}
       </div>
