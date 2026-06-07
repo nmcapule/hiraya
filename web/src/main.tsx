@@ -1344,6 +1344,34 @@ function encodeTerminalKey(key: TerminalKey, modifiers: TerminalModifiers) {
   return key.plain;
 }
 
+const terminalCtrlPunctuation: Record<string, string> = {
+  ' ': '\u0000',
+  '@': '\u0000',
+  '[': '\u001b',
+  '\\': '\u001c',
+  ']': '\u001d',
+  '^': '\u001e',
+  '_': '\u001f',
+  '?': '\u007f'
+};
+
+function encodeTerminalInputData(data: string, modifiers: TerminalModifiers) {
+  if (!hasTerminalModifier(modifiers)) return data;
+  const chars = Array.from(data);
+  if (chars.length !== 1) return data;
+
+  let encoded = data;
+  if (modifiers.ctrl) {
+    const lower = chars[0].toLowerCase();
+    if (lower >= 'a' && lower <= 'z') {
+      encoded = String.fromCharCode(lower.charCodeAt(0) - 96);
+    } else if (Object.prototype.hasOwnProperty.call(terminalCtrlPunctuation, chars[0])) {
+      encoded = terminalCtrlPunctuation[chars[0]];
+    }
+  }
+  return modifiers.alt ? `\u001b${encoded}` : encoded;
+}
+
 function TerminalView({
   active,
   options,
@@ -1446,8 +1474,7 @@ function TerminalView({
     };
     openSocket();
     term.onData((data) => {
-      const socket = socketRef.current;
-      if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'input', data }));
+      sendTerminalInputData(data);
     });
     const resize = () => {
       fitTerminal();
@@ -1547,6 +1574,12 @@ function TerminalView({
     if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'input', data }));
   };
 
+  const sendTerminalInputData = (data: string) => {
+    const current = modifiersRef.current;
+    sendInput(encodeTerminalInputData(data, current));
+    if (hasTerminalModifier(current)) resetModifiers();
+  };
+
   const focusTerminal = () => {
     termRef.current?.focus();
     setSoftKeyboardOpen(true);
@@ -1639,36 +1672,6 @@ function TerminalView({
         <div className="terminal-fit-host" ref={fitHostRef} />
       </div>
       <div className="terminal-keys">
-        <div className="terminal-keys-header">
-          <button className={`terminal-key-button icon-only ${softKeyboardOpen ? 'active' : ''}`} onClick={toggleSoftKeyboard} title={softKeyboardOpen ? 'Hide keyboard' : 'Show keyboard'}>
-            {softKeyboardOpen ? <ChevronDown size={16} /> : <Keyboard size={16} />}
-          </button>
-          <button
-            className="terminal-key-button terminal-mode-toggle"
-            onPointerDown={preventTerminalKeyFocus}
-            onClick={toggleKeybarMode}
-            title="Switch terminal keybar mode"
-            aria-label={`Terminal keybar mode: ${terminalKeybarModeLabels[options.terminalKeybarMode]}`}
-          >
-            <span className={`terminal-mode-indicator ${options.terminalKeybarMode}`} aria-hidden="true" />
-            <span>{terminalKeybarModeLabels[options.terminalKeybarMode]}</span>
-          </button>
-          {showCollapsedKeys && collapsedActions.map((action) => {
-            const Icon = action.icon;
-            return (
-              <button
-                key={action.id}
-                className="terminal-key-button"
-                onPointerDown={preventTerminalKeyFocus}
-                onClick={() => (action.id === 'esc' ? sendEsc() : sendAction(action))}
-                title={action.hint ?? action.label}
-              >
-                {Icon && <Icon size={16} />}
-                <span>{action.label}</span>
-              </button>
-            );
-          })}
-        </div>
         {showFullKeys && (
           <div className="terminal-key-grid">
             <div className="terminal-key-group modifiers" aria-label="Terminal modifiers">
@@ -1730,6 +1733,36 @@ function TerminalView({
             ))}
           </div>
         )}
+        <div className="terminal-keys-header">
+          <button className={`terminal-key-button icon-only ${softKeyboardOpen ? 'active' : ''}`} onPointerDown={preventTerminalKeyFocus} onClick={toggleSoftKeyboard} title={softKeyboardOpen ? 'Hide keyboard' : 'Show keyboard'}>
+            {softKeyboardOpen ? <ChevronDown size={16} /> : <Keyboard size={16} />}
+          </button>
+          <button
+            className="terminal-key-button terminal-mode-toggle"
+            onPointerDown={preventTerminalKeyFocus}
+            onClick={toggleKeybarMode}
+            title="Switch terminal keybar mode"
+            aria-label={`Terminal keybar mode: ${terminalKeybarModeLabels[options.terminalKeybarMode]}`}
+          >
+            <span className={`terminal-mode-indicator ${options.terminalKeybarMode}`} aria-hidden="true" />
+            <span>{terminalKeybarModeLabels[options.terminalKeybarMode]}</span>
+          </button>
+          {showCollapsedKeys && collapsedActions.map((action) => {
+            const Icon = action.icon;
+            return (
+              <button
+                key={action.id}
+                className="terminal-key-button"
+                onPointerDown={preventTerminalKeyFocus}
+                onClick={() => (action.id === 'esc' ? sendEsc() : sendAction(action))}
+                title={action.hint ?? action.label}
+              >
+                {Icon && <Icon size={16} />}
+                <span>{action.label}</span>
+              </button>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
