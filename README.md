@@ -57,11 +57,14 @@ make build-dev
 Run Hiraya directly with Go:
 
 ```sh
-go run github.com/nmcapule/hiraya/cmd/hiraya@main --root /path/to/workspace --addr :8080
+go run github.com/nmcapule/hiraya/cmd/hiraya@latest --root /path/to/workspace --addr :8080
 ```
 
-Use a tagged version instead of `@main` when one is available for a reproducible
-run.
+Use a tagged version for a reproducible run:
+
+```sh
+go run github.com/nmcapule/hiraya/cmd/hiraya@v0.1.0 --root /path/to/workspace --addr :8080
+```
 
 ### Local Development
 
