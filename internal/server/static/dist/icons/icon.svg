@@ -1,6 +1,18 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Hiraya">
-  <rect width="512" height="512" rx="96" fill="#111827"/>
-  <path d="M128 140h224c26.5 0 48 21.5 48 48v132c0 26.5-21.5 48-48 48H128c-26.5 0-48-21.5-48-48V188c0-26.5 21.5-48 48-48Z" fill="#f8fafc"/>
-  <path d="M148 204h80v34h-80v-34Zm114 0h104v34H262v-34ZM148 273h218v34H148v-34Z" fill="#111827"/>
-  <path d="M190 410h132" stroke="#10b981" stroke-width="34" stroke-linecap="round"/>
+  <rect width="512" height="512" rx="96" fill="#181812"/>
+  <path d="M175 64h162c37.6 0 68 30.4 68 68v248c0 37.6-30.4 68-68 68H175c-37.6 0-68-30.4-68-68V132c0-37.6 30.4-68 68-68Z" fill="#eee9dc"/>
+  <path d="M137 138c0-25.4 20.6-46 46-46h132c25.4 0 46 20.6 46 46v284H137V138Z" fill="#202018"/>
+  <path d="M137 138c0-25.4 20.6-46 46-46h132c25.4 0 46 20.6 46 46v40H137v-40Z" fill="#2a291f"/>
+  <path d="M214 112h74" stroke="#706d64" stroke-width="12" stroke-linecap="round"/>
+  <path d="M137 178h224" stroke="#3a372f" stroke-width="8"/>
+  <path d="M208 262a48 48 0 0 1 96 0" fill="#d6a21f"/>
+  <path d="M181 264h150" stroke="#eee9dc" stroke-width="16" stroke-linecap="round"/>
+  <path d="M256 210v-28" stroke="#d6a21f" stroke-width="14" stroke-linecap="round"/>
+  <path d="M216 224l-20-20" stroke="#d6a21f" stroke-width="14" stroke-linecap="round"/>
+  <path d="M296 224l20-20" stroke="#d6a21f" stroke-width="14" stroke-linecap="round"/>
+  <path d="M178 314l45 38-45 38" fill="none" stroke="#9ad7b7" stroke-width="28" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M250 390h74" stroke="#eee9dc" stroke-width="28" stroke-linecap="round"/>
+  <path d="M250 314h62" stroke="#706d64" stroke-width="20" stroke-linecap="round"/>
+  <path d="M250 350h36" stroke="#706d64" stroke-width="20" stroke-linecap="round"/>
+  <circle cx="256" cy="451" r="10" fill="#706d64"/>
 </svg>

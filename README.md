@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="web/public/icons/icon.svg" alt="Hiraya logo" width="96" height="96">
+</p>
+
 # Hiraya
 
 Hiraya is a mobile-focused web code editor for working on a server-side
