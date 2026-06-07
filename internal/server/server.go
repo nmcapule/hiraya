@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"unicode"
 	"unicode/utf8"
 
@@ -30,22 +31,16 @@ type Config struct {
 }
 
 type Server struct {
+	mu    sync.RWMutex
 	root  string
 	shell string
 }
 
 func New(cfg Config) (*Server, error) {
-	if cfg.Root == "" {
-		return nil, errors.New("root is required")
-	}
 	if cfg.Shell == "" {
 		return nil, errors.New("shell is required")
 	}
-	root, err := filepath.Abs(cfg.Root)
-	if err != nil {
-		return nil, err
-	}
-	root, err = filepath.EvalSymlinks(root)
+	root, err := normalizeConfigRoot(cfg.Root)
 	if err != nil {
 		return nil, err
 	}
@@ -54,6 +49,8 @@ func New(cfg Config) (*Server, error) {
 
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/root", s.handleGetRoot)
+	mux.HandleFunc("PUT /api/root", s.handleSetRoot)
 	mux.HandleFunc("GET /api/tree", s.handleTree)
 	mux.HandleFunc("GET /api/file", s.handleReadFile)
 	mux.HandleFunc("GET /api/raw", s.handleRawFile)
@@ -98,8 +95,42 @@ type replaceResponse struct {
 	Matches      []replaceMatch `json:"matches"`
 }
 
+func (s *Server) rootSnapshot() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.root
+}
+
+func (s *Server) setRoot(root string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.root = root
+}
+
+func (s *Server) handleGetRoot(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"root": s.rootSnapshot()})
+}
+
+func (s *Server) handleSetRoot(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Root string `json:"root"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	root, err := normalizeRoot(body.Root)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	s.setRoot(root)
+	writeJSON(w, http.StatusOK, map[string]string{"root": root})
+}
+
 func (s *Server) handleTree(w http.ResponseWriter, r *http.Request) {
-	target, rel, err := s.resolve(r.URL.Query().Get("path"))
+	root := s.rootSnapshot()
+	target, rel, err := resolve(root, r.URL.Query().Get("path"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -150,7 +181,8 @@ func (s *Server) handleTree(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleReadFile(w http.ResponseWriter, r *http.Request) {
-	target, rel, err := s.resolve(r.URL.Query().Get("path"))
+	root := s.rootSnapshot()
+	target, rel, err := resolve(root, r.URL.Query().Get("path"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -186,7 +218,8 @@ func (s *Server) handleReadFile(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRawFile(w http.ResponseWriter, r *http.Request) {
-	target, _, err := s.resolve(r.URL.Query().Get("path"))
+	root := s.rootSnapshot()
+	target, _, err := resolve(root, r.URL.Query().Get("path"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -211,7 +244,8 @@ func (s *Server) handleRawFile(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleWriteFile(w http.ResponseWriter, r *http.Request) {
-	target, rel, err := s.resolve(r.URL.Query().Get("path"))
+	root := s.rootSnapshot()
+	target, rel, err := resolve(root, r.URL.Query().Get("path"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -244,7 +278,8 @@ func (s *Server) handleCreateFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	target, rel, err := s.resolve(body.Path)
+	root := s.rootSnapshot()
+	target, rel, err := resolve(root, body.Path)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -274,7 +309,8 @@ func (s *Server) handleCreateDir(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	target, rel, err := s.resolve(body.Path)
+	root := s.rootSnapshot()
+	target, rel, err := resolve(root, body.Path)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -295,12 +331,13 @@ func (s *Server) handleRename(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	from, _, err := s.resolve(body.From)
+	root := s.rootSnapshot()
+	from, _, err := resolve(root, body.From)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	to, rel, err := s.resolve(body.To)
+	to, rel, err := resolve(root, body.To)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -313,7 +350,8 @@ func (s *Server) handleRename(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
-	target, rel, err := s.resolve(r.URL.Query().Get("path"))
+	root := s.rootSnapshot()
+	target, rel, err := resolve(root, r.URL.Query().Get("path"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -339,7 +377,8 @@ func (s *Server) handleReplace(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errors.New("search text is required"))
 		return
 	}
-	target, rel, err := s.resolve(body.Path)
+	root := s.rootSnapshot()
+	target, rel, err := resolve(root, body.Path)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -353,7 +392,7 @@ func (s *Server) handleReplace(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errors.New("path is not a directory"))
 		return
 	}
-	result, err := s.replaceInTree(target, rel, body)
+	result, err := replaceInTree(root, target, rel, body)
 	if err != nil {
 		writeError(w, statusForErr(err), err)
 		return
@@ -377,9 +416,9 @@ func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
 	http.FileServer(http.FS(staticFS)).ServeHTTP(w, r)
 }
 
-func (s *Server) replaceInTree(root, rel string, req replaceRequest) (replaceResponse, error) {
+func replaceInTree(root, walkRoot, rel string, req replaceRequest) (replaceResponse, error) {
 	result := replaceResponse{Path: rel, Matches: []replaceMatch{}}
-	err := filepath.WalkDir(root, func(filePath string, item fs.DirEntry, walkErr error) error {
+	err := filepath.WalkDir(walkRoot, func(filePath string, item fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return nil
 		}
@@ -396,7 +435,7 @@ func (s *Server) replaceInTree(root, rel string, req replaceRequest) (replaceRes
 		if err != nil || !info.Mode().IsRegular() || info.Size() > maxEditableBytes {
 			return nil
 		}
-		if err := s.ensureInside(filePath); err != nil {
+		if err := ensureInside(root, filePath); err != nil {
 			return nil
 		}
 		data, err := os.ReadFile(filePath)
@@ -409,7 +448,7 @@ func (s *Server) replaceInTree(root, rel string, req replaceRequest) (replaceRes
 		if count == 0 {
 			return nil
 		}
-		matchPath := s.slashPath(filePath)
+		matchPath := slashPath(root, filePath)
 		result.FilesMatched++
 		result.Replacements += count
 		result.Matches = append(result.Matches, replaceMatch{Path: matchPath, Count: count})
@@ -424,24 +463,24 @@ func (s *Server) replaceInTree(root, rel string, req replaceRequest) (replaceRes
 	return result, err
 }
 
-func (s *Server) slashPath(filePath string) string {
-	rel, err := filepath.Rel(s.root, filePath)
+func slashPath(root, filePath string) string {
+	rel, err := filepath.Rel(root, filePath)
 	if err != nil || rel == "." {
 		return "/"
 	}
 	return cleanSlash(filepath.ToSlash(rel))
 }
 
-func (s *Server) resolve(input string) (string, string, error) {
+func resolve(root, input string) (string, string, error) {
 	if strings.TrimSpace(input) == "" {
 		input = "/"
 	}
 	slashPath := cleanSlash(input)
 	if slashPath == "/" {
-		return s.root, "/", nil
+		return root, "/", nil
 	}
 	rel := strings.TrimPrefix(slashPath, "/")
-	candidate := filepath.Join(s.root, filepath.FromSlash(rel))
+	candidate := filepath.Join(root, filepath.FromSlash(rel))
 	resolvedParent := candidate
 	if _, err := os.Lstat(candidate); err != nil {
 		resolvedParent = filepath.Dir(candidate)
@@ -454,7 +493,7 @@ func (s *Server) resolve(input string) (string, string, error) {
 			return "", "", err
 		}
 	}
-	if err := s.ensureInside(evaluatedParent); err != nil {
+	if err := ensureInside(root, evaluatedParent); err != nil {
 		return "", "", err
 	}
 	if info, err := os.Lstat(candidate); err == nil && info.Mode()&os.ModeSymlink != 0 {
@@ -462,19 +501,19 @@ func (s *Server) resolve(input string) (string, string, error) {
 		if err != nil {
 			return "", "", err
 		}
-		if err := s.ensureInside(target); err != nil {
+		if err := ensureInside(root, target); err != nil {
 			return "", "", err
 		}
 		candidate = target
 	}
-	if err := s.ensureInside(candidate); err != nil {
+	if err := ensureInside(root, candidate); err != nil {
 		return "", "", err
 	}
 	return candidate, slashPath, nil
 }
 
-func (s *Server) ensureInside(target string) error {
-	rel, err := filepath.Rel(s.root, target)
+func ensureInside(root, target string) error {
+	rel, err := filepath.Rel(root, target)
 	if err != nil {
 		return err
 	}
@@ -482,6 +521,38 @@ func (s *Server) ensureInside(target string) error {
 		return nil
 	}
 	return fmt.Errorf("path escapes workspace root")
+}
+
+func normalizeRoot(input string) (string, error) {
+	if strings.TrimSpace(input) == "" {
+		return "", errors.New("root is required")
+	}
+	if !filepath.IsAbs(input) {
+		return "", errors.New("root must be an absolute path")
+	}
+	root, err := filepath.EvalSymlinks(input)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(root)
+	if err != nil {
+		return "", err
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("root is not a directory: %s", root)
+	}
+	return root, nil
+}
+
+func normalizeConfigRoot(input string) (string, error) {
+	if strings.TrimSpace(input) == "" {
+		return "", errors.New("root is required")
+	}
+	root, err := filepath.Abs(input)
+	if err != nil {
+		return "", err
+	}
+	return normalizeRoot(root)
 }
 
 func cleanSlash(input string) string {

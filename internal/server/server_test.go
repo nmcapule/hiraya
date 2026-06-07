@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 )
 
@@ -94,6 +95,96 @@ func TestTree(t *testing.T) {
 	}
 	if len(got.Entries) != 2 || got.Entries[0].Type != "dir" || got.Entries[0].Name != "src" {
 		t.Fatalf("unexpected entries: %+v", got.Entries)
+	}
+}
+
+func TestGetRoot(t *testing.T) {
+	srv, root := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/root", nil)
+	rr := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("root status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var got struct {
+		Root string `json:"root"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Root != root {
+		t.Fatalf("root = %q, want %q", got.Root, root)
+	}
+}
+
+func TestSetRootChangesFileAPI(t *testing.T) {
+	srv, oldRoot := newTestServer(t)
+	newRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(oldRoot, "old.txt"), []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(newRoot, "new.txt"), []byte("new"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	body := bytes.NewBufferString(`{"root":` + strconv.Quote(newRoot) + `}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/root", body)
+	rr := httptest.NewRecorder()
+	handler := srv.Routes()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("set root status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/file?path=/new.txt", nil)
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("read new root status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var read struct {
+		Content string `json:"content"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&read); err != nil {
+		t.Fatal(err)
+	}
+	if read.Content != "new" {
+		t.Fatalf("content = %q", read.Content)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/file?path=/old.txt", nil)
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("old root read status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if got := srv.rootSnapshot(); got != newRoot {
+		t.Fatalf("terminal root snapshot = %q, want %q", got, newRoot)
+	}
+}
+
+func TestSetRootRejectsInvalidRoots(t *testing.T) {
+	srv, root := newTestServer(t)
+	filePath := filepath.Join(root, "file.txt")
+	if err := os.WriteFile(filePath, []byte("file"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cases := []string{
+		`{"root":""}`,
+		`{"root":"relative/path"}`,
+		`{"root":"/path/that/does/not/exist"}`,
+		`{"root":` + strconv.Quote(filePath) + `}`,
+	}
+	for _, body := range cases {
+		req := httptest.NewRequest(http.MethodPut, "/api/root", bytes.NewBufferString(body))
+		rr := httptest.NewRecorder()
+		srv.Routes().ServeHTTP(rr, req)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("body %s status = %d, response = %s", body, rr.Code, rr.Body.String())
+		}
+	}
+	if got := srv.rootSnapshot(); got != root {
+		t.Fatalf("root changed after invalid request: %q, want %q", got, root)
 	}
 }
 

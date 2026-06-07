@@ -32,6 +32,7 @@ import {
   Home,
   Keyboard,
   FilePlus2,
+  FolderOpen,
   FolderPlus,
   Menu,
   Minus,
@@ -134,6 +135,10 @@ type ReplaceResponse = {
   filesMatched: number;
   replacements: number;
   matches: ReplaceMatch[];
+};
+
+type RootResponse = {
+  root: string;
 };
 
 const defaultTerminalCollapsedKeys: TerminalKeyID[] = ['ctrl-c', 'esc', 'tab'];
@@ -280,6 +285,12 @@ function rawFileURL(path: string): string {
   return `/api/raw?path=${encodeURIComponent(path)}`;
 }
 
+function workspaceDisplayPath(root: string, currentDir: string): string {
+  if (!root) return currentDir;
+  if (currentDir === '/') return root;
+  return root === '/' ? currentDir : `${root}${currentDir}`;
+}
+
 function languageFor(path: string): LanguageSupport | null {
   const ext = path.toLowerCase().split('.').at(-1);
   switch (ext) {
@@ -386,6 +397,7 @@ function App() {
   const [mode, setMode] = useState<Mode>('editor');
   const [terminalStarted, setTerminalStarted] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [rootPath, setRootPath] = useState('');
   const [currentDir, setCurrentDir] = useState('/');
   const [entries, setEntries] = useState<Entry[]>([]);
   const [currentFile, setCurrentFile] = useState<string | null>(null);
@@ -397,6 +409,7 @@ function App() {
   const [editorOptions, setEditorOptions] = useState<EditorOptions>(readEditorOptions());
   const [editorMenuOpen, setEditorMenuOpen] = useState(false);
   const [searchPanelOpen, setSearchPanelOpen] = useState(false);
+  const [terminalSessionKey, setTerminalSessionKey] = useState(0);
   const [terminalHeaderControls, setTerminalHeaderControls] = useState<TerminalHeaderControls | null>(null);
   const editorMenuRef = useRef<HTMLDivElement | null>(null);
   const editorRef = useRef<EditorView | null>(null);
@@ -431,9 +444,15 @@ function App() {
     setEntries(data.entries);
   }, []);
 
+  const loadRoot = useCallback(async () => {
+    const data = await api<RootResponse>('/api/root');
+    setRootPath(data.root);
+  }, []);
+
   useEffect(() => {
+    loadRoot().catch((err) => setError(err.message));
     loadTree('/').catch((err) => setError(err.message));
-  }, [loadTree]);
+  }, [loadRoot, loadTree]);
 
   useEffect(() => {
     if (mode === 'terminal') setTerminalStarted(true);
@@ -579,6 +598,35 @@ function App() {
     [currentDir, currentFile, loadTree, openFile, saveState]
   );
 
+  const changeRoot = useCallback(async () => {
+    if (saveState === 'dirty' && !window.confirm('Discard unsaved changes and change root folder?')) return;
+    const next = window.prompt('Root folder path', workspaceDisplayPath(rootPath, currentDir));
+    if (!next || next === rootPath) return;
+    try {
+      setError(null);
+      const data = await api<RootResponse>('/api/root', {
+        method: 'PUT',
+        body: JSON.stringify({ root: next })
+      });
+      setRootPath(data.root);
+      setCurrentDir('/');
+      setEntries([]);
+      setCurrentFile(null);
+      setCurrentFileKind('text');
+      setContent('');
+      setDocumentVersion((version) => version + 1);
+      setSaveState('idle');
+      setSearchPanelOpen(false);
+      setTerminalStarted(false);
+      setTerminalSessionKey((key) => key + 1);
+      setTerminalHeaderControls(null);
+      setMode('editor');
+      await loadTree('/');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }, [currentDir, loadTree, rootPath, saveState]);
+
   return (
     <div className={`app ${editorOptions.darkMode ? 'dark' : ''}`}>
       <header className="topbar">
@@ -680,7 +728,7 @@ function App() {
           />
         </div>
         {terminalStarted && (
-          <div className={`workspace-panel ${mode === 'terminal' ? 'active' : ''}`} aria-hidden={mode !== 'terminal'} inert={mode !== 'terminal'}>
+          <div key={terminalSessionKey} className={`workspace-panel ${mode === 'terminal' ? 'active' : ''}`} aria-hidden={mode !== 'terminal'} inert={mode !== 'terminal'}>
             <TerminalView active={mode === 'terminal'} options={editorOptions} onHeaderControlsChange={handleTerminalHeaderControlsChange} />
           </div>
         )}
@@ -695,9 +743,12 @@ function App() {
           </button>
           <div>
             <div className="drawer-title">Files</div>
-            <div className="drawer-path">{currentDir}</div>
+            <div className="drawer-path">{workspaceDisplayPath(rootPath, currentDir)}</div>
           </div>
           <div className="drawer-actions">
+            <button className="icon-button" onClick={changeRoot} title="Change root folder">
+              <FolderOpen size={18} />
+            </button>
             <button className="icon-button" onClick={() => createPath('file')} title="New file">
               <FilePlus2 size={18} />
             </button>

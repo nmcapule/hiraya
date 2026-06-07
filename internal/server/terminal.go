@@ -54,7 +54,7 @@ func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 	}
 	defer ws.Close()
 
-	ptmx, cmd, err := startPTY(s.shell, s.root, 80, 24)
+	ptmx, cmd, err := startPTY(s.shell, s.rootSnapshot(), 80, 24)
 	if err != nil {
 		_ = ws.WriteJSON(termMessage{Type: "error", Data: err.Error()})
 		return
