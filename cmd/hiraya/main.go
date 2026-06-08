@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 
 	"github.com/nmcapule/hiraya/internal/server"
@@ -14,6 +15,7 @@ func main() {
 	addr := flag.String("addr", ":8080", "HTTP listen address")
 	root := flag.String("root", ".", "workspace root")
 	shell := flag.String("shell", "", "terminal shell path")
+	terminalMode := flag.String("terminal-mode", server.TerminalModeShell, "terminal startup mode: shell or byobu")
 	flag.Parse()
 
 	absRoot, err := filepath.Abs(*root)
@@ -34,9 +36,23 @@ func main() {
 		shellPath = "/bin/sh"
 	}
 
+	var byobuPath string
+	switch *terminalMode {
+	case server.TerminalModeShell:
+	case server.TerminalModeByobu:
+		byobuPath, err = exec.LookPath("byobu")
+		if err != nil {
+			log.Fatalf("terminal mode byobu requires byobu in PATH: %v", err)
+		}
+	default:
+		log.Fatalf("invalid terminal mode %q; expected %q or %q", *terminalMode, server.TerminalModeShell, server.TerminalModeByobu)
+	}
+
 	app, err := server.New(server.Config{
-		Root:  absRoot,
-		Shell: shellPath,
+		Root:         absRoot,
+		Shell:        shellPath,
+		TerminalMode: *terminalMode,
+		ByobuPath:    byobuPath,
 	})
 	if err != nil {
 		log.Fatalf("configure server: %v", err)

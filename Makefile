@@ -1,6 +1,7 @@
 APP := hiraya
 ROOT ?= $(CURDIR)
 ADDR ?= :8080
+TERMINAL_MODE ?= shell
 TMPDIR ?= /tmp
 GOCACHE ?= /tmp/go-build
 
@@ -15,7 +16,8 @@ help:
 		'' \
 		'Variables:' \
 		'  ROOT=/path       Workspace root served by the app (default: repo root)' \
-		'  ADDR=:8080       Backend listen address (default: :8080)'
+		'  ADDR=:8080       Backend listen address (default: :8080)' \
+		'  TERMINAL_MODE=shell|byobu Terminal startup mode (default: shell)'
 
 prod: build-prod
 
@@ -26,7 +28,7 @@ build-dev: web-deps
 	GOCACHE=$(GOCACHE) go build -buildvcs=false -o $(APP) ./cmd/hiraya
 
 dev: web-deps
-	GOCACHE=$(GOCACHE) go run ./cmd/hiraya --root "$(ROOT)" --addr "$(ADDR)" & \
+	GOCACHE=$(GOCACHE) go run ./cmd/hiraya --root "$(ROOT)" --addr "$(ADDR)" --terminal-mode "$(TERMINAL_MODE)" & \
 	server_pid=$$!; \
 	trap 'kill $$server_pid' INT TERM EXIT; \
 	cd web && TMPDIR=$(TMPDIR) bun run dev

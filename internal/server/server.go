@@ -26,25 +26,31 @@ func init() {
 }
 
 type Config struct {
-	Root  string
-	Shell string
+	Root         string
+	Shell        string
+	TerminalMode string
+	ByobuPath    string
 }
 
 type Server struct {
-	mu    sync.RWMutex
-	root  string
-	shell string
+	mu       sync.RWMutex
+	root     string
+	terminal terminalCommand
 }
 
 func New(cfg Config) (*Server, error) {
 	if cfg.Shell == "" {
 		return nil, errors.New("shell is required")
 	}
+	terminal, err := buildTerminalCommand(cfg)
+	if err != nil {
+		return nil, err
+	}
 	root, err := normalizeConfigRoot(cfg.Root)
 	if err != nil {
 		return nil, err
 	}
-	return &Server{root: root, shell: cfg.Shell}, nil
+	return &Server{root: root, terminal: terminal}, nil
 }
 
 func (s *Server) Routes() http.Handler {

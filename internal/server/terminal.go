@@ -24,7 +24,16 @@ const (
 	tiocgptn      = 0x80045430
 	tiocsptlck    = 0x40045431
 	tiocswinsz    = 0x5414
+
+	TerminalModeShell = "shell"
+	TerminalModeByobu = "byobu"
 )
+
+type terminalCommand struct {
+	Path string
+	Args []string
+	Env  []string
+}
 
 type termMessage struct {
 	Type string `json:"type"`
@@ -54,7 +63,7 @@ func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 	}
 	defer ws.Close()
 
-	ptmx, cmd, err := startPTY(s.shell, s.rootSnapshot(), 80, 24)
+	ptmx, cmd, err := startPTY(s.terminal, s.rootSnapshot(), 80, 24)
 	if err != nil {
 		_ = ws.WriteJSON(termMessage{Type: "error", Data: err.Error()})
 		return
@@ -222,7 +231,31 @@ func (w *wsConn) ReadText() ([]byte, error) {
 	return payload, nil
 }
 
-func startPTY(shellPath, dir string, cols, rows uint16) (*os.File, *exec.Cmd, error) {
+func buildTerminalCommand(cfg Config) (terminalCommand, error) {
+	mode := cfg.TerminalMode
+	if mode == "" {
+		mode = TerminalModeShell
+	}
+	switch mode {
+	case TerminalModeShell:
+		return terminalCommand{
+			Path: cfg.Shell,
+			Env:  []string{"TERM=xterm-256color"},
+		}, nil
+	case TerminalModeByobu:
+		if cfg.ByobuPath == "" {
+			return terminalCommand{}, errors.New("byobu path is required for byobu terminal mode")
+		}
+		return terminalCommand{
+			Path: cfg.ByobuPath,
+			Env:  []string{"TERM=xterm-256color", "SHELL=" + cfg.Shell},
+		}, nil
+	default:
+		return terminalCommand{}, fmt.Errorf("unsupported terminal mode %q", mode)
+	}
+}
+
+func startPTY(command terminalCommand, dir string, cols, rows uint16) (*os.File, *exec.Cmd, error) {
 	ptmx, err := os.OpenFile("/dev/ptmx", os.O_RDWR|syscall.O_NOCTTY, 0)
 	if err != nil {
 		return nil, nil, err
@@ -244,9 +277,9 @@ func startPTY(shellPath, dir string, cols, rows uint16) (*os.File, *exec.Cmd, er
 	}
 	defer slave.Close()
 
-	cmd := exec.Command(shellPath)
+	cmd := exec.Command(command.Path, command.Args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+	cmd.Env = append(os.Environ(), command.Env...)
 	cmd.Stdin = slave
 	cmd.Stdout = slave
 	cmd.Stderr = slave

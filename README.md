@@ -85,6 +85,13 @@ After a production build, run the compiled binary directly:
 ./hiraya --root /path/to/workspace --addr :8080
 ```
 
+To start browser terminal sessions through Byobu by default, install `byobu` on
+the host and add `--terminal-mode byobu`:
+
+```sh
+./hiraya --root /path/to/workspace --addr :8080 --terminal-mode byobu
+```
+
 The app serves the production React UI, file API, and terminal WebSocket from the
 same port.
 
