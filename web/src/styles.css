@@ -35,6 +35,10 @@ button {
   color: #eee9dc;
 }
 
+.app-shell {
+  display: contents;
+}
+
 .topbar {
   align-items: center;
   background: #faf9f2;
@@ -550,6 +554,28 @@ button {
   text-align: center;
 }
 
+.empty-state p {
+  margin: 0;
+}
+
+.empty-state-action {
+  align-items: center;
+  background: #185b45;
+  border: 1px solid #185b45;
+  border-radius: 8px;
+  color: #ffffff;
+  display: inline-flex;
+  font-weight: 750;
+  gap: 7px;
+  min-height: 40px;
+  padding: 0 14px;
+}
+
+.app.dark .empty-state-action {
+  background: #2d7257;
+  border-color: #2d7257;
+}
+
 .accessory-bar,
 .terminal-keys {
   background: #ebe8df;
@@ -559,6 +585,24 @@ button {
   gap: 6px;
   overflow-x: auto;
   padding: 7px 8px;
+}
+
+.accessory-bar {
+  scrollbar-width: thin;
+  scrollbar-color: #c7c2b8 transparent;
+}
+
+.accessory-bar::-webkit-scrollbar {
+  height: 4px;
+}
+
+.accessory-bar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.accessory-bar::-webkit-scrollbar-thumb {
+  background: #c7c2b8;
+  border-radius: 999px;
 }
 
 .terminal-keys {
@@ -809,7 +853,7 @@ button {
   align-items: center;
   display: grid;
   gap: 5px;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   margin-bottom: 4px;
 }
 
@@ -862,6 +906,67 @@ button {
   color: #9b2f1d;
 }
 
+.row-actions-menu {
+  position: relative;
+}
+
+.row-actions-menu summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.row-actions-menu summary::-webkit-details-marker {
+  display: none;
+}
+
+.row-actions-popover {
+  background: #fffefa;
+  border: 1px solid #d8d4c8;
+  border-radius: 8px;
+  box-shadow: 0 12px 30px rgba(20, 20, 18, 0.16);
+  display: flex;
+  flex-direction: column;
+  min-width: 132px;
+  padding: 5px;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 5px);
+  z-index: 25;
+}
+
+.row-actions-popover button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  display: flex;
+  font-weight: 700;
+  gap: 8px;
+  min-height: 38px;
+  padding: 0 9px;
+  text-align: left;
+}
+
+.row-actions-popover button:hover,
+.row-actions-popover button:focus-visible {
+  background: #efede5;
+}
+
+.row-actions-popover button.danger {
+  color: #9b2f1d;
+}
+
+.app.dark .row-actions-popover {
+  background: #202018;
+  border-color: #4a453a;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.34);
+}
+
+.app.dark .row-actions-popover button:hover,
+.app.dark .row-actions-popover button:focus-visible {
+  background: #2a291f;
+}
+
 .scrim {
   background: rgba(0, 0, 0, 0.22);
   border: 0;
@@ -894,6 +999,130 @@ button {
   min-width: 32px;
 }
 
+.dialog-layer {
+  align-items: center;
+  background: rgba(20, 20, 18, 0.36);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  padding: 16px;
+  position: fixed;
+  z-index: 60;
+}
+
+.app-dialog {
+  background: #fffefa;
+  border: 1px solid #d8d4c8;
+  border-radius: 8px;
+  box-shadow: 0 22px 70px rgba(20, 20, 18, 0.24);
+  color: #26251f;
+  display: grid;
+  gap: 16px;
+  max-width: 440px;
+  padding: 18px;
+  width: min(100%, 440px);
+}
+
+.dialog-copy {
+  display: grid;
+  gap: 6px;
+}
+
+.dialog-copy h2 {
+  font-size: 18px;
+  line-height: 1.25;
+  margin: 0;
+}
+
+.dialog-copy p {
+  color: #6f6a5e;
+  font-size: 14px;
+  line-height: 1.45;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.dialog-field {
+  display: grid;
+  gap: 7px;
+}
+
+.dialog-field span {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.dialog-field input {
+  background: #ffffff;
+  border: 1px solid #cfcabf;
+  border-radius: 8px;
+  color: inherit;
+  font: inherit;
+  min-height: 42px;
+  padding: 8px 10px;
+  width: 100%;
+}
+
+.dialog-field input:focus {
+  border-color: #185b45;
+  outline: 2px solid rgba(24, 91, 69, 0.18);
+  outline-offset: 1px;
+}
+
+.dialog-field input[aria-invalid='true'] {
+  border-color: #9b2f1d;
+}
+
+.dialog-validation {
+  color: #9b2f1d;
+  font-size: 13px;
+}
+
+.dialog-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.dialog-actions button {
+  border-radius: 8px;
+  min-height: 40px;
+  padding: 0 14px;
+}
+
+.dialog-secondary {
+  background: #ffffff;
+  border: 1px solid #d8d4c8;
+}
+
+.dialog-primary {
+  background: #185b45;
+  border: 1px solid #185b45;
+  color: #ffffff;
+  font-weight: 700;
+}
+
+.dialog-primary.danger {
+  background: #9b2f1d;
+  border-color: #9b2f1d;
+}
+
+.app.dark .app-dialog {
+  background: #202018;
+  border-color: #4a453a;
+  color: #eee9dc;
+}
+
+.app.dark .dialog-copy p {
+  color: #bdb5a6;
+}
+
+.app.dark .dialog-field input,
+.app.dark .dialog-secondary {
+  background: #2a291f;
+  border-color: #4a453a;
+}
+
 @media (max-width: 440px) {
   .icon-button,
   .mode-button {
@@ -905,6 +1134,14 @@ button {
   .left-actions,
   .right-actions {
     gap: 4px;
+  }
+
+  .secondary-editor-action {
+    display: none;
+  }
+
+  .file-title {
+    font-size: 14px;
   }
 
   .editor-menu {
@@ -931,6 +1168,10 @@ button {
   }
 
   .accessory-bar {
+    display: none;
+  }
+
+  .terminal-keys {
     display: none;
   }
 }

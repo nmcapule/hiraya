@@ -66,6 +66,8 @@ type SaveState = 'idle' | 'dirty' | 'saving' | 'saved' | 'preview' | 'error';
 type Mode = 'editor' | 'terminal';
 type ReplaceScope = 'file' | 'folder';
 type InputChangeEvent = { target: HTMLInputElement };
+type DialogKeyboardEvent = { key: string; shiftKey: boolean; preventDefault: () => void };
+type DialogSubmitEvent = { preventDefault: () => void };
 type EditorOptions = {
   lineWrap: boolean;
   fontSize: number;
@@ -152,6 +154,22 @@ type ReplaceResponse = {
 
 type RootResponse = {
   root: string;
+};
+
+type TextDialogConfig = {
+  title: string;
+  description: string;
+  label: string;
+  initialValue: string;
+  confirmLabel: string;
+  danger?: boolean;
+};
+
+type ConfirmDialogConfig = {
+  title: string;
+  description: string;
+  confirmLabel: string;
+  danger?: boolean;
 };
 
 const defaultTerminalCollapsedKeys: TerminalKeyID[] = ['ctrl-c', 'esc', 'tab'];
@@ -319,6 +337,34 @@ function workspaceDisplayPath(root: string, currentDir: string): string {
   return root === '/' ? currentDir : `${root}${currentDir}`;
 }
 
+function entryLabel(entry: Entry): string {
+  return `${entry.type === 'dir' ? 'folder' : 'file'} ${entry.path}`;
+}
+
+function entryContainsPath(entry: Entry, path: string): boolean {
+  return entry.type === 'dir' ? path === entry.path || path.startsWith(`${entry.path}/`) : path === entry.path;
+}
+
+function trapDialogFocus(container: HTMLElement | null, event: DialogKeyboardEvent) {
+  if (event.key !== 'Tab' || !container) return;
+  const focusable = Array.from(
+    container.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    )
+  );
+  if (focusable.length === 0) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  const active = document.activeElement;
+  if (event.shiftKey && active === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && active === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
 function languageFor(path: string): LanguageSupport | null {
   const ext = path.toLowerCase().split('.').at(-1);
   switch (ext) {
@@ -436,15 +482,22 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [editorOptions, setEditorOptions] = useState<EditorOptions>(readEditorOptions());
   const [editorMenuOpen, setEditorMenuOpen] = useState(false);
+  const [activeRowActions, setActiveRowActions] = useState<string | null>(null);
   const [searchPanelOpen, setSearchPanelOpen] = useState(false);
   const [terminalSessionKey, setTerminalSessionKey] = useState(0);
   const [terminalHeaderControls, setTerminalHeaderControls] = useState<TerminalHeaderControls | null>(null);
+  const [textDialog, setTextDialog] = useState<TextDialogConfig | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogConfig | null>(null);
   const editorMenuRef = useRef<HTMLDivElement | null>(null);
   const editorRef = useRef<EditorView | null>(null);
+  const textDialogResolverRef = useRef<((value: string | null) => void) | null>(null);
+  const confirmDialogResolverRef = useRef<((value: boolean) => void) | null>(null);
+  const dialogReturnFocusRef = useRef<HTMLElement | null>(null);
   const [editorView, setEditorView] = useState<EditorView | null>(null);
 
   const title = currentFile ? basename(currentFile) : 'No file open';
   const isEditable = mode === 'editor' && currentFileKind === 'text';
+  const dialogOpen = !!textDialog || !!confirmDialog;
   const handleEditorReady = useCallback((view: EditorView | null) => {
     editorRef.current = view;
     setEditorView(view);
@@ -452,6 +505,49 @@ function App() {
   const handleTerminalHeaderControlsChange = useCallback((controls: TerminalHeaderControls | null) => {
     setTerminalHeaderControls(controls);
   }, []);
+  const restoreDialogFocus = useCallback(() => {
+    const element = dialogReturnFocusRef.current;
+    dialogReturnFocusRef.current = null;
+    window.setTimeout(() => element?.focus(), 0);
+  }, []);
+  const requestTextInput = useCallback((config: TextDialogConfig) => {
+    dialogReturnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setActiveRowActions(null);
+    setEditorMenuOpen(false);
+    setTextDialog(config);
+    return new Promise<string | null>((resolve) => {
+      textDialogResolverRef.current = resolve;
+    });
+  }, []);
+  const closeTextDialog = useCallback(
+    (value: string | null) => {
+      const resolve = textDialogResolverRef.current;
+      textDialogResolverRef.current = null;
+      setTextDialog(null);
+      resolve?.(value);
+      restoreDialogFocus();
+    },
+    [restoreDialogFocus]
+  );
+  const requestConfirmation = useCallback((config: ConfirmDialogConfig) => {
+    dialogReturnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setActiveRowActions(null);
+    setEditorMenuOpen(false);
+    setConfirmDialog(config);
+    return new Promise<boolean>((resolve) => {
+      confirmDialogResolverRef.current = resolve;
+    });
+  }, []);
+  const closeConfirmDialog = useCallback(
+    (value: boolean) => {
+      const resolve = confirmDialogResolverRef.current;
+      confirmDialogResolverRef.current = null;
+      setConfirmDialog(null);
+      resolve?.(value);
+      restoreDialogFocus();
+    },
+    [restoreDialogFocus]
+  );
 
   useEffect(() => onAppViewportChange(), []);
 
@@ -551,8 +647,13 @@ function App() {
 
   const createPath = useCallback(
     async (kind: 'file' | 'dir') => {
-      const label = kind === 'file' ? 'New file path' : 'New folder path';
-      const name = window.prompt(label, currentDir === '/' ? '' : `${currentDir}/`);
+      const name = await requestTextInput({
+        title: kind === 'file' ? 'Create file' : 'Create folder',
+        description: `Create a ${kind === 'file' ? 'file' : 'folder'} in ${currentDir}. Enter a relative path or start with / for an absolute path.`,
+        label: kind === 'file' ? 'New file path' : 'New folder path',
+        initialValue: currentDir === '/' ? '' : `${currentDir}/`,
+        confirmLabel: kind === 'file' ? 'Create file' : 'Create folder'
+      });
       if (!name) return;
       const path = name.startsWith('/') ? name : joinPath(currentDir, name);
       try {
@@ -568,12 +669,18 @@ function App() {
         setError(err instanceof Error ? err.message : String(err));
       }
     },
-    [currentDir, loadTree, openFile]
+    [currentDir, loadTree, openFile, requestTextInput]
   );
 
   const renamePath = useCallback(
     async (entry: Entry) => {
-      const next = window.prompt('Rename path', entry.path);
+      const next = await requestTextInput({
+        title: `Rename ${entry.type === 'dir' ? 'folder' : 'file'}`,
+        description: `Current path: ${entry.path}`,
+        label: 'New path',
+        initialValue: entry.path,
+        confirmLabel: 'Rename'
+      });
       if (!next || next === entry.path) return;
       try {
         await api('/api/path', { method: 'PATCH', body: JSON.stringify({ from: entry.path, to: next }) });
@@ -583,15 +690,21 @@ function App() {
         setError(err instanceof Error ? err.message : String(err));
       }
     },
-    [currentDir, currentFile, loadTree]
+    [currentDir, currentFile, loadTree, requestTextInput]
   );
 
   const deletePath = useCallback(
     async (entry: Entry) => {
-      if (!window.confirm(`Delete ${entry.path}?`)) return;
+      const confirmed = await requestConfirmation({
+        title: `Delete ${entry.type === 'dir' ? 'folder' : 'file'}?`,
+        description: `Delete ${entryLabel(entry)}? This cannot be undone from Hiraya.`,
+        confirmLabel: 'Delete',
+        danger: true
+      });
+      if (!confirmed) return;
       try {
         await api(`/api/path?path=${encodeURIComponent(entry.path)}`, { method: 'DELETE' });
-        if (currentFile === entry.path) {
+        if (currentFile && entryContainsPath(entry, currentFile)) {
           setCurrentFile(null);
           setCurrentFileKind('text');
           setContent('');
@@ -603,7 +716,7 @@ function App() {
         setError(err instanceof Error ? err.message : String(err));
       }
     },
-    [currentDir, currentFile, loadTree]
+    [currentDir, currentFile, loadTree, requestConfirmation]
   );
 
   const replaceInFolder = useCallback(
@@ -627,8 +740,17 @@ function App() {
   );
 
   const changeRoot = useCallback(async () => {
-    if (saveState === 'dirty' && !window.confirm('Discard unsaved changes and change root folder?')) return;
-    const next = window.prompt('Root folder path', workspaceDisplayPath(rootPath, currentDir));
+    const next = await requestTextInput({
+      title: 'Change root folder',
+      description:
+        saveState === 'dirty'
+          ? 'Enter the new root folder path. Unsaved changes in the open file will be discarded.'
+          : 'Enter the new root folder path.',
+      label: 'Root folder path',
+      initialValue: workspaceDisplayPath(rootPath, currentDir),
+      confirmLabel: 'Change root',
+      danger: saveState === 'dirty'
+    });
     if (!next || next === rootPath) return;
     try {
       setError(null);
@@ -653,172 +775,200 @@ function App() {
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, [currentDir, loadTree, rootPath, saveState]);
+  }, [currentDir, loadTree, requestTextInput, rootPath, saveState]);
 
   return (
     <div className={`app ${editorOptions.darkMode ? 'dark' : ''}`}>
-      <header className="topbar">
-        <div className="left-actions">
-          <button className="icon-button" onClick={() => setDrawerOpen(true)} title="Files">
-            <Menu size={21} />
-          </button>
-          <button
-            className={`mode-button ${mode === 'terminal' ? 'active' : ''}`}
-            onClick={() => setMode(mode === 'editor' ? 'terminal' : 'editor')}
-            title={mode === 'editor' ? 'Open terminal' : 'Open editor'}
-          >
-            {mode === 'editor' ? <Terminal size={20} /> : <Braces size={20} />}
-          </button>
-        </div>
-        <div className="title-block">
-          <div className="file-title">{mode === 'terminal' ? 'Terminal' : title}</div>
-          <div className={`save-state ${saveState}`}>{mode === 'editor' ? saveStateLabel(saveState) : 'host shell'}</div>
-        </div>
-        <div className="right-actions">
-          {mode === 'editor' && (
-            <>
-              <button className="icon-button" onClick={() => editorRef.current && undo(editorRef.current)} disabled={!isEditable} title="Undo">
-                <Undo2 size={19} />
-              </button>
-              <button className="icon-button" onClick={() => editorRef.current && redo(editorRef.current)} disabled={!isEditable} title="Redo">
-                <Redo2 size={19} />
-              </button>
-              <button
-                className={`icon-button ${searchPanelOpen ? 'active' : ''}`}
-                onClick={() => setSearchPanelOpen((open) => !open)}
-                disabled={!isEditable || !currentFile}
-                title="Find and replace"
-              >
-                <SearchIcon size={19} />
-              </button>
-              <button className="icon-button primary" onClick={saveFile} disabled={!currentFile || !isEditable} title="Save">
-                <Save size={19} />
-              </button>
-            </>
-          )}
-          {mode === 'terminal' && (
-            <button className="icon-button" onClick={terminalHeaderControls?.reset} disabled={!terminalHeaderControls || terminalHeaderControls.disabled} title="Reset terminal">
-              <RotateCcw size={19} />
+      <div className="app-shell" inert={dialogOpen} aria-hidden={dialogOpen}>
+        <header className="topbar" aria-label="App toolbar">
+          <div className="left-actions">
+            <button className="icon-button" onClick={() => setDrawerOpen(true)} title="Files" aria-label="Open files">
+              <Menu size={21} />
             </button>
-          )}
-          <div className="editor-menu-wrap" ref={editorMenuRef}>
             <button
-              className={`icon-button ${editorMenuOpen ? 'active' : ''}`}
-              onClick={() => setEditorMenuOpen((open) => !open)}
-              title="Options"
-              aria-haspopup="menu"
-              aria-expanded={editorMenuOpen}
+              className={`mode-button ${mode === 'terminal' ? 'active' : ''}`}
+              onClick={() => setMode(mode === 'editor' ? 'terminal' : 'editor')}
+              title={mode === 'editor' ? 'Open terminal' : 'Open editor'}
+              aria-label={mode === 'editor' ? 'Open terminal' : 'Open editor'}
             >
-              <MoreVertical size={19} />
+              {mode === 'editor' ? <Terminal size={20} /> : <Braces size={20} />}
             </button>
-            {editorMenuOpen && (
-              <EditorOptionsMenu
-                options={editorOptions}
-                onChange={(next) => setEditorOptions(next)}
-              />
-            )}
           </div>
-        </div>
-      </header>
+          <div className="title-block">
+            <div className="file-title">{mode === 'terminal' ? 'Terminal' : title}</div>
+            <div className={`save-state ${saveState}`} aria-live="polite">{mode === 'editor' ? saveStateLabel(saveState) : 'host shell'}</div>
+          </div>
+          <div className="right-actions">
+            {mode === 'editor' && (
+              <>
+                <button className="icon-button secondary-editor-action" onClick={() => editorRef.current && undo(editorRef.current)} disabled={!isEditable} title="Undo" aria-label="Undo">
+                  <Undo2 size={19} />
+                </button>
+                <button className="icon-button secondary-editor-action" onClick={() => editorRef.current && redo(editorRef.current)} disabled={!isEditable} title="Redo" aria-label="Redo">
+                  <Redo2 size={19} />
+                </button>
+                <button
+                  className={`icon-button ${searchPanelOpen ? 'active' : ''}`}
+                  onClick={() => setSearchPanelOpen((open) => !open)}
+                  disabled={!isEditable || !currentFile}
+                  title="Find and replace"
+                  aria-label="Find and replace"
+                  aria-pressed={searchPanelOpen}
+                >
+                  <SearchIcon size={19} />
+                </button>
+                <button className="icon-button primary" onClick={saveFile} disabled={!currentFile || !isEditable} title="Save" aria-label="Save file">
+                  <Save size={19} />
+                </button>
+              </>
+            )}
+            {mode === 'terminal' && (
+              <button className="icon-button" onClick={terminalHeaderControls?.reset} disabled={!terminalHeaderControls || terminalHeaderControls.disabled} title="Reset terminal" aria-label="Reset terminal">
+                <RotateCcw size={19} />
+              </button>
+            )}
+            <div className="editor-menu-wrap" ref={editorMenuRef}>
+              <button
+                className={`icon-button ${editorMenuOpen ? 'active' : ''}`}
+                onClick={() => setEditorMenuOpen((open) => !open)}
+                title="Options"
+                aria-label="Open options"
+                aria-haspopup="menu"
+                aria-expanded={editorMenuOpen}
+              >
+                <MoreVertical size={19} />
+              </button>
+              {editorMenuOpen && (
+                <EditorOptionsMenu
+                  options={editorOptions}
+                  onChange={(next) => setEditorOptions(next)}
+                />
+              )}
+            </div>
+          </div>
+        </header>
 
-      {searchPanelOpen && isEditable && currentFile && (
-        <SearchReplacePanel
-          editor={editorView}
-          currentDir={currentDir}
-          currentFile={currentFile}
-          onClose={() => setSearchPanelOpen(false)}
-          onFolderReplace={replaceInFolder}
-        />
-      )}
-
-      {error && (
-        <div className="error-banner">
-          <span>{error}</span>
-          <button onClick={() => setError(null)} title="Dismiss">
-            <X size={18} />
-          </button>
-        </div>
-      )}
-
-      <main className="workspace">
-        <div className={`workspace-panel ${mode === 'editor' ? 'active' : ''}`} aria-hidden={mode !== 'editor'} inert={mode !== 'editor'}>
-          <FileSurface
-            path={currentFile}
-            kind={currentFileKind}
-            content={content}
-            version={documentVersion}
-            editorOptions={editorOptions}
-            onReady={handleEditorReady}
-            onChange={(next) => {
-              setContent(next);
-              setSaveState('dirty');
-            }}
+        {searchPanelOpen && isEditable && currentFile && (
+          <SearchReplacePanel
+            editor={editorView}
+            currentDir={currentDir}
+            currentFile={currentFile}
+            onClose={() => setSearchPanelOpen(false)}
+            onFolderReplace={replaceInFolder}
+            onConfirm={requestConfirmation}
           />
-        </div>
-        {terminalStarted && (
-          <div key={terminalSessionKey} className={`workspace-panel ${mode === 'terminal' ? 'active' : ''}`} aria-hidden={mode !== 'terminal'} inert={mode !== 'terminal'}>
-            <TerminalView
-              active={mode === 'terminal'}
-              options={editorOptions}
-              onOptionsChange={setEditorOptions}
-              onHeaderControlsChange={handleTerminalHeaderControlsChange}
-            />
+        )}
+
+        {error && (
+          <div className="error-banner" role="alert">
+            <span>{error}</span>
+            <button onClick={() => setError(null)} title="Dismiss" aria-label="Dismiss error">
+              <X size={18} />
+            </button>
           </div>
         )}
-      </main>
 
-      {isEditable && currentFile && <AccessoryBar editor={editorView} />}
-
-      <aside className={`drawer ${drawerOpen ? 'open' : ''}`} aria-hidden={!drawerOpen} inert={!drawerOpen}>
-        <div className="drawer-header">
-          <button className="icon-button" onClick={() => setDrawerOpen(false)} title="Close files">
-            <ChevronLeft size={21} />
-          </button>
-          <div>
-            <div className="drawer-title">Files</div>
-            <div className="drawer-path">{workspaceDisplayPath(rootPath, currentDir)}</div>
+        <main className="workspace" aria-label="Workspace">
+          <div className={`workspace-panel ${mode === 'editor' ? 'active' : ''}`} aria-hidden={mode !== 'editor'} inert={mode !== 'editor'}>
+            <FileSurface
+              path={currentFile}
+              kind={currentFileKind}
+              content={content}
+              version={documentVersion}
+              editorOptions={editorOptions}
+              onReady={handleEditorReady}
+              onOpenFiles={() => setDrawerOpen(true)}
+              onChange={(next) => {
+                setContent(next);
+                setSaveState('dirty');
+              }}
+            />
           </div>
-          <div className="drawer-actions">
-            <button className="icon-button" onClick={changeRoot} title="Change root folder">
-              <FolderOpen size={18} />
-            </button>
-            <button className="icon-button" onClick={() => createPath('file')} title="New file">
-              <FilePlus2 size={18} />
-            </button>
-            <button className="icon-button" onClick={() => createPath('dir')} title="New folder">
-              <FolderPlus size={18} />
-            </button>
-          </div>
-        </div>
-        <div className="file-list">
-          {currentDir !== '/' && (
-            <button className="file-row parent" onClick={() => loadTree(parentPath(currentDir)).catch((err) => setError(err.message))}>
-              ..
-            </button>
+          {terminalStarted && (
+            <div key={terminalSessionKey} className={`workspace-panel ${mode === 'terminal' ? 'active' : ''}`} aria-hidden={mode !== 'terminal'} inert={mode !== 'terminal'}>
+              <TerminalView
+                active={mode === 'terminal'}
+                options={editorOptions}
+                onOptionsChange={setEditorOptions}
+                onHeaderControlsChange={handleTerminalHeaderControlsChange}
+              />
+            </div>
           )}
-          {entries.map((entry) => (
-            <div className="file-row-wrap" key={entry.path}>
-              <button
-                className={`file-row ${entry.type}`}
-                onClick={() => {
-                  if (entry.type === 'dir') loadTree(entry.path).catch((err) => setError(err.message));
-                  else openFile(entry.path).catch((err) => setError(err.message));
-                }}
-              >
-                <span>{entry.type === 'dir' ? '/' : ''}</span>
-                <strong>{entry.name}</strong>
+        </main>
+
+        {isEditable && currentFile && <AccessoryBar editor={editorView} />}
+
+        <aside className={`drawer ${drawerOpen ? 'open' : ''}`} aria-label="File drawer" aria-hidden={!drawerOpen} inert={!drawerOpen}>
+          <div className="drawer-header">
+            <button className="icon-button" onClick={() => setDrawerOpen(false)} title="Close files" aria-label="Close files">
+              <ChevronLeft size={21} />
+            </button>
+            <div>
+              <div className="drawer-title">Files</div>
+              <div className="drawer-path">{workspaceDisplayPath(rootPath, currentDir)}</div>
+            </div>
+            <div className="drawer-actions">
+              <button className="icon-button" onClick={changeRoot} title="Change root folder" aria-label="Change root folder">
+                <FolderOpen size={18} />
               </button>
-              <button className="mini-button" onClick={() => renamePath(entry)} title="Rename">
-                <Pencil size={16} />
+              <button className="icon-button" onClick={() => createPath('file')} title="New file" aria-label="New file">
+                <FilePlus2 size={18} />
               </button>
-              <button className="mini-button danger" onClick={() => deletePath(entry)} title="Delete">
-                <Trash2 size={16} />
+              <button className="icon-button" onClick={() => createPath('dir')} title="New folder" aria-label="New folder">
+                <FolderPlus size={18} />
               </button>
             </div>
-          ))}
-        </div>
-      </aside>
-      {drawerOpen && <button className="scrim" onClick={() => setDrawerOpen(false)} aria-label="Close file drawer" />}
+          </div>
+          <div className="file-list" aria-label="Files in current folder">
+            {currentDir !== '/' && (
+              <button className="file-row parent" onClick={() => loadTree(parentPath(currentDir)).catch((err) => setError(err.message))}>
+                ..
+              </button>
+            )}
+            {entries.map((entry) => (
+              <div className="file-row-wrap" key={entry.path}>
+                <button
+                  className={`file-row ${entry.type}`}
+                  onClick={() => {
+                    if (entry.type === 'dir') loadTree(entry.path).catch((err) => setError(err.message));
+                    else openFile(entry.path).catch((err) => setError(err.message));
+                  }}
+                >
+                  <span>{entry.type === 'dir' ? '/' : ''}</span>
+                  <strong>{entry.name}</strong>
+                </button>
+                <div className="row-actions-menu">
+                  <button
+                    className="mini-button"
+                    onClick={() => setActiveRowActions((path) => (path === entry.path ? null : entry.path))}
+                    title="Actions"
+                    aria-label={`Actions for ${entry.name}`}
+                    aria-haspopup="menu"
+                    aria-expanded={activeRowActions === entry.path}
+                  >
+                    <MoreVertical size={16} />
+                  </button>
+                  {activeRowActions === entry.path && (
+                    <div className="row-actions-popover" role="menu">
+                      <button onClick={() => { setActiveRowActions(null); renamePath(entry); }} role="menuitem">
+                        <Pencil size={15} />
+                        <span>Rename</span>
+                      </button>
+                      <button className="danger" onClick={() => { setActiveRowActions(null); deletePath(entry); }} role="menuitem">
+                        <Trash2 size={15} />
+                        <span>Delete</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </aside>
+        {drawerOpen && <button className="scrim" onClick={() => setDrawerOpen(false)} aria-label="Close file drawer" />}
+      </div>
+      {textDialog && <TextInputDialog config={textDialog} onClose={closeTextDialog} />}
+      {confirmDialog && <ConfirmDialog config={confirmDialog} onClose={closeConfirmDialog} />}
     </div>
   );
 }
@@ -840,6 +990,123 @@ function saveStateLabel(state: SaveState): string {
   }
 }
 
+function TextInputDialog({ config, onClose }: { config: TextDialogConfig; onClose: (value: string | null) => void }) {
+  const [value, setValue] = useState(config.initialValue);
+  const [validation, setValidation] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const dialogRef = useRef<HTMLFormElement | null>(null);
+  const idPrefix = useRef(`dialog-${Math.random().toString(36).slice(2)}`).current;
+  const titleID = `${idPrefix}-title`;
+  const descriptionID = `${idPrefix}-description`;
+  const validationID = `${idPrefix}-validation`;
+
+  useEffect(() => {
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, []);
+
+  const submit = () => {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      setValidation('Enter a path before continuing.');
+      inputRef.current?.focus();
+      return;
+    }
+    onClose(trimmed);
+  };
+
+  return (
+    <div
+      className="dialog-layer"
+      onKeyDown={(event: DialogKeyboardEvent) => {
+        if (event.key === 'Escape') onClose(null);
+        trapDialogFocus(dialogRef.current, event);
+      }}
+    >
+      <form
+        ref={dialogRef}
+        className="app-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleID}
+        aria-describedby={`${descriptionID}${validation ? ` ${validationID}` : ''}`}
+        onSubmit={(event: DialogSubmitEvent) => {
+          event.preventDefault();
+          submit();
+        }}
+      >
+        <div className="dialog-copy">
+          <h2 id={titleID}>{config.title}</h2>
+          <p id={descriptionID}>{config.description}</p>
+        </div>
+        <label className="dialog-field">
+          <span>{config.label}</span>
+          <input
+            ref={inputRef}
+            value={value}
+            onChange={(event: InputChangeEvent) => {
+              setValue(event.target.value);
+              if (validation) setValidation(null);
+            }}
+            aria-invalid={!!validation}
+            aria-describedby={validation ? validationID : undefined}
+          />
+        </label>
+        {validation && (
+          <div className="dialog-validation" id={validationID} role="alert">
+            {validation}
+          </div>
+        )}
+        <div className="dialog-actions">
+          <button type="button" className="dialog-secondary" onClick={() => onClose(null)}>
+            Cancel
+          </button>
+          <button type="submit" className={`dialog-primary ${config.danger ? 'danger' : ''}`}>
+            {config.confirmLabel}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function ConfirmDialog({ config, onClose }: { config: ConfirmDialogConfig; onClose: (value: boolean) => void }) {
+  const cancelRef = useRef<HTMLButtonElement | null>(null);
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+  const idPrefix = useRef(`dialog-${Math.random().toString(36).slice(2)}`).current;
+  const titleID = `${idPrefix}-title`;
+  const descriptionID = `${idPrefix}-description`;
+
+  useEffect(() => {
+    cancelRef.current?.focus();
+  }, []);
+
+  return (
+    <div
+      className="dialog-layer"
+      onKeyDown={(event: DialogKeyboardEvent) => {
+        if (event.key === 'Escape') onClose(false);
+        trapDialogFocus(dialogRef.current, event);
+      }}
+    >
+      <div ref={dialogRef} className="app-dialog" role="dialog" aria-modal="true" aria-labelledby={titleID} aria-describedby={descriptionID}>
+        <div className="dialog-copy">
+          <h2 id={titleID}>{config.title}</h2>
+          <p id={descriptionID}>{config.description}</p>
+        </div>
+        <div className="dialog-actions">
+          <button type="button" ref={cancelRef} className="dialog-secondary" onClick={() => onClose(false)}>
+            Cancel
+          </button>
+          <button type="button" className={`dialog-primary ${config.danger ? 'danger' : ''}`} onClick={() => onClose(true)}>
+            {config.confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function FileSurface({
   path,
   kind,
@@ -847,6 +1114,7 @@ function FileSurface({
   version,
   editorOptions,
   onReady,
+  onOpenFiles,
   onChange
 }: {
   path: string | null;
@@ -855,10 +1123,11 @@ function FileSurface({
   version: number;
   editorOptions: EditorOptions;
   onReady: (view: EditorView | null) => void;
+  onOpenFiles: () => void;
   onChange: (content: string) => void;
 }) {
   if (!path || kind === 'text') {
-    return <CodeEditor path={path} content={content} version={version} editorOptions={editorOptions} onReady={onReady} onChange={onChange} />;
+    return <CodeEditor path={path} content={content} version={version} editorOptions={editorOptions} onReady={onReady} onOpenFiles={onOpenFiles} onChange={onChange} />;
   }
 
   if (kind === 'image') {
@@ -890,13 +1159,15 @@ function SearchReplacePanel({
   currentDir,
   currentFile,
   onClose,
-  onFolderReplace
+  onFolderReplace,
+  onConfirm
 }: {
   editor: EditorView | null;
   currentDir: string;
   currentFile: string;
   onClose: () => void;
   onFolderReplace: (request: ReplaceRequest) => Promise<ReplaceResponse>;
+  onConfirm: (config: ConfirmDialogConfig) => Promise<boolean>;
 }) {
   const [scope, setScope] = useState<ReplaceScope>('file');
   const [query, setQuery] = useState('');
@@ -1007,7 +1278,13 @@ function SearchReplacePanel({
       setStatus('No folder matches');
       return;
     }
-    if (!window.confirm(`Replace ${preview.replacements} matches in ${preview.filesMatched} files under ${currentDir}?`)) {
+    const confirmed = await onConfirm({
+      title: 'Replace folder matches?',
+      description: `Replace ${preview.replacements} matches in ${preview.filesMatched} files under ${currentDir}? This will edit files on disk.`,
+      confirmLabel: 'Replace folder',
+      danger: true
+    });
+    if (!confirmed) {
       setStatus('Folder replace canceled');
       return;
     }
@@ -1040,7 +1317,7 @@ function SearchReplacePanel({
           </button>
         </div>
         <div className="search-context">{scope === 'file' ? basename(currentFile) : currentDir}</div>
-        <button className="mini-button" onClick={onClose} title="Close find and replace">
+        <button className="mini-button" onClick={onClose} title="Close find and replace" aria-label="Close find and replace">
           <X size={16} />
         </button>
       </div>
@@ -1089,7 +1366,7 @@ function SearchReplacePanel({
           </button>
         </div>
       )}
-      <div className="search-status">{status}</div>
+      <div className="search-status" aria-live="polite">{status}</div>
       {scope === 'folder' && folderPreview && folderPreview.matches.length > 0 && (
         <div className="search-results">
           {folderPreview.matches.slice(0, 5).map((match) => (
@@ -1111,6 +1388,7 @@ function CodeEditor({
   version,
   editorOptions,
   onReady,
+  onOpenFiles,
   onChange
 }: {
   path: string | null;
@@ -1118,6 +1396,7 @@ function CodeEditor({
   version: number;
   editorOptions: EditorOptions;
   onReady: (view: EditorView | null) => void;
+  onOpenFiles: () => void;
   onChange: (content: string) => void;
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -1188,6 +1467,10 @@ function CodeEditor({
       <div className="empty-state">
         <Check size={28} />
         <p>Open a file from the drawer.</p>
+        <button className="empty-state-action" onClick={onOpenFiles}>
+          <FolderOpen size={18} />
+          Open files
+        </button>
       </div>
     );
   }
@@ -1212,7 +1495,7 @@ function EditorOptionsMenu({
   };
 
   return (
-    <div className="editor-menu" role="menu">
+    <div className="editor-menu" role="menu" aria-label="Options">
       <label className="editor-menu-row">
         <span>Line wrap</span>
         <input type="checkbox" checked={options.lineWrap} onChange={(event: InputChangeEvent) => setOption({ lineWrap: event.target.checked })} />
@@ -1220,11 +1503,11 @@ function EditorOptionsMenu({
       <div className="editor-menu-row">
         <span>Text size</span>
         <div className="size-stepper" aria-label="Text size">
-          <button onClick={() => setFontSize(options.fontSize - 1)} disabled={options.fontSize <= 12} title="Decrease text size">
+          <button onClick={() => setFontSize(options.fontSize - 1)} disabled={options.fontSize <= 12} title="Decrease text size" aria-label="Decrease text size">
             <Minus size={15} />
           </button>
           <output>{options.fontSize}px</output>
-          <button onClick={() => setFontSize(options.fontSize + 1)} disabled={options.fontSize >= 22} title="Increase text size">
+          <button onClick={() => setFontSize(options.fontSize + 1)} disabled={options.fontSize >= 22} title="Increase text size" aria-label="Increase text size">
             <Plus size={15} />
           </button>
         </div>
@@ -1263,14 +1546,20 @@ function AccessoryBar({ editor }: { editor: EditorView | null }) {
     editor.focus();
   };
   return (
-    <div className="accessory-bar">
+    <div className="accessory-bar" aria-label="Editor shortcuts">
+      <button onClick={() => editor && undo(editor)} disabled={!editor} aria-label="Undo">
+        <Undo2 size={16} />
+      </button>
+      <button onClick={() => editor && redo(editor)} disabled={!editor} aria-label="Redo">
+        <Redo2 size={16} />
+      </button>
       {['{', '}', '[', ']', '(', ')', '/', '=', '"', "'"].map((key) => (
-        <button key={key} onClick={() => send(key)}>
+        <button key={key} onClick={() => send(key)} aria-label={`Insert ${key}`}>
           {key}
         </button>
       ))}
-      <button onClick={() => send('  ')}>Tab</button>
-      <button onClick={() => editor?.focus()}>Esc</button>
+      <button onClick={() => send('  ')} aria-label="Insert indentation">Tab</button>
+      <button onClick={() => editor?.focus()} aria-label="Focus editor">Esc</button>
     </div>
   );
 }
@@ -1671,7 +1960,7 @@ function TerminalView({
       >
         <div className="terminal-fit-host" ref={fitHostRef} />
       </div>
-      <div className="terminal-keys">
+      <div className="terminal-keys" aria-label="Terminal shortcuts">
         {showFullKeys && (
           <div className="terminal-key-grid">
             <div className="terminal-key-group modifiers" aria-label="Terminal modifiers">
@@ -1681,6 +1970,7 @@ function TerminalView({
                   className={`terminal-key-button modifier ${modifiers[modifier] ? 'active' : ''}`}
                   onPointerDown={preventTerminalKeyFocus}
                   onClick={() => toggleModifier(modifier)}
+                  aria-label={`Toggle ${modifier} modifier`}
                   aria-pressed={modifiers[modifier]}
                 >
                   <span>{modifier === 'ctrl' ? 'Ctrl' : modifier === 'alt' ? 'Alt' : 'Shift'}</span>
@@ -1697,6 +1987,7 @@ function TerminalView({
                     onPointerDown={preventTerminalKeyFocus}
                     onClick={() => sendTerminalKey(key)}
                     title={key.hint ?? key.label}
+                    aria-label={key.hint ?? key.label}
                   >
                     {Icon && <Icon size={18} />}
                     <span>{key.label}</span>
@@ -1711,6 +2002,7 @@ function TerminalView({
                   className="terminal-key-button function-key"
                   onPointerDown={preventTerminalKeyFocus}
                   onClick={() => sendTerminalKey(key)}
+                  aria-label={`Send ${key.label}`}
                 >
                   <span>{key.label}</span>
                 </button>
@@ -1727,6 +2019,7 @@ function TerminalView({
                 onPointerDown={preventTerminalKeyFocus}
                 onClick={() => sendByobuAction(action)}
                 title={action.hint ?? action.label}
+                aria-label={action.hint ?? action.label}
               >
                 <span>{action.label}</span>
               </button>
@@ -1734,7 +2027,7 @@ function TerminalView({
           </div>
         )}
         <div className="terminal-keys-header">
-          <button className={`terminal-key-button icon-only ${softKeyboardOpen ? 'active' : ''}`} onPointerDown={preventTerminalKeyFocus} onClick={toggleSoftKeyboard} title={softKeyboardOpen ? 'Hide keyboard' : 'Show keyboard'}>
+          <button className={`terminal-key-button icon-only ${softKeyboardOpen ? 'active' : ''}`} onPointerDown={preventTerminalKeyFocus} onClick={toggleSoftKeyboard} title={softKeyboardOpen ? 'Hide keyboard' : 'Show keyboard'} aria-label={softKeyboardOpen ? 'Hide keyboard' : 'Show keyboard'}>
             {softKeyboardOpen ? <ChevronDown size={16} /> : <Keyboard size={16} />}
           </button>
           <button
@@ -1756,6 +2049,7 @@ function TerminalView({
                 onPointerDown={preventTerminalKeyFocus}
                 onClick={() => (action.id === 'esc' ? sendEsc() : sendAction(action))}
                 title={action.hint ?? action.label}
+                aria-label={action.hint ?? action.label}
               >
                 {Icon && <Icon size={16} />}
                 <span>{action.label}</span>
