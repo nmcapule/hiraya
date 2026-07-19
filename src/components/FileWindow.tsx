@@ -35,7 +35,6 @@ type Props = {
 };
 
 export function FileWindow({ file, blob, editable, readOnly = false, remoteChanged = false, editorSettings, onClose, onSave, onDownload, onEditorSettingsChange, onResolveLink, onOpenLinkedFile, onDirtyChange }: Props) {
-  const [openedBlob] = useState(blob);
   const [content, setContent] = useState("");
   const [savedContent, setSavedContent] = useState("");
   const [contentLoaded, setContentLoaded] = useState(false);
@@ -51,7 +50,7 @@ export function FileWindow({ file, blob, editable, readOnly = false, remoteChang
     if (editable) {
       let active = true;
       setContentLoaded(false);
-      void openedBlob.text().then((text) => {
+      void blob.text().then((text) => {
         if (!active) return;
         setContent(text);
         setSavedContent(text);
@@ -60,10 +59,10 @@ export function FileWindow({ file, blob, editable, readOnly = false, remoteChang
       return () => { active = false; };
     }
 
-    const url = URL.createObjectURL(openedBlob);
+    const url = URL.createObjectURL(blob);
     setObjectUrl(url);
     return () => URL.revokeObjectURL(url);
-  }, [editable, openedBlob]);
+  }, [blob, editable]);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {

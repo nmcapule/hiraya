@@ -26,9 +26,11 @@ import {
 } from "./lib/sync";
 import { DEFAULT_EDITOR_SETTINGS } from "./lib/opfs";
 import { exportPredefinedDesktop } from "./lib/predefined";
+import { formatDesktopRoute, normalizeDesktopRoute, parseDesktopRoute, type DesktopRoute } from "./lib/routes";
 import type { ContextMenuState, DesktopEntry, DesktopLayout, DialogState, EditorSettings, EntryPosition, FileEntry, FolderEntry } from "./types";
 
 type OpenFile = { file: FileEntry; blob: File; editable: boolean; contentRevision: number; remoteChanged: boolean } | null;
+type RouteHistoryState = { hiraya: true; parentHash?: string };
 const FILE_ICON_WIDTH = 98;
 const FILE_ICON_HEIGHT = 102;
 const MINIMAP_LONG_PRESS_MS = 500;
@@ -59,14 +61,13 @@ function App() {
   const [contextMenu, setContextMenu] = useState<ContextMenuState>(null);
   const [moveDialogEntry, setMoveDialogEntry] = useState<DesktopEntry | null>(null);
   const [openFile, setOpenFile] = useState<OpenFile>(null);
-  const [explorerFolderId, setExplorerFolderId] = useState<string | null | undefined>(undefined);
+  const [route, setRoute] = useState<DesktopRoute | null>(null);
   const [clock, setClock] = useState(() => new Date());
   const [desktopSize, setDesktopSize] = useState(() => ({ width: window.innerWidth, height: Math.max(1, window.innerHeight - 44) }));
   const [layout, setLayout] = useState<DesktopLayout>(() => ({ views: [{ id: crypto.randomUUID() }], columns: 1 }));
   const [editorSettings, setEditorSettings] = useState<EditorSettings>(DEFAULT_EDITOR_SETTINGS);
   const [exporting, setExporting] = useState(false);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("connecting");
-  const [activeViewId, setActiveViewId] = useState("");
   const [editingViews, setEditingViews] = useState(false);
   const [draggedViewId, setDraggedViewId] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(() => Boolean(document.fullscreenElement));
@@ -86,11 +87,21 @@ function App() {
   } | null>(null);
   const suppressClickRef = useRef(false);
   const edgeDragRef = useRef({ direction: "", time: 0 });
+  const edgeNavigationRef = useRef<{ route: DesktopRoute; historyState: unknown } | null>(null);
   const layoutRef = useRef(layout);
+  const entriesRef = useRef(entries);
+  const routeRef = useRef<DesktopRoute | null>(null);
+  const navigationReadyRef = useRef(false);
+  const applyLocationRouteRef = useRef<(entriesValue?: DesktopEntry[], layoutValue?: DesktopLayout) => void>(() => undefined);
+  const navigateRouteRef = useRef<(next: DesktopRoute, mode?: "push" | "replace") => void>(() => undefined);
+  const fileLoadGenerationRef = useRef(0);
+  const openFileRef = useRef<OpenFile>(null);
   const layoutSaveRef = useRef<Promise<void>>(Promise.resolve());
   const editorSettingsSaveRef = useRef<Promise<void>>(Promise.resolve());
   const contentRevisionsRef = useRef<Record<string, number>>({});
   const openFileDirtyRef = useRef(false);
+  const activeViewId = route?.viewId ?? "";
+  const explorerFolderId = route?.explorerFolderId;
   const canMutate = syncStatus === "online";
   const rootEntries = entries.filter((entry) => entry.parentId === null);
   const folders = entries.filter((entry): entry is FolderEntry => entry.kind === "folder");
@@ -114,18 +125,63 @@ function App() {
   const activeViewIndex = Math.max(0, layout.views.findIndex((view) => view.id === activeViewId));
   const page = { column: activeViewIndex % pageColumns, row: Math.floor(activeViewIndex / pageColumns) };
 
+  function setCurrentRoute(next: DesktopRoute) {
+    routeRef.current = next;
+    setRoute(next);
+  }
+
+  function writeRoute(next: DesktopRoute, mode: "push" | "replace" = "push") {
+    const hash = formatDesktopRoute(next);
+    if (mode === "push" && hash !== window.location.hash) {
+      const state: RouteHistoryState = { hiraya: true, parentHash: window.location.hash };
+      window.history.pushState(state, "", hash);
+    } else if (mode === "replace" || hash !== window.location.hash) {
+      const current = window.history.state as Partial<RouteHistoryState> | null;
+      const state: RouteHistoryState = { hiraya: true, parentHash: current?.hiraya ? current.parentHash : undefined };
+      window.history.replaceState(state, "", hash);
+    }
+    setCurrentRoute(next);
+  }
+
+  function applyLocationRoute(entriesValue = entriesRef.current, layoutValue = layoutRef.current) {
+    if (!navigationReadyRef.current) return;
+    const normalized = normalizeDesktopRoute(parseDesktopRoute(window.location.hash), entriesValue, layoutValue);
+    if (!normalized) return;
+    const canonicalHash = formatDesktopRoute(normalized);
+    if (canonicalHash !== window.location.hash) writeRoute(normalized, "replace");
+    else setCurrentRoute(normalized);
+  }
+
+  function navigateRoute(next: DesktopRoute, mode: "push" | "replace" = "push") {
+    const normalized = normalizeDesktopRoute(next, entriesRef.current, layoutRef.current);
+    if (normalized) writeRoute(normalized, mode);
+  }
+
+  function closeToRoute(next: DesktopRoute) {
+    const state = window.history.state as Partial<RouteHistoryState> | null;
+    if (state?.hiraya && state.parentHash === formatDesktopRoute(next)) window.history.back();
+    else navigateRoute(next, "replace");
+  }
+
+  function updateOpenFile(next: OpenFile) {
+    openFileRef.current = next;
+    setOpenFile(next);
+  }
+
+  applyLocationRouteRef.current = applyLocationRoute;
+  navigateRouteRef.current = navigateRoute;
+
   useEffect(() => {
     let active = true;
     const unsubscribe = subscribeToSync((synced) => {
       if (!active) return;
-      const previousContentRevisions = contentRevisionsRef.current;
       contentRevisionsRef.current = synced.sync.contentRevisions;
       layoutRef.current = synced.layout;
+      entriesRef.current = synced.entries;
       setLayout(synced.layout);
       setEntries(synced.entries);
       setEditorSettings(synced.editorSettings);
       setSelectedId((current) => current && !synced.entries.some((entry) => entry.id === current) ? null : current);
-      setExplorerFolderId((current) => current && !synced.entries.some((entry) => entry.id === current && entry.kind === "folder") ? undefined : current);
       setContextMenu((current) => current && !synced.entries.some((entry) => entry.id === current.entry.id) ? null : current);
       setMoveDialogEntry((current) => current && !synced.entries.some((entry) => entry.id === current.id) ? null : current);
       setDialog((current) => {
@@ -135,19 +191,7 @@ function App() {
         }
         return synced.entries.some((entry) => entry.id === current.entry.id) ? current : null;
       });
-      setOpenFile((current) => {
-        if (!current) return null;
-        const file = synced.entries.find((entry): entry is FileEntry => entry.id === current.file.id && entry.kind === "file");
-        if (!file) return null;
-        const contentChanged = previousContentRevisions[file.id] !== synced.sync.contentRevisions[file.id];
-        if (contentChanged && openFileDirtyRef.current) return { ...current, file, remoteChanged: true };
-        if (contentChanged) {
-          void readFile(file.id).then((blob) => {
-            setOpenFile((latest) => latest?.file.id === file.id ? { file, blob, editable: isEditable(file), contentRevision: synced.sync.contentRevisions[file.id], remoteChanged: false } : latest);
-          }).catch(() => setError("An open file changed on the server but could not be refreshed."));
-        }
-        return { ...current, file, contentRevision: synced.sync.contentRevisions[file.id] };
-      });
+      applyLocationRouteRef.current(synced.entries, synced.layout);
     }, (nextStatus) => { if (active) setSyncStatus(nextStatus); });
     void initializeDesktop({ x: window.innerWidth, y: Math.max(1, window.innerHeight - 44) }, predefinedDesktop)
       .then(({ desktop: loadedDesktop, status: loadedStatus }) => {
@@ -155,11 +199,13 @@ function App() {
         const { entries: loadedEntries, layout: loadedLayout, editorSettings: loadedEditorSettings, sync } = loadedDesktop;
         contentRevisionsRef.current = sync.contentRevisions;
         layoutRef.current = loadedLayout;
+        entriesRef.current = loadedEntries;
         setLayout(loadedLayout);
-        setActiveViewId(loadedLayout.views[0].id);
         setEntries(loadedEntries);
         setEditorSettings(loadedEditorSettings);
         setSyncStatus(loadedStatus);
+        navigationReadyRef.current = true;
+        applyLocationRouteRef.current(loadedEntries, loadedLayout);
       })
       .catch((loadError) => {
         if (active && !(loadError instanceof DOMException && loadError.name === "AbortError")) {
@@ -177,6 +223,58 @@ function App() {
     const timer = window.setInterval(() => setClock(new Date()), 30_000);
     return () => window.clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    function restoreRoute() {
+      if (!navigationReadyRef.current) return;
+      setDialog(null);
+      setContextMenu(null);
+      setMoveDialogEntry(null);
+      setEditingViews(false);
+      setDraggedViewId(null);
+      applyLocationRouteRef.current();
+    }
+    window.addEventListener("popstate", restoreRoute);
+    window.addEventListener("hashchange", restoreRoute);
+    return () => {
+      window.removeEventListener("popstate", restoreRoute);
+      window.removeEventListener("hashchange", restoreRoute);
+    };
+  }, []);
+
+  useEffect(() => {
+    const generation = ++fileLoadGenerationRef.current;
+    const fileId = route?.fileId;
+    if (!fileId || loading) {
+      if (!fileId && openFileRef.current) updateOpenFile(null);
+      return;
+    }
+    const file = entries.find((entry): entry is FileEntry => entry.id === fileId && entry.kind === "file");
+    if (!file) return;
+    const expectedRevision = contentRevisionsRef.current[file.id] ?? 0;
+    const current = openFileRef.current;
+    if (current?.file.id === file.id && current.contentRevision === expectedRevision) {
+      if (current.file !== file) updateOpenFile({ ...current, file });
+      return;
+    }
+    if (current?.file.id === file.id && openFileDirtyRef.current) {
+      updateOpenFile({ ...current, file, contentRevision: expectedRevision, remoteChanged: true });
+      return;
+    }
+    void readFile(file.id).then((blob) => {
+      if (generation !== fileLoadGenerationRef.current || routeRef.current?.fileId !== file.id || contentRevisionsRef.current[file.id] !== expectedRevision) return;
+      updateOpenFile({ file, blob, editable: isEditable(file), contentRevision: expectedRevision, remoteChanged: false });
+    }).catch((openError) => {
+      if (generation !== fileLoadGenerationRef.current || routeRef.current?.fileId !== file.id) return;
+      if (openFileRef.current?.file.id === file.id) {
+        setError("An open file changed on the server but could not be refreshed.");
+        return;
+      }
+      setError(openError instanceof Error ? openError.message : "The file could not be opened.");
+      const currentRoute = routeRef.current;
+      if (currentRoute) navigateRouteRef.current({ ...currentRoute, fileId: undefined }, "replace");
+    });
+  }, [entries, loading, route?.fileId]);
 
   useEffect(() => {
     function syncFullscreen() {
@@ -197,10 +295,6 @@ function App() {
     observer.observe(desktop);
     return () => observer.disconnect();
   }, []);
-
-  useEffect(() => {
-    if (!layout.views.some((view) => view.id === activeViewId)) setActiveViewId(layout.views[0].id);
-  }, [activeViewId, layout.views]);
 
   useEffect(() => {
     function onPointerDown(event: PointerEvent) {
@@ -295,15 +389,13 @@ function App() {
     } else if (dialog.type === "rename") {
       const renamed = await renameEntry(dialog.entry.id, name);
       setEntries((current) => current.map((entry) => entry.id === renamed.id ? renamed : entry));
-      if (renamed.kind === "file") setOpenFile((current) => current?.file.id === renamed.id ? { ...current, file: renamed } : current);
+      if (renamed.kind === "file" && openFileRef.current?.file.id === renamed.id) updateOpenFile({ ...openFileRef.current, file: renamed });
       setNotice(`${renamed.kind === "folder" ? "Folder" : "File"} renamed`);
     } else {
       const deleted = await deleteEntry(dialog.entry.id);
       const deletedIds = new Set(deleted.map((entry) => entry.id));
       setEntries((current) => current.filter((entry) => !deletedIds.has(entry.id)));
       setSelectedId((current) => current && deletedIds.has(current) ? null : current);
-      setOpenFile((current) => current && deletedIds.has(current.file.id) ? null : current);
-      if (explorerFolderId && deletedIds.has(explorerFolderId)) setExplorerFolderId(undefined);
       setNotice(`${dialog.entry.name} deleted`);
     }
     setDialog(null);
@@ -368,20 +460,16 @@ function App() {
     }
   }
 
-  async function handleOpen(entry: DesktopEntry) {
+  function handleOpen(entry: DesktopEntry) {
     setContextMenu(null);
+    const currentRoute = routeRef.current;
+    if (!currentRoute) return;
     if (entry.kind === "folder") {
-      setExplorerFolderId(entry.id);
-      setOpenFile(null);
+      navigateRoute({ ...currentRoute, explorerFolderId: entry.id, fileId: undefined });
       return;
     }
     setError("");
-    try {
-      const blob = await readFile(entry.id);
-      setOpenFile({ file: entry, blob, editable: isEditable(entry), contentRevision: contentRevisionsRef.current[entry.id] ?? 0, remoteChanged: false });
-    } catch (openError) {
-      setError(openError instanceof Error ? openError.message : "The file could not be opened.");
-    }
+    navigateRoute({ ...currentRoute, fileId: entry.id });
   }
 
   async function download(file: FileEntry) {
@@ -419,22 +507,24 @@ function App() {
   }
 
   async function save(content: string) {
-    if (!openFile) return;
-    const saved = await saveTextFile(openFile.file.id, content);
+    const fileId = routeRef.current?.fileId;
+    if (!openFile || openFile.file.id !== fileId) return;
+    const saved = await saveTextFile(fileId, content);
     const blob = await readFile(saved.id);
     setEntries((current) => current.map((entry) => entry.id === saved.id ? saved : entry));
-    setOpenFile({ file: saved, blob, editable: true, contentRevision: contentRevisionsRef.current[saved.id] ?? 0, remoteChanged: false });
+    if (routeRef.current?.fileId === saved.id) updateOpenFile({ file: saved, blob, editable: true, contentRevision: contentRevisionsRef.current[saved.id] ?? 0, remoteChanged: false });
     setNotice("Changes synced");
   }
 
-  function goToView(viewId: string) {
+  function goToView(viewId: string, mode: "push" | "replace" = "push") {
     const index = layoutRef.current.views.findIndex((view) => view.id === viewId);
-    if (index < 0) return;
+    const currentRoute = routeRef.current;
+    if (index < 0 || !currentRoute) return;
     const columns = Math.max(1, Math.min(layoutRef.current.columns, layoutRef.current.views.length));
     const column = index % columns;
     const row = Math.floor(index / columns);
     if (canvasRef.current) canvasRef.current.style.transform = `translate3d(${-column * desktopSize.width}px, ${-row * desktopSize.height}px, 0)`;
-    setActiveViewId(viewId);
+    navigateRoute({ ...currentRoute, viewId }, mode);
   }
 
   function handleDesktopPointerDown(event: React.PointerEvent<HTMLElement>) {
@@ -488,13 +578,28 @@ function App() {
     const nextRow = Math.floor(targetIndex / columns);
     edgeDragRef.current = { direction: edge.direction, time: now };
     if (views.length !== layoutRef.current.views.length || columns !== layoutRef.current.columns) applyLayout({ views, columns });
-    goToView(views[targetIndex].id);
+    if (!edgeNavigationRef.current && routeRef.current) edgeNavigationRef.current = { route: routeRef.current, historyState: window.history.state };
+    goToView(views[targetIndex].id, "replace");
     return {
       deltaX: (nextColumn - previousColumn) * desktopSize.width,
       deltaY: (nextRow - previousRow) * desktopSize.height,
       maxX: Math.max(8, columns * desktopSize.width - FILE_ICON_WIDTH),
       maxY: Math.max(8, Math.ceil(views.length / columns) * desktopSize.height - FILE_ICON_HEIGHT),
     };
+  }
+
+  function finishEdgeNavigation(cancelled: boolean) {
+    const pending = edgeNavigationRef.current;
+    edgeNavigationRef.current = null;
+    edgeDragRef.current.direction = "";
+    if (!pending) return;
+    const finalRoute = routeRef.current;
+    window.history.replaceState(pending.historyState, "", formatDesktopRoute(pending.route));
+    if (cancelled || !finalRoute) {
+      setCurrentRoute(pending.route);
+      return;
+    }
+    writeRoute(finalRoute, "push");
   }
 
   function handleDesktopPointerMove(event: React.PointerEvent<HTMLElement>) {
@@ -562,7 +667,7 @@ function App() {
     const deletedIndex = layout.views.findIndex((view) => view.id === viewId);
     const views = layout.views.filter((view) => view.id !== viewId);
     const next = { views, columns: Math.max(1, Math.min(layout.columns, views.length)) };
-    if (activeViewId === viewId) setActiveViewId(views[Math.min(deletedIndex, views.length - 1)].id);
+    if (activeViewId === viewId && routeRef.current) navigateRoute({ ...routeRef.current, viewId: views[Math.min(deletedIndex, views.length - 1)].id }, "replace");
     applyLayout(next);
     setNotice("Desktop view deleted");
   }
@@ -719,6 +824,7 @@ function App() {
               onOpen={() => void handleOpen(entry)}
               onMove={(position, targetParentId) => void handleDesktopMove(entry, position, targetParentId)}
               onDragAtEdge={handleIconDragAtEdge}
+              onDragEnd={finishEdgeNavigation}
               onExternalDrop={(sources) => void handleImport(sources, entry.id)}
               onContextMenu={(event) => {
                 event.preventDefault();
@@ -819,9 +925,9 @@ function App() {
           folder={explorerFolder}
           breadcrumbs={breadcrumbs}
           children={explorerChildren}
-          onClose={() => setExplorerFolderId(undefined)}
-          onNavigate={(folder) => setExplorerFolderId(folder?.id ?? null)}
-          onOpen={(entry) => void handleOpen(entry)}
+          onClose={() => { const current = routeRef.current; if (current) closeToRoute({ viewId: current.viewId }); }}
+          onNavigate={(folder) => { const current = routeRef.current; if (current) navigateRoute({ ...current, explorerFolderId: folder?.id ?? null, fileId: undefined }); }}
+          onOpen={handleOpen}
           onCreateFolder={(parentId) => setDialog({ type: "create-folder", parentId })}
           onCreateFile={(parentId) => setDialog({ type: "create-file", parentId })}
           onUpload={chooseUpload}
@@ -834,7 +940,7 @@ function App() {
       {contextMenu && (
         <ContextMenu
           menu={contextMenu}
-          onOpen={() => void handleOpen(contextMenu.entry)}
+          onOpen={() => handleOpen(contextMenu.entry)}
           onRename={() => { setDialog({ type: "rename", entry: contextMenu.entry }); setContextMenu(null); }}
           onDownload={contextMenu.entry.kind === "file" ? () => void download(contextMenu.entry as FileEntry) : undefined}
           onMove={() => { setMoveDialogEntry(contextMenu.entry); setContextMenu(null); }}
@@ -861,12 +967,19 @@ function App() {
           readOnly={!canMutate}
           remoteChanged={openFile.remoteChanged}
           editorSettings={editorSettings}
-          onClose={() => setOpenFile(null)}
+          onClose={() => {
+            const current = routeRef.current;
+            if (!current) return;
+            closeToRoute({
+              viewId: current.viewId,
+              ...(current.explorerFolderId !== undefined ? { explorerFolderId: current.explorerFolderId } : {}),
+            });
+          }}
           onSave={save}
           onDownload={() => void download(openFile.file)}
           onEditorSettingsChange={applyEditorSettings}
           onResolveLink={(path) => readFileByRelativePath(openFile.file.id, path)}
-          onOpenLinkedFile={(file) => void handleOpen(file)}
+          onOpenLinkedFile={handleOpen}
           onDirtyChange={(dirty) => { openFileDirtyRef.current = dirty; }}
         />
       )}

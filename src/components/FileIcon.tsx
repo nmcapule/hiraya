@@ -24,6 +24,7 @@ type Props = {
     maxX: number;
     maxY: number;
   } | null;
+  onDragEnd: (cancelled: boolean) => void;
   onContextMenu: (event: React.MouseEvent) => void;
   onExternalDrop?: (files: File[]) => void;
 };
@@ -47,7 +48,7 @@ function FileTypeIcon({ entry }: { entry: DesktopEntry }) {
   return <FileGlyph {...props} />;
 }
 
-export function FileIcon({ entry, selected, onSelect, onOpen, onMove, onDragAtEdge, onContextMenu, onExternalDrop }: Props) {
+export function FileIcon({ entry, selected, onSelect, onOpen, onMove, onDragAtEdge, onDragEnd, onContextMenu, onExternalDrop }: Props) {
   const iconRef = useRef<HTMLButtonElement>(null);
   const drag = useRef<{
     pointerX: number;
@@ -144,6 +145,7 @@ export function FileIcon({ entry, selected, onSelect, onOpen, onMove, onDragAtEd
       const targetFolderId = findDropTarget(event.clientX, event.clientY);
       onMove({ x: Math.round(drag.current.x), y: Math.round(drag.current.y) }, targetFolderId);
     }
+    onDragEnd(cancelled);
     iconRef.current?.style.removeProperty("transform");
     if (iconRef.current) delete iconRef.current.dataset.dragging;
     setDropTarget(null);
