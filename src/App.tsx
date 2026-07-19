@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, CornersIn, CornersOut, ExportIcon, FolderPlus, HardDrive, Plus, Trash, UploadSimple, WarningCircle } from "@phosphor-icons/react";
+import { Check, CloudCheck, CloudSlash, CornersIn, CornersOut, ExportIcon, FolderPlus, HardDrive, Plus, SpinnerGap, Trash, UploadSimple, WarningCircle } from "@phosphor-icons/react";
 import predefinedDesktop from "virtual:hiraya-predefined";
 import { ContextMenu } from "./components/ContextMenu";
 import { FileDialog } from "./components/FileDialog";
@@ -12,7 +12,7 @@ import {
   createTextFile,
   deleteEntry,
   importFiles,
-  loadDesktop,
+  initializeDesktop,
   moveEntry,
   readFile,
   readFileByRelativePath,
@@ -21,12 +21,14 @@ import {
   saveEditorSettings,
   saveTextFile,
   updateEntryPosition,
-  DEFAULT_EDITOR_SETTINGS,
-} from "./lib/opfs";
+  subscribeToSync,
+  type SyncStatus,
+} from "./lib/sync";
+import { DEFAULT_EDITOR_SETTINGS } from "./lib/opfs";
 import { exportPredefinedDesktop } from "./lib/predefined";
 import type { ContextMenuState, DesktopEntry, DesktopLayout, DialogState, EditorSettings, EntryPosition, FileEntry, FolderEntry } from "./types";
 
-type OpenFile = { file: FileEntry; blob: File; editable: boolean } | null;
+type OpenFile = { file: FileEntry; blob: File; editable: boolean; contentRevision: number; remoteChanged: boolean } | null;
 const FILE_ICON_WIDTH = 98;
 const FILE_ICON_HEIGHT = 102;
 const MINIMAP_LONG_PRESS_MS = 500;
@@ -63,6 +65,7 @@ function App() {
   const [layout, setLayout] = useState<DesktopLayout>(() => ({ views: [{ id: crypto.randomUUID() }], columns: 1 }));
   const [editorSettings, setEditorSettings] = useState<EditorSettings>(DEFAULT_EDITOR_SETTINGS);
   const [exporting, setExporting] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>("connecting");
   const [activeViewId, setActiveViewId] = useState("");
   const [editingViews, setEditingViews] = useState(false);
   const [draggedViewId, setDraggedViewId] = useState<string | null>(null);
@@ -86,6 +89,9 @@ function App() {
   const layoutRef = useRef(layout);
   const layoutSaveRef = useRef<Promise<void>>(Promise.resolve());
   const editorSettingsSaveRef = useRef<Promise<void>>(Promise.resolve());
+  const contentRevisionsRef = useRef<Record<string, number>>({});
+  const openFileDirtyRef = useRef(false);
+  const canMutate = syncStatus === "online";
   const rootEntries = entries.filter((entry) => entry.parentId === null);
   const folders = entries.filter((entry): entry is FolderEntry => entry.kind === "folder");
   const explorerFolder = explorerFolderId === null ? null : folders.find((folder) => folder.id === explorerFolderId) ?? null;
@@ -110,14 +116,50 @@ function App() {
 
   useEffect(() => {
     let active = true;
-    void loadDesktop({ x: window.innerWidth, y: Math.max(1, window.innerHeight - 44) }, predefinedDesktop)
-      .then(({ entries: loadedEntries, layout: loadedLayout, editorSettings: loadedEditorSettings }) => {
+    const unsubscribe = subscribeToSync((synced) => {
+      if (!active) return;
+      const previousContentRevisions = contentRevisionsRef.current;
+      contentRevisionsRef.current = synced.sync.contentRevisions;
+      layoutRef.current = synced.layout;
+      setLayout(synced.layout);
+      setEntries(synced.entries);
+      setEditorSettings(synced.editorSettings);
+      setSelectedId((current) => current && !synced.entries.some((entry) => entry.id === current) ? null : current);
+      setExplorerFolderId((current) => current && !synced.entries.some((entry) => entry.id === current && entry.kind === "folder") ? undefined : current);
+      setContextMenu((current) => current && !synced.entries.some((entry) => entry.id === current.entry.id) ? null : current);
+      setMoveDialogEntry((current) => current && !synced.entries.some((entry) => entry.id === current.id) ? null : current);
+      setDialog((current) => {
+        if (!current) return null;
+        if (current.type === "create-file" || current.type === "create-folder") {
+          return current.parentId && !synced.entries.some((entry) => entry.id === current.parentId && entry.kind === "folder") ? null : current;
+        }
+        return synced.entries.some((entry) => entry.id === current.entry.id) ? current : null;
+      });
+      setOpenFile((current) => {
+        if (!current) return null;
+        const file = synced.entries.find((entry): entry is FileEntry => entry.id === current.file.id && entry.kind === "file");
+        if (!file) return null;
+        const contentChanged = previousContentRevisions[file.id] !== synced.sync.contentRevisions[file.id];
+        if (contentChanged && openFileDirtyRef.current) return { ...current, file, remoteChanged: true };
+        if (contentChanged) {
+          void readFile(file.id).then((blob) => {
+            setOpenFile((latest) => latest?.file.id === file.id ? { file, blob, editable: isEditable(file), contentRevision: synced.sync.contentRevisions[file.id], remoteChanged: false } : latest);
+          }).catch(() => setError("An open file changed on the server but could not be refreshed."));
+        }
+        return { ...current, file, contentRevision: synced.sync.contentRevisions[file.id] };
+      });
+    }, (nextStatus) => { if (active) setSyncStatus(nextStatus); });
+    void initializeDesktop({ x: window.innerWidth, y: Math.max(1, window.innerHeight - 44) }, predefinedDesktop)
+      .then(({ desktop: loadedDesktop, status: loadedStatus }) => {
         if (!active) return;
+        const { entries: loadedEntries, layout: loadedLayout, editorSettings: loadedEditorSettings, sync } = loadedDesktop;
+        contentRevisionsRef.current = sync.contentRevisions;
         layoutRef.current = loadedLayout;
         setLayout(loadedLayout);
         setActiveViewId(loadedLayout.views[0].id);
         setEntries(loadedEntries);
         setEditorSettings(loadedEditorSettings);
+        setSyncStatus(loadedStatus);
       })
       .catch((loadError) => {
         if (active && !(loadError instanceof DOMException && loadError.name === "AbortError")) {
@@ -127,6 +169,7 @@ function App() {
       .finally(() => { if (active) setLoading(false); });
     return () => {
       active = false;
+      unsubscribe();
     };
   }, []);
 
@@ -186,7 +229,7 @@ function App() {
     }
     function onKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") setContextMenu(null);
-      if (event.key.toLowerCase() === "r" && contextMenu) {
+      if (event.key.toLowerCase() === "r" && contextMenu && canMutate) {
         setDialog({ type: "rename", entry: contextMenu.entry });
         setContextMenu(null);
       }
@@ -197,7 +240,7 @@ function App() {
       window.removeEventListener("mousedown", closeMenu);
       window.removeEventListener("keydown", onKeyDown);
     };
-  }, [contextMenu]);
+  }, [canMutate, contextMenu]);
 
   useEffect(() => {
     if (!notice) return;
@@ -214,11 +257,13 @@ function App() {
   }
 
   function chooseUpload(parentId: string | null) {
+    if (!canMutate) return;
     uploadParentRef.current = parentId;
     uploadRef.current?.click();
   }
 
   function applyLayout(next: DesktopLayout, persist = true) {
+    if (persist && !canMutate) return;
     layoutRef.current = next;
     setLayout(next);
     if (!persist) return;
@@ -228,6 +273,7 @@ function App() {
   }
 
   function applyEditorSettings(next: EditorSettings) {
+    if (!canMutate) return;
     setEditorSettings(next);
     editorSettingsSaveRef.current = editorSettingsSaveRef.current
       .then(() => saveEditorSettings(next))
@@ -235,14 +281,14 @@ function App() {
   }
 
   async function handleDialogSubmit(name: string) {
-    if (!dialog) return;
+    if (!dialog || !canMutate) return;
     if (dialog.type === "create-file" || dialog.type === "create-folder") {
       const parentId = dialog.parentId;
       const viewId = parentId === null ? activeViewId || layout.views[0].id : null;
       const created = dialog.type === "create-file"
         ? await createTextFile(name, parentId, positionFor(parentId), viewId)
         : await createFolder(name, parentId, positionFor(parentId), viewId);
-      setEntries((current) => [...current, created]);
+      setEntries((current) => current.some((entry) => entry.id === created.id) ? current : [...current, created]);
       setSelectedId(created.id);
       if (parentId === null && created.viewId) goToView(created.viewId);
       setNotice(`${created.name} created`);
@@ -264,13 +310,16 @@ function App() {
   }
 
   async function handleImport(sources: File[], parentId: string | null, base?: EntryPosition) {
-    if (!sources.length) return;
+    if (!sources.length || !canMutate) return;
     setError("");
     try {
       const offset = childrenCount(parentId);
       const viewId = parentId === null ? activeViewId || layout.views[0].id : null;
       const imported = await importFiles(sources, parentId, sources.map((_, index) => nextPosition(offset + index, base)), viewId);
-      setEntries((current) => [...current, ...imported]);
+      setEntries((current) => {
+        const existingIds = new Set(current.map((entry) => entry.id));
+        return [...current, ...imported.filter((entry) => !existingIds.has(entry.id))];
+      });
       setSelectedId(imported.at(-1)?.id ?? null);
       const lastImported = imported.at(-1);
       if (lastImported?.viewId) goToView(lastImported.viewId);
@@ -281,6 +330,7 @@ function App() {
   }
 
   async function handleDesktopMove(entry: DesktopEntry, position: EntryPosition, targetParentId: string | null) {
+    if (!canMutate) return;
     if (targetParentId) {
       await handleMoveTo(entry, targetParentId);
       return;
@@ -292,18 +342,17 @@ function App() {
       x: Math.max(8, position.x - column * desktopSize.width),
       y: Math.max(8, position.y - row * desktopSize.height),
     };
-    const previous = { position: entry.position, viewId: entry.viewId };
     setEntries((current) => current.map((item) => item.id === entry.id ? { ...item, position: localPosition, viewId: targetView.id } : item));
     try {
       await layoutSaveRef.current;
       await updateEntryPosition(entry.id, localPosition, targetView.id);
     } catch {
-      setEntries((current) => current.map((item) => item.id === entry.id ? { ...item, ...previous } : item));
       setError("The new icon position could not be saved.");
     }
   }
 
   async function handleMoveTo(entry: DesktopEntry, parentId: string | null, bubbleError = false) {
+    if (!canMutate) return;
     setError("");
     try {
       if (entry.parentId === parentId) return;
@@ -329,7 +378,7 @@ function App() {
     setError("");
     try {
       const blob = await readFile(entry.id);
-      setOpenFile({ file: entry, blob, editable: isEditable(entry) });
+      setOpenFile({ file: entry, blob, editable: isEditable(entry), contentRevision: contentRevisionsRef.current[entry.id] ?? 0, remoteChanged: false });
     } catch (openError) {
       setError(openError instanceof Error ? openError.message : "The file could not be opened.");
     }
@@ -374,8 +423,8 @@ function App() {
     const saved = await saveTextFile(openFile.file.id, content);
     const blob = await readFile(saved.id);
     setEntries((current) => current.map((entry) => entry.id === saved.id ? saved : entry));
-    setOpenFile({ file: saved, blob, editable: true });
-    setNotice("Changes saved privately");
+    setOpenFile({ file: saved, blob, editable: true, contentRevision: contentRevisionsRef.current[saved.id] ?? 0, remoteChanged: false });
+    setNotice("Changes synced");
   }
 
   function goToView(viewId: string) {
@@ -501,6 +550,7 @@ function App() {
   }
 
   function deleteView(viewId: string) {
+    if (!canMutate) return;
     if (layout.views.length === 1) {
       setError("The final desktop view cannot be deleted.");
       return;
@@ -518,7 +568,7 @@ function App() {
   }
 
   function startMinimapPress(event: React.PointerEvent<HTMLButtonElement>, viewId: string) {
-    if (event.button !== 0) return;
+    if (event.button !== 0 || !canMutate) return;
     const press = {
       activated: editingViews,
       pointerId: event.pointerId,
@@ -605,11 +655,15 @@ function App() {
       <header className="menu-bar">
         <div className="brand-mark" aria-label="Hiraya Desktop"><span className="brand-mark__shape"><span /></span><strong>Hiraya</strong></div>
         <div className="menu-bar__actions">
-          <button type="button" aria-label="New file" onClick={() => setDialog({ type: "create-file", parentId: null })}><Plus size={15} weight="bold" /> <span>New file</span></button>
-          <button type="button" aria-label="New folder" onClick={() => setDialog({ type: "create-folder", parentId: null })}><FolderPlus size={16} /> <span>New folder</span></button>
-          <button type="button" aria-label="Upload files" onClick={() => chooseUpload(null)}><UploadSimple size={16} /> <span>Upload</span></button>
+          <button type="button" aria-label="New file" disabled={!canMutate} onClick={() => setDialog({ type: "create-file", parentId: null })}><Plus size={15} weight="bold" /> <span>New file</span></button>
+          <button type="button" aria-label="New folder" disabled={!canMutate} onClick={() => setDialog({ type: "create-folder", parentId: null })}><FolderPlus size={16} /> <span>New folder</span></button>
+          <button type="button" aria-label="Upload files" disabled={!canMutate} onClick={() => chooseUpload(null)}><UploadSimple size={16} /> <span>Upload</span></button>
           <button type="button" aria-label="Export saved desktop" title="Export the saved desktop as a predefined package" disabled={loading || exporting} onClick={() => void handleExport()}><ExportIcon size={16} /> <span>{exporting ? "Exporting" : "Export"}</span></button>
           {document.fullscreenEnabled && <button type="button" aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"} title={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"} onClick={() => void toggleFullscreen()}>{isFullscreen ? <CornersIn size={16} /> : <CornersOut size={16} />} <span>{isFullscreen ? "Exit fullscreen" : "Fullscreen"}</span></button>}
+          <span className="menu-bar__sync" data-status={syncStatus} title={syncStatus === "online" ? "Changes are synced" : syncStatus === "connecting" ? "Connecting to sync server" : "Sync server unavailable; editing is disabled"}>
+            {syncStatus === "online" ? <CloudCheck size={15} /> : syncStatus === "connecting" ? <SpinnerGap size={15} /> : <CloudSlash size={15} />}
+            <span>{syncStatus === "online" ? "Synced" : syncStatus === "connecting" ? "Connecting" : "Offline"}</span>
+          </span>
           <span className="menu-bar__clock">{formatClock(clock)}</span>
         </div>
       </header>
@@ -626,9 +680,10 @@ function App() {
         }}
         onClick={(event) => { if (!(event.target as Element).closest(".file-icon, .empty-state__actions")) setSelectedId(null); }}
         onContextMenu={(event) => { if (event.target === event.currentTarget) event.preventDefault(); }}
-        onDragOver={(event) => { event.preventDefault(); event.currentTarget.dataset.dropActive = "true"; }}
+        onDragOver={(event) => { if (!canMutate) return; event.preventDefault(); event.currentTarget.dataset.dropActive = "true"; }}
         onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) delete event.currentTarget.dataset.dropActive; }}
         onDrop={(event) => {
+          if (!canMutate) return;
           event.preventDefault();
           delete event.currentTarget.dataset.dropActive;
           const bounds = event.currentTarget.getBoundingClientRect();
@@ -681,9 +736,9 @@ function App() {
             <h1>Your space is ready.</h1>
             <p>Create a note or folder, or drop a file anywhere. Everything stays in this browser.</p>
             <div className="empty-state__actions">
-              <button className="button button--primary" type="button" onClick={() => setDialog({ type: "create-file", parentId: null })}><Plus size={17} /> New file</button>
-              <button className="button button--quiet" type="button" onClick={() => setDialog({ type: "create-folder", parentId: null })}><FolderPlus size={17} /> New folder</button>
-              <button className="button button--quiet" type="button" onClick={() => chooseUpload(null)}><UploadSimple size={17} /> Upload</button>
+              <button className="button button--primary" type="button" disabled={!canMutate} onClick={() => setDialog({ type: "create-file", parentId: null })}><Plus size={17} /> New file</button>
+              <button className="button button--quiet" type="button" disabled={!canMutate} onClick={() => setDialog({ type: "create-folder", parentId: null })}><FolderPlus size={17} /> New folder</button>
+              <button className="button button--quiet" type="button" disabled={!canMutate} onClick={() => chooseUpload(null)}><UploadSimple size={17} /> Upload</button>
             </div>
           </div>
         )}
@@ -772,6 +827,7 @@ function App() {
           onUpload={chooseUpload}
           onMove={(entry, parentId) => void handleMoveTo(entry, parentId)}
           onContextMenu={(entry, x, y) => setContextMenu({ entry, x, y })}
+          readOnly={!canMutate}
         />
       )}
 
@@ -783,6 +839,7 @@ function App() {
           onDownload={contextMenu.entry.kind === "file" ? () => void download(contextMenu.entry as FileEntry) : undefined}
           onMove={() => { setMoveDialogEntry(contextMenu.entry); setContextMenu(null); }}
           onDelete={() => { setDialog({ type: "delete", entry: contextMenu.entry }); setContextMenu(null); }}
+          readOnly={!canMutate}
         />
       )}
       {dialog && <FileDialog dialog={dialog} onClose={() => setDialog(null)} onSubmit={handleDialogSubmit} />}
@@ -801,6 +858,8 @@ function App() {
           file={openFile.file}
           blob={openFile.blob}
           editable={openFile.editable}
+          readOnly={!canMutate}
+          remoteChanged={openFile.remoteChanged}
           editorSettings={editorSettings}
           onClose={() => setOpenFile(null)}
           onSave={save}
@@ -808,6 +867,7 @@ function App() {
           onEditorSettingsChange={applyEditorSettings}
           onResolveLink={(path) => readFileByRelativePath(openFile.file.id, path)}
           onOpenLinkedFile={(file) => void handleOpen(file)}
+          onDirtyChange={(dirty) => { openFileDirtyRef.current = dirty; }}
         />
       )}
     </main>

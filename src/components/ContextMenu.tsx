@@ -8,9 +8,10 @@ type Props = {
   onDownload?: () => void;
   onMove: () => void;
   onDelete: () => void;
+  readOnly?: boolean;
 };
 
-export function ContextMenu({ menu, onOpen, onRename, onDownload, onMove, onDelete }: Props) {
+export function ContextMenu({ menu, onOpen, onRename, onDownload, onMove, onDelete, readOnly = false }: Props) {
   const left = Math.min(menu.x, window.innerWidth - 190);
   const top = Math.min(menu.y, window.innerHeight - 210);
 
@@ -19,7 +20,7 @@ export function ContextMenu({ menu, onOpen, onRename, onDownload, onMove, onDele
       <button type="button" role="menuitem" autoFocus onClick={onOpen}>
         <FolderOpen size={17} /> Open
       </button>
-      <button type="button" role="menuitem" onClick={onRename}>
+      <button type="button" role="menuitem" disabled={readOnly} onClick={onRename}>
         <PencilSimple size={17} /> Rename
         <kbd>R</kbd>
       </button>
@@ -28,10 +29,10 @@ export function ContextMenu({ menu, onOpen, onRename, onDownload, onMove, onDele
           <DownloadSimple size={17} /> Download
         </button>
       )}
-      <button type="button" role="menuitem" onClick={onMove}>
+      <button type="button" role="menuitem" disabled={readOnly} onClick={onMove}>
         <FolderSimplePlus size={17} /> Move to...
       </button>
-      <button className="context-menu__danger" type="button" role="menuitem" onClick={onDelete}>
+      <button className="context-menu__danger" type="button" role="menuitem" disabled={readOnly} onClick={onDelete}>
         <Trash size={17} /> Delete
       </button>
     </div>

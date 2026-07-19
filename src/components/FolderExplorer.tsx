@@ -24,6 +24,7 @@ export interface FolderExplorerProps {
   onUpload: (parentId: string | null) => void;
   onContextMenu: (entry: DesktopEntry, x: number, y: number) => void;
   onMove: (entry: DesktopEntry, targetParentId: string | null) => void;
+  readOnly?: boolean;
 }
 
 type DragState = {
@@ -49,6 +50,7 @@ export function FolderExplorer({
   onUpload,
   onContextMenu,
   onMove,
+  readOnly = false,
 }: FolderExplorerProps) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const drag = useRef<DragState | null>(null);
@@ -86,7 +88,7 @@ export function FolderExplorer({
   }
 
   function handlePointerDown(event: React.PointerEvent<HTMLButtonElement>, entry: DesktopEntry) {
-    if (event.button !== 0) return;
+    if (event.button !== 0 || readOnly) return;
     drag.current = {
       entry,
       pointerId: event.pointerId,
@@ -145,9 +147,9 @@ export function FolderExplorer({
           <button className="icon-button icon-button--wide" type="button" aria-label="Back to parent folder" disabled={!folder} onClick={() => onNavigate(previousFolder)}>
             <ArrowLeft size={17} /> <span>Back</span>
           </button>
-          <button className="button button--quiet" type="button" onClick={() => onCreateFolder(parentId)}><FolderPlus size={17} /> New folder</button>
-          <button className="button button--quiet" type="button" onClick={() => onCreateFile(parentId)}><FilePlus size={17} /> New text</button>
-          <button className="button button--primary" type="button" onClick={() => onUpload(parentId)}><UploadSimple size={17} /> Upload</button>
+          <button className="button button--quiet" type="button" disabled={readOnly} onClick={() => onCreateFolder(parentId)}><FolderPlus size={17} /> New folder</button>
+          <button className="button button--quiet" type="button" disabled={readOnly} onClick={() => onCreateFile(parentId)}><FilePlus size={17} /> New text</button>
+          <button className="button button--primary" type="button" disabled={readOnly} onClick={() => onUpload(parentId)}><UploadSimple size={17} /> Upload</button>
         </div>
 
         <nav className="folder-explorer__breadcrumbs" aria-label="Folder path">

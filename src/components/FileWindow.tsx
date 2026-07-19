@@ -22,6 +22,8 @@ type Props = {
   file: FileEntry;
   blob: File;
   editable: boolean;
+  readOnly?: boolean;
+  remoteChanged?: boolean;
   editorSettings: EditorSettings;
   onClose: () => void;
   onSave: (content: string) => Promise<void>;
@@ -29,9 +31,10 @@ type Props = {
   onEditorSettingsChange: (settings: EditorSettings) => void;
   onResolveLink: (path: string) => Promise<{ file: FileEntry; blob: Blob }>;
   onOpenLinkedFile: (file: FileEntry) => void;
+  onDirtyChange?: (dirty: boolean) => void;
 };
 
-export function FileWindow({ file, blob, editable, editorSettings, onClose, onSave, onDownload, onEditorSettingsChange, onResolveLink, onOpenLinkedFile }: Props) {
+export function FileWindow({ file, blob, editable, readOnly = false, remoteChanged = false, editorSettings, onClose, onSave, onDownload, onEditorSettingsChange, onResolveLink, onOpenLinkedFile, onDirtyChange }: Props) {
   const [openedBlob] = useState(blob);
   const [content, setContent] = useState("");
   const [savedContent, setSavedContent] = useState("");
@@ -93,27 +96,32 @@ export function FileWindow({ file, blob, editable, editorSettings, onClose, onSa
   const isAudio = file.mimeType.startsWith("audio/");
 
   useEffect(() => {
-    if (!editable || !editorSettings.autoSave || !contentLoaded || !dirty || saving || lastAutoSaveAttemptRef.current === content) return;
+    onDirtyChange?.(dirty);
+    return () => onDirtyChange?.(false);
+  }, [dirty, onDirtyChange]);
+
+  useEffect(() => {
+    if (!editable || readOnly || !editorSettings.autoSave || !contentLoaded || !dirty || saving || lastAutoSaveAttemptRef.current === content) return;
     const timer = window.setTimeout(() => {
       lastAutoSaveAttemptRef.current = content;
       void save(content);
     }, 600);
     return () => window.clearTimeout(timer);
-  }, [content, contentLoaded, dirty, editable, editorSettings.autoSave, save, saving]);
+  }, [content, contentLoaded, dirty, editable, editorSettings.autoSave, readOnly, save, saving]);
 
   return (
     <div className="modal-backdrop modal-backdrop--window" role="presentation">
       <section className="file-window" role="dialog" aria-modal="true" aria-labelledby="file-window-title">
         <header className="window-header file-window__header">
           <div className="file-window__title">
-            <span className="window-kicker">{editable ? "Text editor" : "Preview"}</span>
+            <span className="window-kicker">{editable ? readOnly ? "Text preview" : "Text editor" : "Preview"}</span>
             <h2 id="file-window-title">{file.name}{dirty ? " •" : ""}</h2>
           </div>
           <div className="window-controls">
             <button className="icon-button icon-button--wide" type="button" onClick={onDownload} aria-label="Download file">
               <DownloadSimple size={17} /> <span>Download</span>
             </button>
-            {editable && (
+            {editable && !readOnly && (
               <button className="button button--primary button--save" type="button" onClick={() => void save(content)} disabled={saving || !dirty}>
                 {saving ? <FloppyDisk size={17} /> : <Check size={17} />}
                 {saving ? "Saving" : dirty ? "Save" : "Saved"}
@@ -125,7 +133,8 @@ export function FileWindow({ file, blob, editable, editorSettings, onClose, onSa
           </div>
         </header>
         {saveError && <div className="window-error">{saveError}</div>}
-        {editable && (
+        {remoteChanged && <div className="window-error">This file changed on the server. Your unsaved text is preserved; saving it will become the latest version.</div>}
+        {editable && !readOnly && (
           <div className="editor-toolbar" aria-label="Editor settings">
             <label>
               <span>Language</span>
@@ -165,6 +174,7 @@ export function FileWindow({ file, blob, editable, editorSettings, onClose, onSa
               file={file}
               value={content}
               settings={editorSettings}
+              readOnly={readOnly}
               onChange={setContent}
               onSave={() => void save(content)}
               onResolveLink={onResolveLink}

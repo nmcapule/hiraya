@@ -17,6 +17,7 @@ type Props = {
   file: FileEntry;
   value: string;
   settings: EditorSettings;
+  readOnly?: boolean;
   onChange: (value: string) => void;
   onSave: () => void;
   onResolveLink: (path: string) => Promise<LinkedFile>;
@@ -214,16 +215,17 @@ function inlinePreviews(
   });
 }
 
-export function TextEditor({ file, value, settings, onChange, onSave, onResolveLink, onOpenLinkedFile }: Props) {
+export function TextEditor({ file, value, settings, readOnly = false, onChange, onSave, onResolveLink, onOpenLinkedFile }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView>(null);
   const languageConfig = useRef(new Compartment());
   const fontConfig = useRef(new Compartment());
+  const editableConfig = useRef(new Compartment());
   const onChangeRef = useRef(onChange);
   const onSaveRef = useRef(onSave);
   const resolveLinkRef = useRef(onResolveLink);
   const openLinkedFileRef = useRef(onOpenLinkedFile);
-  const initialConfig = useRef({ value, fileName: file.name, language: resolvedLanguage(settings.language, file.name), fontSize: settings.fontSize });
+  const initialConfig = useRef({ value, fileName: file.name, language: resolvedLanguage(settings.language, file.name), fontSize: settings.fontSize, readOnly });
   onChangeRef.current = onChange;
   onSaveRef.current = onSave;
   resolveLinkRef.current = onResolveLink;
@@ -241,6 +243,7 @@ export function TextEditor({ file, value, settings, onChange, onSave, onResolveL
         EditorView.contentAttributes.of({ "aria-label": `Contents of ${initialConfig.current.fileName}`, spellcheck: "true" }),
         languageConfig.current.of(languageExtension(initialConfig.current.language)),
         fontConfig.current.of(EditorView.theme({ "&": { fontSize: `${initialConfig.current.fontSize}px` } })),
+        editableConfig.current.of(EditorView.editable.of(!initialConfig.current.readOnly)),
         keymap.of([{ key: "Mod-s", preventDefault: true, run: () => { onSaveRef.current(); return true; } }]),
         EditorView.updateListener.of((update) => {
           if (update.docChanged) onChangeRef.current(update.state.doc.toString());
@@ -272,6 +275,10 @@ export function TextEditor({ file, value, settings, onChange, onSave, onResolveL
   useEffect(() => {
     viewRef.current?.dispatch({ effects: fontConfig.current.reconfigure(EditorView.theme({ "&": { fontSize: `${settings.fontSize}px` } })) });
   }, [settings.fontSize]);
+
+  useEffect(() => {
+    viewRef.current?.dispatch({ effects: editableConfig.current.reconfigure(EditorView.editable.of(!readOnly)) });
+  }, [readOnly]);
 
   return <div className="text-editor" ref={containerRef} aria-label={`Contents of ${file.name}`} />;
 }

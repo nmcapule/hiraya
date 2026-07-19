@@ -139,6 +139,32 @@ textarea:focus-visible {
   color: rgba(255, 255, 255, 0.76);
 }
 
+.menu-bar__sync {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 5px;
+  font-size: 10px;
+  font-weight: 650;
+  color: rgba(255, 255, 255, 0.76);
+}
+
+.menu-bar__sync[data-status="online"] {
+  color: #d9eadc;
+}
+
+.menu-bar__sync[data-status="offline"] {
+  color: #ffd39e;
+}
+
+.menu-bar__sync[data-status="connecting"] svg {
+  animation: sync-spin 900ms linear infinite;
+}
+
+@keyframes sync-spin {
+  to { transform: rotate(360deg); }
+}
+
 .desktop {
   position: absolute;
   inset: 44px 0 0;
@@ -1329,7 +1355,8 @@ textarea:focus-visible {
   }
 
   .menu-bar__actions button span,
-  .menu-bar__clock {
+  .menu-bar__clock,
+  .menu-bar__sync span {
     display: none;
   }
 

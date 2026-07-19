@@ -30,12 +30,44 @@ type ManifestV4 = {
   editorSettings: Omit<EditorSettings, "autoSave">;
 };
 
-type Manifest = {
+type ManifestV5 = {
   version: 5;
   entries: DesktopEntry[];
   views: DesktopView[];
   viewColumns: number;
   editorSettings: EditorSettings;
+};
+
+export type DesktopSyncState = {
+  revision: number;
+  entryRevisions: Record<string, number>;
+  contentRevisions: Record<string, number>;
+  layoutRevision: number;
+  settingsRevision: number;
+};
+
+type Manifest = {
+  version: 6;
+  entries: DesktopEntry[];
+  views: DesktopView[];
+  viewColumns: number;
+  editorSettings: EditorSettings;
+  sync: DesktopSyncState;
+};
+
+export type DesktopSnapshot = {
+  entries: DesktopEntry[];
+  layout: DesktopLayout;
+  editorSettings: EditorSettings;
+  sync: DesktopSyncState;
+};
+
+const EMPTY_SYNC_STATE: DesktopSyncState = {
+  revision: 0,
+  entryRevisions: {},
+  contentRevisions: {},
+  layoutRevision: 0,
+  settingsRevision: 0,
 };
 
 const EDITOR_LANGUAGES = new Set<EditorLanguage>(["auto", "plain", "markdown", "json", "javascript", "typescript", "jsx", "tsx", "css", "html", "xml", "yaml"]);
@@ -141,10 +173,11 @@ function migrateEntries(entries: Array<Omit<DesktopEntry, "viewId">>, viewport: 
   const rows = Math.max(1, ...rootEntries.map((entry) => Math.floor(entry.position.y / height) + 1));
   const views = Array.from({ length: columns * rows }, () => ({ id: crypto.randomUUID() }));
   return {
-    version: 5,
+    version: 6,
     viewColumns: columns,
     views,
     editorSettings: DEFAULT_EDITOR_SETTINGS,
+    sync: EMPTY_SYNC_STATE,
     entries: entries.map((entry) => {
       if (entry.parentId !== null) return { ...entry, viewId: null } as DesktopEntry;
       const column = Math.floor(entry.position.x / width);
@@ -176,11 +209,12 @@ async function createManifestFromPredefined(predefined: PredefinedManifest): Pro
     return file;
   });
   const created: Manifest = {
-    version: 5,
+    version: 6,
     entries,
     views: predefined.layout.views,
     viewColumns: predefined.layout.columns,
     editorSettings: predefined.editorSettings,
+    sync: EMPTY_SYNC_STATE,
   };
   assertValidManifest(created);
   for (const [index, file] of files.entries()) await writeContent(file.id, contents[index]);
@@ -197,7 +231,7 @@ async function readManifest(
   try {
     const handle = await root.getFileHandle(MANIFEST_NAME);
     const file = await handle.getFile();
-    const parsed = JSON.parse(await file.text()) as Manifest | ManifestV4 | ManifestV3 | ManifestV2 | ManifestV1;
+    const parsed = JSON.parse(await file.text()) as Manifest | ManifestV5 | ManifestV4 | ManifestV3 | ManifestV2 | ManifestV1;
 
     if (parsed.version === 1 && Array.isArray(parsed.files)) {
       const migrated = migrateEntries(
@@ -215,18 +249,24 @@ async function readManifest(
       return migrated;
     }
     if (parsed.version === 3 && Array.isArray(parsed.entries)) {
-      const migrated: Manifest = { ...parsed, version: 5, editorSettings: DEFAULT_EDITOR_SETTINGS };
+      const migrated: Manifest = { ...parsed, version: 6, editorSettings: DEFAULT_EDITOR_SETTINGS, sync: EMPTY_SYNC_STATE };
       assertValidManifest(migrated);
       await writeManifest(migrated);
       return migrated;
     }
     if (parsed.version === 4 && Array.isArray(parsed.entries)) {
-      const migrated: Manifest = { ...parsed, version: 5, editorSettings: { ...parsed.editorSettings, autoSave: true } };
+      const migrated: Manifest = { ...parsed, version: 6, editorSettings: { ...parsed.editorSettings, autoSave: true }, sync: EMPTY_SYNC_STATE };
       assertValidManifest(migrated);
       await writeManifest(migrated);
       return migrated;
     }
-    if (parsed.version !== 5 || !Array.isArray(parsed.entries)) {
+    if (parsed.version === 5 && Array.isArray(parsed.entries)) {
+      const migrated: Manifest = { ...parsed, version: 6, sync: EMPTY_SYNC_STATE };
+      assertValidManifest(migrated);
+      await writeManifest(migrated);
+      return migrated;
+    }
+    if (parsed.version !== 6 || !Array.isArray(parsed.entries)) {
       throw new Error("The storage index has an unsupported format.");
     }
 
@@ -235,7 +275,7 @@ async function readManifest(
   } catch (error) {
     if (error instanceof DOMException && error.name === "NotFoundError") {
       if (predefined) return createManifestFromPredefined(predefined);
-      const created: Manifest = { version: 5, entries: [], views: [{ id: crypto.randomUUID() }], viewColumns: 1, editorSettings: DEFAULT_EDITOR_SETTINGS };
+      const created: Manifest = { version: 6, entries: [], views: [{ id: crypto.randomUUID() }], viewColumns: 1, editorSettings: DEFAULT_EDITOR_SETTINGS, sync: EMPTY_SYNC_STATE };
       await writeManifest(created);
       return created;
     }
@@ -277,13 +317,49 @@ function getFileEntry(entries: DesktopEntry[], id: string): FileEntry {
 
 let desktopLoad: Promise<Manifest> | null = null;
 
-export async function loadDesktop(viewport: EntryPosition, predefined: PredefinedManifest | null = null): Promise<{ entries: DesktopEntry[]; layout: DesktopLayout; editorSettings: EditorSettings }> {
+export async function loadDesktop(viewport: EntryPosition, predefined: PredefinedManifest | null = null): Promise<DesktopSnapshot> {
   desktopLoad ??= readManifest(viewport, predefined).catch((error) => {
     desktopLoad = null;
     throw error;
   });
   const manifest = await desktopLoad;
-  return { entries: manifest.entries, layout: { views: manifest.views, columns: manifest.viewColumns }, editorSettings: manifest.editorSettings };
+  return { entries: manifest.entries, layout: { views: manifest.views, columns: manifest.viewColumns }, editorSettings: manifest.editorSettings, sync: manifest.sync };
+}
+
+export async function applyRemoteDesktop(snapshot: DesktopSnapshot, contents: Map<string, Blob>) {
+  const current = await readManifest();
+  const next: Manifest = {
+    version: 6,
+    entries: snapshot.entries,
+    views: snapshot.layout.views,
+    viewColumns: snapshot.layout.columns,
+    editorSettings: snapshot.editorSettings,
+    sync: snapshot.sync,
+  };
+  assertValidManifest(next);
+
+  for (const entry of snapshot.entries) {
+    if (entry.kind !== "file") continue;
+    const changedContent = current.sync.contentRevisions[entry.id] !== snapshot.sync.contentRevisions[entry.id];
+    if (!changedContent) continue;
+    const content = contents.get(entry.id);
+    if (!content || content.size !== entry.size) throw new Error(`The server returned invalid contents for “${entry.name}”.`);
+    await writeContent(entry.id, content.slice(0, content.size, entry.mimeType));
+  }
+  await writeManifest(next);
+  desktopLoad = Promise.resolve(next);
+
+  const retained = new Set(snapshot.entries.filter((entry) => entry.kind === "file").map((entry) => entry.id));
+  const directory = await getFilesDirectory();
+  for (const entry of current.entries) {
+    if (entry.kind !== "file" || retained.has(entry.id)) continue;
+    try {
+      await directory.removeEntry(entry.id);
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === "NotFoundError")) console.warn("Hiraya could not clean up stale file content.", error);
+    }
+  }
+  return snapshot;
 }
 
 export async function saveEditorSettings(settings: EditorSettings) {
