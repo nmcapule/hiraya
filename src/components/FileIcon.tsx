@@ -72,8 +72,20 @@ export function FileIcon({ entry, selected, onSelect, onOpen, onMove, onDragAtEd
     document.querySelector<HTMLElement>(`.file-icon[data-folder-id="${CSS.escape(folderId)}"]`)?.setAttribute("data-drop-target", "true");
   }
 
+  function findDropTarget(clientX: number, clientY: number) {
+    const folders = Array.from(document.querySelectorAll<HTMLElement>(".file-icon[data-folder-id]"));
+    for (const folder of folders.reverse()) {
+      if (folder.dataset.folderId === entry.id) continue;
+      const bounds = folder.getBoundingClientRect();
+      if (clientX >= bounds.left && clientX <= bounds.right && clientY >= bounds.top && clientY <= bounds.bottom) {
+        return folder.dataset.folderId ?? null;
+      }
+    }
+    return null;
+  }
+
   function handlePointerDown(event: React.PointerEvent<HTMLButtonElement>) {
-    if (event.button !== 0 || !selected) return;
+    if (event.button !== 0) return;
     const desktop = event.currentTarget.parentElement;
     if (!desktop) return;
 
@@ -118,21 +130,19 @@ export function FileIcon({ entry, selected, onSelect, onOpen, onMove, onDragAtEd
     }
     drag.current.x = x;
     drag.current.y = y;
-    const target = document.elementsFromPoint(event.clientX, event.clientY)
-      .map((element) => element.closest<HTMLElement>(".file-icon[data-folder-id]"))
-      .find((element) => element?.dataset.folderId !== entry.id);
-    drag.current.targetFolderId = target?.dataset.folderId ?? null;
+    drag.current.targetFolderId = findDropTarget(event.clientX, event.clientY);
     setDropTarget(drag.current.targetFolderId);
     iconRef.current.style.transform = `translate3d(${x - drag.current.baseX}px, ${y - drag.current.baseY}px, 0)`;
     iconRef.current.dataset.dragging = "true";
   }
 
-  function finishDrag(event: React.PointerEvent<HTMLButtonElement>) {
+  function finishDrag(event: React.PointerEvent<HTMLButtonElement>, cancelled = false) {
     if (!drag.current) return;
     event.currentTarget.releasePointerCapture(event.pointerId);
 
-    if (drag.current.moved) {
-      onMove({ x: Math.round(drag.current.x), y: Math.round(drag.current.y) }, drag.current.targetFolderId);
+    if (drag.current.moved && !cancelled) {
+      const targetFolderId = findDropTarget(event.clientX, event.clientY);
+      onMove({ x: Math.round(drag.current.x), y: Math.round(drag.current.y) }, targetFolderId);
     }
     iconRef.current?.style.removeProperty("transform");
     if (iconRef.current) delete iconRef.current.dataset.dragging;
@@ -175,7 +185,7 @@ export function FileIcon({ entry, selected, onSelect, onOpen, onMove, onDragAtEd
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={finishDrag}
-      onPointerCancel={finishDrag}
+      onPointerCancel={(event) => finishDrag(event, true)}
     >
       <span className="file-icon__art">
         <FileTypeIcon entry={entry} />

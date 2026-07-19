@@ -767,6 +767,23 @@ textarea:focus-visible {
   outline-offset: 1px;
 }
 
+.editor-toolbar .editor-toolbar__toggle {
+  cursor: pointer;
+  user-select: none;
+}
+
+.editor-toolbar__toggle input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: #9a6b20;
+}
+
+.editor-toolbar__toggle input:focus-visible {
+  outline: 2px solid #b88936;
+  outline-offset: 2px;
+}
+
 .file-window__content {
   display: grid;
   min-height: 0;
@@ -1033,10 +1050,12 @@ textarea:focus-visible {
 
 .inline-media-row {
   display: flex;
+  box-sizing: border-box;
+  width: 100%;
   max-width: min(680px, calc(100% - 8px));
   flex-wrap: wrap;
   gap: 10px;
-  margin: 9px 4px 15px;
+  padding: 9px 4px 15px;
   font-family: system-ui, sans-serif;
   white-space: normal;
 }
@@ -1044,6 +1063,7 @@ textarea:focus-visible {
 .inline-media-preview {
   position: relative;
   display: grid;
+  box-sizing: border-box;
   width: min(320px, 100%);
   min-height: 74px;
   overflow: hidden;

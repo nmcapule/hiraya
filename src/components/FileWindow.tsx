@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Check, DownloadSimple, FloppyDisk, X } from "@phosphor-icons/react";
 import type { EditorLanguage, EditorSettings, FileEntry } from "../types";
 import { TextEditor } from "./TextEditor";
@@ -32,18 +32,23 @@ type Props = {
 };
 
 export function FileWindow({ file, blob, editable, editorSettings, onClose, onSave, onDownload, onEditorSettingsChange, onResolveLink, onOpenLinkedFile }: Props) {
+  const [openedBlob] = useState(blob);
   const [content, setContent] = useState("");
   const [savedContent, setSavedContent] = useState("");
   const [contentLoaded, setContentLoaded] = useState(false);
   const [objectUrl, setObjectUrl] = useState("");
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
+  const savingRef = useRef(false);
+  const onSaveRef = useRef(onSave);
+  const lastAutoSaveAttemptRef = useRef<string | null>(null);
+  onSaveRef.current = onSave;
 
   useEffect(() => {
     if (editable) {
       let active = true;
       setContentLoaded(false);
-      void blob.text().then((text) => {
+      void openedBlob.text().then((text) => {
         if (!active) return;
         setContent(text);
         setSavedContent(text);
@@ -52,10 +57,10 @@ export function FileWindow({ file, blob, editable, editorSettings, onClose, onSa
       return () => { active = false; };
     }
 
-    const url = URL.createObjectURL(blob);
+    const url = URL.createObjectURL(openedBlob);
     setObjectUrl(url);
     return () => URL.revokeObjectURL(url);
-  }, [blob, editable]);
+  }, [editable, openedBlob]);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -65,24 +70,36 @@ export function FileWindow({ file, blob, editable, editorSettings, onClose, onSa
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [onClose]);
 
-  async function save() {
+  const save = useCallback(async (nextContent: string) => {
+    if (savingRef.current) return;
+    savingRef.current = true;
     setSaving(true);
     setSaveError("");
     try {
-      await onSave(content);
-      setSavedContent(content);
+      await onSaveRef.current(nextContent);
+      setSavedContent(nextContent);
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : "Changes could not be saved.");
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
-  }
+  }, []);
 
   const dirty = content !== savedContent;
   const isImage = file.mimeType.startsWith("image/");
   const isPdf = file.mimeType === "application/pdf";
   const isVideo = file.mimeType.startsWith("video/");
   const isAudio = file.mimeType.startsWith("audio/");
+
+  useEffect(() => {
+    if (!editable || !editorSettings.autoSave || !contentLoaded || !dirty || saving || lastAutoSaveAttemptRef.current === content) return;
+    const timer = window.setTimeout(() => {
+      lastAutoSaveAttemptRef.current = content;
+      void save(content);
+    }, 600);
+    return () => window.clearTimeout(timer);
+  }, [content, contentLoaded, dirty, editable, editorSettings.autoSave, save, saving]);
 
   return (
     <div className="modal-backdrop modal-backdrop--window" role="presentation">
@@ -97,7 +114,7 @@ export function FileWindow({ file, blob, editable, editorSettings, onClose, onSa
               <DownloadSimple size={17} /> <span>Download</span>
             </button>
             {editable && (
-              <button className="button button--primary button--save" type="button" onClick={() => void save()} disabled={saving || !dirty}>
+              <button className="button button--primary button--save" type="button" onClick={() => void save(content)} disabled={saving || !dirty}>
                 {saving ? <FloppyDisk size={17} /> : <Check size={17} />}
                 {saving ? "Saving" : dirty ? "Save" : "Saved"}
               </button>
@@ -119,6 +136,17 @@ export function FileWindow({ file, blob, editable, editorSettings, onClose, onSa
                 {LANGUAGE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
               </select>
             </label>
+            <label className="editor-toolbar__toggle">
+              <input
+                type="checkbox"
+                checked={editorSettings.autoSave}
+                onChange={(event) => {
+                  lastAutoSaveAttemptRef.current = null;
+                  onEditorSettingsChange({ ...editorSettings, autoSave: event.target.checked });
+                }}
+              />
+              <span>Auto save</span>
+            </label>
             <label>
               <span>Font size</span>
               <select
@@ -138,7 +166,7 @@ export function FileWindow({ file, blob, editable, editorSettings, onClose, onSa
               value={content}
               settings={editorSettings}
               onChange={setContent}
-              onSave={() => void save()}
+              onSave={() => void save(content)}
               onResolveLink={onResolveLink}
               onOpenLinkedFile={onOpenLinkedFile}
             />

@@ -20,8 +20,16 @@ type ManifestV3 = {
   viewColumns: number;
 };
 
-type Manifest = {
+type ManifestV4 = {
   version: 4;
+  entries: DesktopEntry[];
+  views: DesktopView[];
+  viewColumns: number;
+  editorSettings: Omit<EditorSettings, "autoSave">;
+};
+
+type Manifest = {
+  version: 5;
   entries: DesktopEntry[];
   views: DesktopView[];
   viewColumns: number;
@@ -29,7 +37,7 @@ type Manifest = {
 };
 
 const EDITOR_LANGUAGES = new Set<EditorLanguage>(["auto", "plain", "markdown", "json", "javascript", "typescript", "jsx", "tsx", "css", "html", "xml", "yaml"]);
-export const DEFAULT_EDITOR_SETTINGS: EditorSettings = { fontSize: 13, language: "auto" };
+export const DEFAULT_EDITOR_SETTINGS: EditorSettings = { autoSave: true, fontSize: 13, language: "auto" };
 
 export class StorageUnavailableError extends Error {
   constructor() {
@@ -73,6 +81,7 @@ function assertValidManifest(manifest: Manifest) {
   }
   if (
     !editorSettings ||
+    typeof editorSettings.autoSave !== "boolean" ||
     !Number.isInteger(editorSettings.fontSize) ||
     editorSettings.fontSize < 11 ||
     editorSettings.fontSize > 22 ||
@@ -130,7 +139,7 @@ function migrateEntries(entries: Array<Omit<DesktopEntry, "viewId">>, viewport: 
   const rows = Math.max(1, ...rootEntries.map((entry) => Math.floor(entry.position.y / height) + 1));
   const views = Array.from({ length: columns * rows }, () => ({ id: crypto.randomUUID() }));
   return {
-    version: 4,
+    version: 5,
     viewColumns: columns,
     views,
     editorSettings: DEFAULT_EDITOR_SETTINGS,
@@ -153,7 +162,7 @@ async function readManifest(viewport: EntryPosition = { x: window.innerWidth, y:
   try {
     const handle = await root.getFileHandle(MANIFEST_NAME);
     const file = await handle.getFile();
-    const parsed = JSON.parse(await file.text()) as Manifest | ManifestV3 | ManifestV2 | ManifestV1;
+    const parsed = JSON.parse(await file.text()) as Manifest | ManifestV4 | ManifestV3 | ManifestV2 | ManifestV1;
 
     if (parsed.version === 1 && Array.isArray(parsed.files)) {
       const migrated = migrateEntries(
@@ -171,12 +180,18 @@ async function readManifest(viewport: EntryPosition = { x: window.innerWidth, y:
       return migrated;
     }
     if (parsed.version === 3 && Array.isArray(parsed.entries)) {
-      const migrated: Manifest = { ...parsed, version: 4, editorSettings: DEFAULT_EDITOR_SETTINGS };
+      const migrated: Manifest = { ...parsed, version: 5, editorSettings: DEFAULT_EDITOR_SETTINGS };
       assertValidManifest(migrated);
       await writeManifest(migrated);
       return migrated;
     }
-    if (parsed.version !== 4 || !Array.isArray(parsed.entries)) {
+    if (parsed.version === 4 && Array.isArray(parsed.entries)) {
+      const migrated: Manifest = { ...parsed, version: 5, editorSettings: { ...parsed.editorSettings, autoSave: true } };
+      assertValidManifest(migrated);
+      await writeManifest(migrated);
+      return migrated;
+    }
+    if (parsed.version !== 5 || !Array.isArray(parsed.entries)) {
       throw new Error("The storage index has an unsupported format.");
     }
 
@@ -184,7 +199,7 @@ async function readManifest(viewport: EntryPosition = { x: window.innerWidth, y:
     return parsed;
   } catch (error) {
     if (error instanceof DOMException && error.name === "NotFoundError") {
-      const created: Manifest = { version: 4, entries: [], views: [{ id: crypto.randomUUID() }], viewColumns: 1, editorSettings: DEFAULT_EDITOR_SETTINGS };
+      const created: Manifest = { version: 5, entries: [], views: [{ id: crypto.randomUUID() }], viewColumns: 1, editorSettings: DEFAULT_EDITOR_SETTINGS };
       await writeManifest(created);
       return created;
     }

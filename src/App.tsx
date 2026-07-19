@@ -352,7 +352,7 @@ function App() {
   function handleDesktopPointerDown(event: React.PointerEvent<HTMLElement>) {
     if (event.button !== 0) return;
     const target = event.target as Element;
-    if (target.closest(".file-icon[data-selected], .empty-state__actions")) return;
+    if (target.closest(".file-icon, .empty-state__actions")) return;
     swipeRef.current = { axis: null, pointerId: event.pointerId, startIndex: activeViewIndex, startTime: performance.now(), startX: event.clientX, startY: event.clientY, x: event.clientX, y: event.clientY };
   }
 
@@ -746,6 +746,7 @@ function App() {
       )}
       {openFile && (
         <FileWindow
+          key={openFile.file.id}
           file={openFile.file}
           blob={openFile.blob}
           editable={openFile.editable}

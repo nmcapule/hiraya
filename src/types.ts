@@ -10,6 +10,7 @@ export type DesktopLayout = {
 export type EditorLanguage = "auto" | "plain" | "markdown" | "json" | "javascript" | "typescript" | "jsx" | "tsx" | "css" | "html" | "xml" | "yaml";
 
 export type EditorSettings = {
+  autoSave: boolean;
   fontSize: number;
   language: EditorLanguage;
 };
