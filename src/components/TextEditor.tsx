@@ -39,6 +39,8 @@ const EXTENSION_LANGUAGES: Record<string, EditorLanguage> = {
   yml: "yaml",
 };
 
+const TEXT_EXTENSIONS = new Set(["txt", "md", "markdown", "json", "js", "jsx", "ts", "tsx", "css", "html", "xml", "csv", "yaml", "yml"]);
+
 function resolvedLanguage(language: EditorLanguage, fileName: string) {
   if (language !== "auto") return language;
   return EXTENSION_LANGUAGES[fileName.split(".").pop()?.toLowerCase() ?? ""] ?? "plain";
@@ -71,8 +73,13 @@ function markdownLinks(text: string) {
   return paths;
 }
 
+function isTextPreviewable(file: FileEntry) {
+  const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+  return file.mimeType.startsWith("text/") || file.mimeType.includes("json") || TEXT_EXTENSIONS.has(extension);
+}
+
 function isPreviewable(file: FileEntry) {
-  return file.mimeType.startsWith("image/") || file.mimeType === "application/pdf" || file.mimeType.startsWith("video/") || file.mimeType.startsWith("audio/");
+  return isTextPreviewable(file) || file.mimeType.startsWith("image/") || file.mimeType === "application/pdf" || file.mimeType.startsWith("video/") || file.mimeType.startsWith("audio/");
 }
 
 class MediaPreviewWidget extends WidgetType {
@@ -106,7 +113,7 @@ class MediaPreviewWidget extends WidgetType {
       preview.addEventListener("mousedown", (event) => event.preventDefault());
       row.append(preview);
 
-      void this.resolveLink(path).then(({ file, blob }) => {
+      void this.resolveLink(path).then(async ({ file, blob }) => {
         if (this.destroyed) return;
         if (!isPreviewable(file)) {
           preview.hidden = true;
@@ -114,8 +121,6 @@ class MediaPreviewWidget extends WidgetType {
           return;
         }
 
-        const url = URL.createObjectURL(blob);
-        this.urls.push(url);
         preview.className = "inline-media-preview";
         preview.textContent = "";
         preview.setAttribute("aria-label", `Open ${file.name} in preview`);
@@ -131,29 +136,40 @@ class MediaPreviewWidget extends WidgetType {
         label.textContent = file.name;
         preview.append(label);
 
-        if (file.mimeType.startsWith("image/")) {
-          const image = document.createElement("img");
-          image.src = url;
-          image.alt = file.name;
-          preview.prepend(image);
-        } else if (file.mimeType === "application/pdf") {
-          const frame = document.createElement("iframe");
-          frame.src = url;
-          frame.title = file.name;
-          frame.tabIndex = -1;
-          preview.prepend(frame);
-        } else if (file.mimeType.startsWith("video/")) {
-          const video = document.createElement("video");
-          video.src = url;
-          video.preload = "metadata";
-          video.muted = true;
-          preview.prepend(video);
+        if (isTextPreviewable(file)) {
+          const text = document.createElement("pre");
+          text.className = "inline-media-preview__text";
+          text.textContent = await blob.text();
+          if (this.destroyed) return;
+          preview.prepend(text);
         } else {
-          const audio = document.createElement("audio");
-          audio.src = url;
-          audio.controls = true;
-          audio.addEventListener("click", (event) => event.stopPropagation());
-          preview.prepend(audio);
+          const url = URL.createObjectURL(blob);
+          this.urls.push(url);
+
+          if (file.mimeType.startsWith("image/")) {
+            const image = document.createElement("img");
+            image.src = url;
+            image.alt = file.name;
+            preview.prepend(image);
+          } else if (file.mimeType === "application/pdf") {
+            const frame = document.createElement("iframe");
+            frame.src = url;
+            frame.title = file.name;
+            frame.tabIndex = -1;
+            preview.prepend(frame);
+          } else if (file.mimeType.startsWith("video/")) {
+            const video = document.createElement("video");
+            video.src = url;
+            video.preload = "metadata";
+            video.muted = true;
+            preview.prepend(video);
+          } else {
+            const audio = document.createElement("audio");
+            audio.src = url;
+            audio.controls = true;
+            audio.addEventListener("click", (event) => event.stopPropagation());
+            preview.prepend(audio);
+          }
         }
         view.requestMeasure();
       }).catch((error: unknown) => {

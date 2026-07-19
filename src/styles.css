@@ -1099,6 +1099,21 @@ textarea:focus-visible {
   margin: 18px 10px 8px;
 }
 
+.inline-media-preview__text {
+  box-sizing: border-box;
+  width: 100%;
+  max-height: 210px;
+  margin: 0;
+  overflow: auto;
+  padding: 12px;
+  color: #27302d;
+  background: #f4f3ee;
+  font: 11px/1.55 ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  tab-size: 2;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .inline-media-preview__label {
   display: block;
   overflow: hidden;
