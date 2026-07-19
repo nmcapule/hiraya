@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "layout": {
+    "views": [
+      {
+        "id": "example-view"
+      }
+    ],
+    "columns": 1
+  },
+  "editorSettings": {
+    "autoSave": true,
+    "fontSize": 13,
+    "language": "auto"
+  },
+  "entries": [
+    {
+      "kind": "folder",
+      "id": "example-folder",
+      "name": "Welcome",
+      "parentId": null,
+      "modifiedAt": 0,
+      "position": {
+        "x": 22,
+        "y": 22
+      },
+      "viewId": "example-view"
+    },
+    {
+      "kind": "file",
+      "id": "example-file",
+      "name": "hello.txt",
+      "parentId": "example-folder",
+      "modifiedAt": 0,
+      "position": {
+        "x": 22,
+        "y": 22
+      },
+      "viewId": null,
+      "mimeType": "text/plain",
+      "size": 13,
+      "contentUrl": "content/Welcome/hello.txt"
+    }
+  ]
+}

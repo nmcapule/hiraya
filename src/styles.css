@@ -125,6 +125,11 @@ textarea:focus-visible {
   transform: scale(0.97);
 }
 
+.menu-bar__actions button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
 .menu-bar__clock {
   min-width: 98px;
   margin-left: 7px;

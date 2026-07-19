@@ -1,4 +1,6 @@
 import type { DesktopEntry, DesktopLayout, DesktopView, EditorLanguage, EditorSettings, EntryPosition, FileEntry, FolderEntry } from "../types";
+import { assertUniqueName, namesMatch, validateEntryName } from "./entry-validation";
+import type { PredefinedManifest } from "./predefined-manifest";
 
 const MANIFEST_NAME = ".hiraya-manifest.json";
 const FILES_DIRECTORY = "files";
@@ -156,7 +158,40 @@ function migrateEntries(entries: Array<Omit<DesktopEntry, "viewId">>, viewport: 
   };
 }
 
-async function readManifest(viewport: EntryPosition = { x: window.innerWidth, y: Math.max(1, window.innerHeight - 44) }): Promise<Manifest> {
+async function createManifestFromPredefined(predefined: PredefinedManifest): Promise<Manifest> {
+  const files = predefined.entries.filter((entry) => entry.kind === "file");
+  const contents = await Promise.all(files.map(async (entry) => {
+    const response = await fetch(entry.contentUrl);
+    if (!response.ok) throw new Error(`The predefined file “${entry.name}” could not be loaded (${response.status}).`);
+    const blob = await response.blob();
+    if (blob.size !== entry.size) {
+      throw new Error(`The predefined file “${entry.name}” has size ${blob.size}, but its manifest declares ${entry.size}.`);
+    }
+    return blob.slice(0, blob.size, entry.mimeType);
+  }));
+  const entries: DesktopEntry[] = predefined.entries.map((entry) => {
+    if (entry.kind === "folder") return entry;
+    const { contentUrl, ...file } = entry;
+    void contentUrl;
+    return file;
+  });
+  const created: Manifest = {
+    version: 5,
+    entries,
+    views: predefined.layout.views,
+    viewColumns: predefined.layout.columns,
+    editorSettings: predefined.editorSettings,
+  };
+  assertValidManifest(created);
+  for (const [index, file] of files.entries()) await writeContent(file.id, contents[index]);
+  await writeManifest(created);
+  return created;
+}
+
+async function readManifest(
+  viewport: EntryPosition = { x: window.innerWidth, y: Math.max(1, window.innerHeight - 44) },
+  predefined: PredefinedManifest | null = null,
+): Promise<Manifest> {
   const root = await getRoot();
 
   try {
@@ -199,6 +234,7 @@ async function readManifest(viewport: EntryPosition = { x: window.innerWidth, y:
     return parsed;
   } catch (error) {
     if (error instanceof DOMException && error.name === "NotFoundError") {
+      if (predefined) return createManifestFromPredefined(predefined);
       const created: Manifest = { version: 5, entries: [], views: [{ id: crypto.randomUUID() }], viewColumns: 1, editorSettings: DEFAULT_EDITOR_SETTINGS };
       await writeManifest(created);
       return created;
@@ -227,29 +263,6 @@ function findParent(entries: DesktopEntry[], parentId: string | null) {
   return parent;
 }
 
-function assertUniqueName(entries: DesktopEntry[], name: string, parentId: string | null, exceptId?: string) {
-  const duplicate = entries.some(
-    (entry) =>
-      entry.id !== exceptId &&
-      entry.parentId === parentId &&
-      entry.name.localeCompare(name, undefined, { sensitivity: "accent" }) === 0,
-  );
-  if (duplicate) throw new Error(`An entry named “${name}” already exists in this folder.`);
-}
-
-export function validateEntryName(value: string) {
-  const name = value.trim();
-
-  if (!name) throw new Error("Enter a name.");
-  if (name === "." || name === "..") throw new Error("Choose a different name.");
-  if (name.includes("/") || name.includes("\\") || [...name].some((character) => character.charCodeAt(0) < 32)) {
-    throw new Error("Names cannot contain slashes or control characters.");
-  }
-  if (name.length > 180) throw new Error("Keep the name under 180 characters.");
-
-  return name;
-}
-
 function getEntry(entries: DesktopEntry[], id: string) {
   const entry = entries.find((candidate) => candidate.id === id);
   if (!entry) throw new Error("That entry no longer exists.");
@@ -262,8 +275,14 @@ function getFileEntry(entries: DesktopEntry[], id: string): FileEntry {
   return entry;
 }
 
-export async function loadDesktop(viewport: EntryPosition): Promise<{ entries: DesktopEntry[]; layout: DesktopLayout; editorSettings: EditorSettings }> {
-  const manifest = await readManifest(viewport);
+let desktopLoad: Promise<Manifest> | null = null;
+
+export async function loadDesktop(viewport: EntryPosition, predefined: PredefinedManifest | null = null): Promise<{ entries: DesktopEntry[]; layout: DesktopLayout; editorSettings: EditorSettings }> {
+  desktopLoad ??= readManifest(viewport, predefined).catch((error) => {
+    desktopLoad = null;
+    throw error;
+  });
+  const manifest = await desktopLoad;
   return { entries: manifest.entries, layout: { views: manifest.views, columns: manifest.viewColumns }, editorSettings: manifest.editorSettings };
 }
 
@@ -340,7 +359,7 @@ export async function importFiles(
 
   for (const [index, name] of names.entries()) {
     assertUniqueName(manifest.entries, name, parentId);
-    if (names.slice(0, index).some((candidate) => candidate.localeCompare(name, undefined, { sensitivity: "accent" }) === 0)) {
+    if (names.slice(0, index).some((candidate) => namesMatch(candidate, name))) {
       throw new Error(`The upload contains more than one file named “${name}”.`);
     }
   }
@@ -449,6 +468,30 @@ export async function readFile(id: FileEntry["id"]): Promise<File> {
   const handle = await directory.getFileHandle(id);
   const stored = await handle.getFile();
   return new File([stored], entry.name, { type: entry.mimeType, lastModified: entry.modifiedAt });
+}
+
+export async function readDesktopSnapshot(): Promise<{
+  entries: DesktopEntry[];
+  layout: DesktopLayout;
+  editorSettings: EditorSettings;
+  contents: Map<string, Blob>;
+}> {
+  const manifest = await readManifest();
+  const directory = await getFilesDirectory();
+  const contents = new Map<string, Blob>();
+  for (const entry of manifest.entries) {
+    if (entry.kind !== "file") continue;
+    const handle = await directory.getFileHandle(entry.id);
+    const stored = await handle.getFile();
+    if (stored.size !== entry.size) throw new Error(`The stored contents of “${entry.name}” do not match its metadata.`);
+    contents.set(entry.id, stored.slice(0, stored.size, entry.mimeType));
+  }
+  return {
+    entries: manifest.entries,
+    layout: { views: manifest.views, columns: manifest.viewColumns },
+    editorSettings: manifest.editorSettings,
+    contents,
+  };
 }
 
 export async function readFileByRelativePath(

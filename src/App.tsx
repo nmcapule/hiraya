@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, FolderPlus, HardDrive, Plus, Trash, UploadSimple, WarningCircle } from "@phosphor-icons/react";
+import { Check, ExportIcon, FolderPlus, HardDrive, Plus, Trash, UploadSimple, WarningCircle } from "@phosphor-icons/react";
+import predefinedDesktop from "virtual:hiraya-predefined";
 import { ContextMenu } from "./components/ContextMenu";
 import { FileDialog } from "./components/FileDialog";
 import { FileIcon } from "./components/FileIcon";
@@ -22,6 +23,7 @@ import {
   updateEntryPosition,
   DEFAULT_EDITOR_SETTINGS,
 } from "./lib/opfs";
+import { exportPredefinedDesktop } from "./lib/predefined";
 import type { ContextMenuState, DesktopEntry, DesktopLayout, DialogState, EditorSettings, EntryPosition, FileEntry, FolderEntry } from "./types";
 
 type OpenFile = { file: FileEntry; blob: File; editable: boolean } | null;
@@ -60,6 +62,7 @@ function App() {
   const [desktopSize, setDesktopSize] = useState(() => ({ width: window.innerWidth, height: Math.max(1, window.innerHeight - 44) }));
   const [layout, setLayout] = useState<DesktopLayout>(() => ({ views: [{ id: crypto.randomUUID() }], columns: 1 }));
   const [editorSettings, setEditorSettings] = useState<EditorSettings>(DEFAULT_EDITOR_SETTINGS);
+  const [exporting, setExporting] = useState(false);
   const [activeViewId, setActiveViewId] = useState("");
   const [editingViews, setEditingViews] = useState(false);
   const [draggedViewId, setDraggedViewId] = useState<string | null>(null);
@@ -82,7 +85,6 @@ function App() {
   const layoutRef = useRef(layout);
   const layoutSaveRef = useRef<Promise<void>>(Promise.resolve());
   const editorSettingsSaveRef = useRef<Promise<void>>(Promise.resolve());
-
   const rootEntries = entries.filter((entry) => entry.parentId === null);
   const folders = entries.filter((entry): entry is FolderEntry => entry.kind === "folder");
   const explorerFolder = explorerFolderId === null ? null : folders.find((folder) => folder.id === explorerFolderId) ?? null;
@@ -106,16 +108,25 @@ function App() {
   const page = { column: activeViewIndex % pageColumns, row: Math.floor(activeViewIndex / pageColumns) };
 
   useEffect(() => {
-    void loadDesktop({ x: window.innerWidth, y: Math.max(1, window.innerHeight - 44) })
+    let active = true;
+    void loadDesktop({ x: window.innerWidth, y: Math.max(1, window.innerHeight - 44) }, predefinedDesktop)
       .then(({ entries: loadedEntries, layout: loadedLayout, editorSettings: loadedEditorSettings }) => {
+        if (!active) return;
         layoutRef.current = loadedLayout;
         setLayout(loadedLayout);
         setActiveViewId(loadedLayout.views[0].id);
         setEntries(loadedEntries);
         setEditorSettings(loadedEditorSettings);
       })
-      .catch((loadError) => setError(loadError instanceof Error ? loadError.message : "Your files could not be loaded."))
-      .finally(() => setLoading(false));
+      .catch((loadError) => {
+        if (active && !(loadError instanceof DOMException && loadError.name === "AbortError")) {
+          setError(loadError instanceof Error ? loadError.message : "Your files could not be loaded.");
+        }
+      })
+      .finally(() => { if (active) setLoading(false); });
+    return () => {
+      active = false;
+    };
   }, []);
 
   useEffect(() => {
@@ -327,6 +338,25 @@ function App() {
       setContextMenu(null);
     } catch {
       setError("The file could not be downloaded.");
+    }
+  }
+
+  async function handleExport() {
+    setError("");
+    setExporting(true);
+    try {
+      const archive = await exportPredefinedDesktop();
+      const url = URL.createObjectURL(archive);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = "hiraya-predefined.zip";
+      anchor.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setNotice("Saved desktop exported");
+    } catch (exportError) {
+      setError(exportError instanceof Error ? exportError.message : "The desktop could not be exported.");
+    } finally {
+      setExporting(false);
     }
   }
 
@@ -559,6 +589,7 @@ function App() {
           <button type="button" aria-label="New file" onClick={() => setDialog({ type: "create-file", parentId: null })}><Plus size={15} weight="bold" /> <span>New file</span></button>
           <button type="button" aria-label="New folder" onClick={() => setDialog({ type: "create-folder", parentId: null })}><FolderPlus size={16} /> <span>New folder</span></button>
           <button type="button" aria-label="Upload files" onClick={() => chooseUpload(null)}><UploadSimple size={16} /> <span>Upload</span></button>
+          <button type="button" aria-label="Export saved desktop" title="Export the saved desktop as a predefined package" disabled={loading || exporting} onClick={() => void handleExport()}><ExportIcon size={16} /> <span>{exporting ? "Exporting" : "Export"}</span></button>
           <span className="menu-bar__clock">{formatClock(clock)}</span>
         </div>
       </header>
