@@ -57,7 +57,7 @@ textarea:focus-visible {
   align-items: center;
   justify-content: space-between;
   height: 44px;
-  padding: 0 18px;
+  padding: 0 max(18px, env(safe-area-inset-right)) 0 max(18px, env(safe-area-inset-left));
   border-bottom: 1px solid rgba(255, 255, 255, 0.13);
   background: rgba(20, 28, 31, 0.68);
   box-shadow: inset 0 -1px 0 rgba(5, 11, 13, 0.14);
@@ -1315,7 +1315,7 @@ textarea:focus-visible {
 
 @media (max-width: 620px) {
   .menu-bar {
-    padding: 0 10px 0 13px;
+    padding: 0 max(10px, env(safe-area-inset-right)) 0 max(13px, env(safe-area-inset-left));
   }
 
   .menu-bar__actions {

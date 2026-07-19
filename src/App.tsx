@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, ExportIcon, FolderPlus, HardDrive, Plus, Trash, UploadSimple, WarningCircle } from "@phosphor-icons/react";
+import { Check, CornersIn, CornersOut, ExportIcon, FolderPlus, HardDrive, Plus, Trash, UploadSimple, WarningCircle } from "@phosphor-icons/react";
 import predefinedDesktop from "virtual:hiraya-predefined";
 import { ContextMenu } from "./components/ContextMenu";
 import { FileDialog } from "./components/FileDialog";
@@ -66,6 +66,7 @@ function App() {
   const [activeViewId, setActiveViewId] = useState("");
   const [editingViews, setEditingViews] = useState(false);
   const [draggedViewId, setDraggedViewId] = useState<string | null>(null);
+  const [isFullscreen, setIsFullscreen] = useState(() => Boolean(document.fullscreenElement));
   const desktopRef = useRef<HTMLElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
   const uploadRef = useRef<HTMLInputElement>(null);
@@ -132,6 +133,14 @@ function App() {
   useEffect(() => {
     const timer = window.setInterval(() => setClock(new Date()), 30_000);
     return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    function syncFullscreen() {
+      setIsFullscreen(Boolean(document.fullscreenElement));
+    }
+    document.addEventListener("fullscreenchange", syncFullscreen);
+    return () => document.removeEventListener("fullscreenchange", syncFullscreen);
   }, []);
 
   useEffect(() => {
@@ -581,6 +590,16 @@ function App() {
     return ids;
   }
 
+  async function toggleFullscreen() {
+    setError("");
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen();
+      else await document.documentElement.requestFullscreen();
+    } catch {
+      setError("Fullscreen mode could not be changed.");
+    }
+  }
+
   return (
     <main className="desktop-shell">
       <header className="menu-bar">
@@ -590,6 +609,7 @@ function App() {
           <button type="button" aria-label="New folder" onClick={() => setDialog({ type: "create-folder", parentId: null })}><FolderPlus size={16} /> <span>New folder</span></button>
           <button type="button" aria-label="Upload files" onClick={() => chooseUpload(null)}><UploadSimple size={16} /> <span>Upload</span></button>
           <button type="button" aria-label="Export saved desktop" title="Export the saved desktop as a predefined package" disabled={loading || exporting} onClick={() => void handleExport()}><ExportIcon size={16} /> <span>{exporting ? "Exporting" : "Export"}</span></button>
+          {document.fullscreenEnabled && <button type="button" aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"} title={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"} onClick={() => void toggleFullscreen()}>{isFullscreen ? <CornersIn size={16} /> : <CornersOut size={16} />} <span>{isFullscreen ? "Exit fullscreen" : "Fullscreen"}</span></button>}
           <span className="menu-bar__clock">{formatClock(clock)}</span>
         </div>
       </header>

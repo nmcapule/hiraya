@@ -2,6 +2,14 @@
 
 Hiraya is a local-first mock desktop. Its files and desktop metadata are stored in the browser's Origin Private File System (OPFS).
 
+## Install and offline use
+
+Hiraya is an installable progressive web app. In a supported browser, use the browser's **Install app** action to add it to the desktop or home screen. The installed app launches in a standalone window; use **Fullscreen** in Hiraya's menu bar to enter or leave native fullscreen mode where the Fullscreen API is available.
+
+The production service worker caches Hiraya's app shell, so the installed app can reopen offline after it has loaded successfully once. Files and desktop metadata remain in OPFS and continue to work offline. They are tied to the exact browser origin and are not a backup: clearing site data removes them, and using a different hostname or port creates a separate desktop.
+
+Installation and offline caching require HTTPS in production. Browsers treat `localhost` as secure for development.
+
 ## Predefined desktop
 
 Set `HIRAYA_PREDEFINED_DIR` at development or build time to bundle a predefined desktop:
