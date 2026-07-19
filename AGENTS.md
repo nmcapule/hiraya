@@ -17,6 +17,9 @@ bun run build
 
 - `src/App.tsx`: application state and orchestration for files, dialogs, uploads, errors, and open-file windows.
 - `src/lib/opfs.ts`: the complete persistence boundary. Keep OPFS access out of components.
+- `src/lib/predefined-manifest.ts`: shared predefined manifest types and validation used by build-time loading and browser export.
+- `src/lib/predefined.ts`: browser-side ZIP export for saved desktops.
+- `build/predefined.ts`: Vite virtual-module plugin that validates and bundles an optional predefined desktop.
 - `src/components/FileIcon.tsx`: file type icons and pointer-based desktop dragging.
 - `src/components/FileDialog.tsx`: create and rename forms.
 - `src/components/FileWindow.tsx`: text editor and media/document previews.
@@ -40,6 +43,21 @@ Prefer small changes within these existing modules. Do not introduce global stat
 - Browser site-data clearing removes all Hiraya files. Do not imply that OPFS is a backup service.
 
 If adding destructive operations, update file content and the manifest carefully so failed operations do not leave visible entries pointing to missing data.
+
+## Predefined Desktops
+
+- `HIRAYA_PREDEFINED_DIR` is an optional compile-time environment variable. It must point to a directory inside the repository containing `manifest.json` and its referenced content.
+- An unset or empty `HIRAYA_PREDEFINED_DIR` disables predefined content. Do not expose the source path to browser code or rename it with a `VITE_` prefix.
+- The predefined manifest has its own version in `src/lib/predefined-manifest.ts`; it is distinct from the persisted OPFS manifest version.
+- Keep the build loader and browser exporter on the same manifest schema and validation path. An exported package must be accepted directly by the build loader after extraction.
+- File `contentUrl` values are relative to the configured directory. Reject absolute paths, traversal outside the directory, queries, fragments, missing files, size mismatches, and symbolic links.
+- Predefined content seeds OPFS only when `.hiraya-manifest.json` does not exist. Never merge it into, replace, or restore entries in an existing manifest, including an intentionally empty manifest.
+- Fetch and validate all predefined assets, then write file contents before publishing the complete OPFS manifest. Failed seeding must not expose metadata that points to missing content.
+- Seeded entries are ordinary editable local entries. User edits, moves, renames, and deletions must persist without being reset from the bundled package.
+- The menu-bar Export action packages the entire saved desktop as `hiraya-predefined.zip`, with `hiraya-predefined/manifest.json` and a logical `content` tree.
+- Export includes persisted files, folders, empty folders, views, positions, layout, metadata, and editor settings. It intentionally excludes unsaved editor changes.
+- Preserve stable entry and view IDs during export. Keep file reads for export inside the OPFS persistence boundary.
+- `examples/predefined` is the canonical checked-in package example. Update it and `README.md` when the predefined format or setup changes.
 
 ## Interaction Rules
 
@@ -94,6 +112,15 @@ For storage or interaction changes, browser-test this sequence:
 6. Confirm names, contents, uploads, and positions persist.
 7. Check the console for runtime errors.
 8. Check desktop and approximately 390px-wide mobile layouts.
+
+For predefined desktop or export changes, also verify:
+
+1. `bun run build` succeeds with `HIRAYA_PREDEFINED_DIR` unset.
+2. `HIRAYA_PREDEFINED_DIR=examples/predefined bun run build` succeeds.
+3. A fresh browser origin seeds the example, while an existing origin remains unchanged.
+4. Seeded files can be edited and still contain the edit after reload.
+5. Export produces a ZIP whose manifest and file bytes match the saved desktop.
+6. Extracting the ZIP and building from its `hiraya-predefined` directory succeeds.
 
 Browser automation should use `agent-browser` with `--headed` when a display is available. In displayless environments, explicitly pass `--headed false`; the local agent-browser configuration may otherwise continue requesting a headed session.
 
