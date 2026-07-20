@@ -6,6 +6,10 @@ import { predefinedDesktopPlugin } from "./build/predefined";
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "HIRAYA_");
   return {
+    base: env.HIRAYA_BASE_PATH || "/",
+    define: {
+      "import.meta.env.HIRAYA_FRONTEND_ONLY": JSON.stringify(env.HIRAYA_FRONTEND_ONLY === "true" ? "true" : "false"),
+    },
     plugins: [
       predefinedDesktopPlugin(process.cwd(), env.HIRAYA_PREDEFINED_DIR),
       react(),

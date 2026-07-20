@@ -110,7 +110,7 @@ function App() {
   const openFileDirtyRef = useRef(false);
   const activeViewId = route?.viewId ?? "";
   const explorerFolderId = route?.explorerFolderId;
-  const canMutate = syncStatus === "online";
+  const canMutate = syncStatus === "online" || syncStatus === "local";
   const rootEntries = entries.filter((entry) => entry.parentId === null);
   const folders = entries.filter((entry): entry is FolderEntry => entry.kind === "folder");
   const explorerFolder = explorerFolderId === null ? null : folders.find((folder) => folder.id === explorerFolderId) ?? null;
@@ -549,7 +549,7 @@ function App() {
     const blob = await readFile(saved.id);
     setEntries((current) => current.map((entry) => entry.id === saved.id ? saved : entry));
     if (routeRef.current?.fileId === saved.id) updateOpenFile({ file: saved, blob, editable: true, contentRevision: contentRevisionsRef.current[saved.id] ?? 0, remoteChanged: false });
-    setNotice("Changes synced");
+    setNotice(syncStatus === "local" ? "Changes saved locally" : "Changes synced");
   }
 
   function goToView(viewId: string, mode: "push" | "replace" = "push") {
@@ -809,9 +809,9 @@ function App() {
             onClick={() => applyLayout({ ...layoutRef.current, snapToGrid: !layoutRef.current.snapToGrid })}
           ><GridFour size={16} weight={layout.snapToGrid ? "fill" : "regular"} /> <span>Snap to grid</span></button>
           {document.fullscreenEnabled && <button type="button" aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"} title={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"} onClick={() => void toggleFullscreen()}>{isFullscreen ? <CornersIn size={16} /> : <CornersOut size={16} />} <span>{isFullscreen ? "Exit fullscreen" : "Fullscreen"}</span></button>}
-          <span className="menu-bar__sync" data-status={syncStatus} title={syncStatus === "online" ? "Changes are synced" : syncStatus === "connecting" ? "Connecting to sync server" : "Sync server unavailable; editing is disabled"}>
-            {syncStatus === "online" ? <CloudCheck size={15} /> : syncStatus === "connecting" ? <SpinnerGap size={15} /> : <CloudSlash size={15} />}
-            <span>{syncStatus === "online" ? "Synced" : syncStatus === "connecting" ? "Connecting" : "Offline"}</span>
+          <span className="menu-bar__sync" data-status={syncStatus} title={syncStatus === "local" ? "Changes are saved in this browser" : syncStatus === "online" ? "Changes are synced" : syncStatus === "connecting" ? "Connecting to sync server" : "Sync server unavailable; editing is disabled"}>
+            {syncStatus === "local" ? <HardDrive size={15} /> : syncStatus === "online" ? <CloudCheck size={15} /> : syncStatus === "connecting" ? <SpinnerGap size={15} /> : <CloudSlash size={15} />}
+            <span>{syncStatus === "local" ? "Saved locally" : syncStatus === "online" ? "Synced" : syncStatus === "connecting" ? "Connecting" : "Offline"}</span>
           </span>
           <span className="menu-bar__clock">{formatClock(clock)}</span>
         </div>

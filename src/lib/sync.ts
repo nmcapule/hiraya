@@ -1,10 +1,20 @@
 import type { PredefinedManifest } from "./predefined-manifest";
 import {
   applyRemoteDesktop,
+  createFolder as createLocalFolder,
+  createTextFile as createLocalTextFile,
+  deleteEntry as deleteLocalEntry,
+  importFiles as importLocalFiles,
   loadDesktop,
+  moveEntry as moveLocalEntry,
   readDesktopSnapshot,
   readFile,
   readFileByRelativePath,
+  renameEntry as renameLocalEntry,
+  saveDesktopLayout as saveLocalDesktopLayout,
+  saveEditorSettings as saveLocalEditorSettings,
+  saveTextFile as saveLocalTextFile,
+  updateEntryPosition as updateLocalEntryPosition,
   type DesktopSnapshot,
 } from "./opfs";
 import { assertUniqueName, namesMatch, validateEntryName } from "./entry-validation";
@@ -20,7 +30,9 @@ type RemoteWorkspace = {
   editorSettings: EditorSettings;
   settingsRevision: number;
 };
-export type SyncStatus = "connecting" | "online" | "offline";
+export type SyncStatus = "connecting" | "online" | "offline" | "local";
+
+const FRONTEND_ONLY = import.meta.env.HIRAYA_FRONTEND_ONLY === "true";
 
 let desktop: DesktopSnapshot | null = null;
 let initialized = false;
@@ -176,6 +188,11 @@ function startEvents() {
 
 export async function initializeDesktop(viewport: EntryPosition, predefined: PredefinedManifest | null = null) {
   desktop = await loadDesktop(viewport, predefined);
+  if (FRONTEND_ONLY) {
+    initialized = true;
+    setStatus("local");
+    return { desktop, status };
+  }
   setStatus("connecting");
   try {
     await ensureServer();
@@ -235,6 +252,7 @@ async function postEntry(entry: DesktopEntry, content?: Blob) {
 }
 
 export function createTextFile(nameValue: string, parentId: string | null, position: EntryPosition, viewId: string | null) {
+  if (FRONTEND_ONLY) return createLocalTextFile(nameValue, parentId, position, viewId);
   const name = validateEntryName(nameValue);
   assertParent(parentId);
   assertUniqueName(current().entries, name, parentId);
@@ -243,6 +261,7 @@ export function createTextFile(nameValue: string, parentId: string | null, posit
 }
 
 export function createFolder(nameValue: string, parentId: string | null, position: EntryPosition, viewId: string | null) {
+  if (FRONTEND_ONLY) return createLocalFolder(nameValue, parentId, position, viewId);
   const name = validateEntryName(nameValue);
   assertParent(parentId);
   assertUniqueName(current().entries, name, parentId);
@@ -251,6 +270,7 @@ export function createFolder(nameValue: string, parentId: string | null, positio
 }
 
 export function importFiles(files: File[], parentId: string | null, positions: EntryPosition[], viewId: string | null) {
+  if (FRONTEND_ONLY) return importLocalFiles(files, parentId, positions, viewId);
   if (files.length !== positions.length) throw new Error("Each imported file needs a desktop position.");
   assertParent(parentId);
   const names = files.map((file) => validateEntryName(file.name));
@@ -268,6 +288,7 @@ export function importFiles(files: File[], parentId: string | null, positions: E
 }
 
 export function renameEntry(id: string, nameValue: string) {
+  if (FRONTEND_ONLY) return renameLocalEntry(id, nameValue);
   const existing = current().entries.find((entry) => entry.id === id);
   if (!existing) throw new Error("That entry no longer exists.");
   const name = validateEntryName(nameValue);
@@ -277,12 +298,14 @@ export function renameEntry(id: string, nameValue: string) {
 }
 
 export function deleteEntry(id: string) {
+  if (FRONTEND_ONLY) return deleteLocalEntry(id);
   const before = current().entries;
   if (!before.some((entry) => entry.id === id)) throw new Error("That entry no longer exists.");
   return mutate(() => request(`/api/entries/${encodeURIComponent(id)}`, { method: "DELETE" }).then(() => undefined), (next) => before.filter((entry) => !next.entries.some((item) => item.id === entry.id)));
 }
 
 export function moveEntry(id: string, parentId: string | null, position: EntryPosition, viewId: string | null) {
+  if (FRONTEND_ONLY) return moveLocalEntry(id, parentId, position, viewId);
   const existing = current().entries.find((entry) => entry.id === id);
   if (!existing) throw new Error("That entry no longer exists.");
   assertParent(parentId);
@@ -291,6 +314,7 @@ export function moveEntry(id: string, parentId: string | null, position: EntryPo
 }
 
 export function updateEntryPosition(id: string, position: EntryPosition, viewId: string | null) {
+  if (FRONTEND_ONLY) return updateLocalEntryPosition(id, position, viewId);
   const existing = current().entries.find((entry) => entry.id === id);
   if (!existing) throw new Error("That entry no longer exists.");
   const entry = { ...existing, position, viewId: resolveViewId(existing.parentId, viewId) };
@@ -298,16 +322,19 @@ export function updateEntryPosition(id: string, position: EntryPosition, viewId:
 }
 
 export function saveTextFile(id: string, content: string) {
+  if (FRONTEND_ONLY) return saveLocalTextFile(id, content);
   const existing = current().entries.find((entry): entry is FileEntry => entry.id === id && entry.kind === "file");
   if (!existing) throw new Error("That file no longer exists.");
   return mutate(() => request(`/api/files/${encodeURIComponent(id)}/content`, { method: "PUT", headers: { "Content-Type": existing.mimeType }, body: content }).then(() => undefined), (next) => next.entries.find((item) => item.id === id) as FileEntry);
 }
 
 export function saveDesktopLayout(layout: DesktopLayout) {
+  if (FRONTEND_ONLY) return saveLocalDesktopLayout(layout);
   return mutate(() => request("/api/layout", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(layout) }).then(() => undefined), () => undefined);
 }
 
 export function saveEditorSettings(settings: EditorSettings) {
+  if (FRONTEND_ONLY) return saveLocalEditorSettings(settings);
   return mutate(() => request("/api/editor-settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(settings) }).then(() => undefined), () => undefined);
 }
 

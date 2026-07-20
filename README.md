@@ -60,6 +60,19 @@ The predefined desktop is copied into OPFS only when the browser origin has no H
 
 The build rejects malformed manifests, missing or size-mismatched content, paths outside the configured directory, and symbolic links.
 
+### Frontend-only deployment
+
+Set `HIRAYA_FRONTEND_ONLY=true` to run without the Go sync server. In this mode, each browser's OPFS desktop is authoritative, editing remains enabled, and no `/api` requests are made. Changes are private to that browser and persist across reloads. Set `HIRAYA_BASE_PATH` when hosting Hiraya below an origin root:
+
+```sh
+HIRAYA_FRONTEND_ONLY=true \
+HIRAYA_PREDEFINED_DIR=examples/predefined \
+HIRAYA_BASE_PATH=/hiraya/ \
+bun run build
+```
+
+Pushes to `main` deploy this frontend-only build to GitHub Pages using `examples/predefined`. Returning browsers retain their locally edited desktop when a new version deploys; updated predefined content seeds only browsers without an existing Hiraya manifest.
+
 ## Export
 
 Use **Export** in the menu bar to download `hiraya-predefined.zip`. The archive contains `hiraya-predefined/manifest.json` and its `content` tree. Extract that directory into the repository and pass it to `HIRAYA_PREDEFINED_DIR` to seed the exported desktop in a fresh browser origin.

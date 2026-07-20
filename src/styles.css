@@ -154,7 +154,8 @@ textarea:focus-visible {
   color: rgba(255, 255, 255, 0.76);
 }
 
-.menu-bar__sync[data-status="online"] {
+.menu-bar__sync[data-status="online"],
+.menu-bar__sync[data-status="local"] {
   color: #d9eadc;
 }
 
