@@ -1222,6 +1222,7 @@ textarea:focus-visible {
   color: #26302d;
   background: transparent;
   text-align: left;
+  touch-action: pan-y;
   cursor: default;
 }
 

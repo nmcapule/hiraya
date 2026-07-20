@@ -179,7 +179,6 @@ export function FolderExplorer({
                   aria-selected={selectedId === entry.id}
                   data-selected={selectedId === entry.id || undefined}
                   data-folder-target={entry.kind === "folder" ? entry.id : undefined}
-                  style={{ touchAction: "none" }}
                   onClick={() => {
                     if (suppressClick.current) {
                       suppressClick.current = false;
