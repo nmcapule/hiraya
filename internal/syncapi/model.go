@@ -69,6 +69,8 @@ func (e Entry) MarshalJSON() ([]byte, error) {
 }
 
 type Workspace struct {
+	SchemaVersion    int            `json:"schemaVersion"`
+	WorkspaceID      string         `json:"workspaceId"`
 	Initialized      bool           `json:"initialized"`
 	Revision         int64          `json:"revision"`
 	Entries          []Entry        `json:"entries"`

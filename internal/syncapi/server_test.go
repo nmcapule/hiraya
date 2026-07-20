@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -78,6 +80,18 @@ func TestPersistenceDefaultsLegacyWallpaper(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 	if wallpaper := store.snapshot().Layout.Wallpaper; wallpaper != "dusk" {
 		t.Fatalf("legacy wallpaper = %q", wallpaper)
+	}
+	workspace := store.snapshot()
+	if workspace.SchemaVersion != workspaceSchemaVersion || workspace.WorkspaceID == "" {
+		t.Fatalf("legacy identity migration = %+v", workspace)
+	}
+	reopened, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	if reopened.snapshot().WorkspaceID != workspace.WorkspaceID {
+		t.Fatal("workspace identity changed after migration restart")
 	}
 }
 
@@ -355,12 +369,41 @@ func TestMetadataMutationDoesNotSwallowExternalEdit(t *testing.T) {
 	}
 }
 
+func TestFilesystemReconciliationRetriesAfterConcurrentMutation(t *testing.T) {
+	store, _ := initializedTestServer(t)
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var calls atomic.Int32
+	store.scanFiles = func(root string) (map[string]diskNode, error) {
+		nodes, err := scanFilesystem(root)
+		if calls.Add(1) == 1 {
+			close(started)
+			<-release
+		}
+		return nodes, err
+	}
+	done := make(chan error, 1)
+	go func() { done <- store.reconcileFilesystem() }()
+	<-started
+	store.mu.Lock()
+	store.beginMutationLocked()
+	store.mu.Unlock()
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() < 2 {
+		t.Fatalf("filesystem scans = %d, want retry", calls.Load())
+	}
+}
+
 func TestFailedBootstrapRemovesStagedLogicalTree(t *testing.T) {
 	dir := t.TempDir()
 	store, server := newTestServer(t, dir)
-	if err := os.Mkdir(filepath.Join(dir, metadataName), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	store.writeMetadata = func(string, []byte, os.FileMode) error { return errors.New("injected persistence failure") }
 	workspace := testBootstrap()
 	workspace.Entries = []Entry{file("file", "retry.txt", nil, ptr("view-1"), "text/plain", 5)}
 	response := bootstrapRequest(t, server, workspace, map[string]string{"file": "hello"})
@@ -372,6 +415,67 @@ func TestFailedBootstrapRemovesStagedLogicalTree(t *testing.T) {
 	}
 	if store.snapshot().Initialized {
 		t.Fatal("failed bootstrap initialized workspace")
+	}
+}
+
+func TestFailedContentPersistenceRestoresExistingBytes(t *testing.T) {
+	store, server := initializedTestServer(t)
+	created := multipartEntryRequest(t, server, http.MethodPost, "/api/entries", file("file", "old.txt", nil, ptr("view-1"), "text/plain", 0), ptr("old bytes"))
+	if created.Code != http.StatusOK {
+		t.Fatal(created.Body.String())
+	}
+	before := store.snapshot()
+	store.writeMetadata = func(string, []byte, os.FileMode) error { return errors.New("injected persistence failure") }
+
+	request := httptest.NewRequest(http.MethodPut, "/api/files/file/content", strings.NewReader("new bytes"))
+	request.Header.Set("Content-Type", "text/plain")
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	content, err := os.ReadFile(filepath.Join(store.filesDir, "old.txt"))
+	if err != nil || string(content) != "old bytes" {
+		t.Fatalf("rolled-back content = %q, %v", content, err)
+	}
+	if after := store.snapshot(); after.Revision != before.Revision || findEntry(t, after.Entries, "file").ContentRevision != findEntry(t, before.Entries, "file").ContentRevision {
+		t.Fatalf("failed update changed metadata: before=%+v after=%+v", before, after)
+	}
+	assertNoContentBackups(t, store.dir)
+}
+
+func TestFailedMoveAndContentPersistenceRestoresPathAndBytes(t *testing.T) {
+	store, server := initializedTestServer(t)
+	created := multipartEntryRequest(t, server, http.MethodPost, "/api/entries", file("file", "old.txt", nil, ptr("view-1"), "text/plain", 0), ptr("old bytes"))
+	if created.Code != http.StatusOK {
+		t.Fatal(created.Body.String())
+	}
+	entry := findEntry(t, store.snapshot().Entries, "file")
+	entry.Name = "new.txt"
+	store.writeMetadata = func(string, []byte, os.FileMode) error { return errors.New("injected persistence failure") }
+
+	response := multipartEntryRequest(t, server, http.MethodPost, "/api/entries", entry, ptr("new bytes"))
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	content, err := os.ReadFile(filepath.Join(store.filesDir, "old.txt"))
+	if err != nil || string(content) != "old bytes" {
+		t.Fatalf("rolled-back moved content = %q, %v", content, err)
+	}
+	if _, err := os.Stat(filepath.Join(store.filesDir, "new.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("replacement path remains after rollback: %v", err)
+	}
+	if got := findEntry(t, store.snapshot().Entries, "file").Name; got != "old.txt" {
+		t.Fatalf("failed move changed metadata name to %q", got)
+	}
+	assertNoContentBackups(t, store.dir)
+}
+
+func assertNoContentBackups(t *testing.T, root string) {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(root, ".content-backup-*"))
+	if err != nil || len(matches) != 0 {
+		t.Fatalf("content backups = %v, %v", matches, err)
 	}
 }
 
@@ -572,6 +676,48 @@ func TestMutationsRevisionsAndLastRequestWins(t *testing.T) {
 	}
 }
 
+func TestMutationResponseDoesNotHoldStoreLock(t *testing.T) {
+	store, server := initializedTestServer(t)
+	w := &blockingResponseWriter{header: make(http.Header), started: make(chan struct{}), release: make(chan struct{})}
+	done := make(chan struct{})
+	go func() {
+		server.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/editor-settings", strings.NewReader(`{"autoSave":false,"fontSize":13,"language":"auto"}`)))
+		close(done)
+	}()
+	select {
+	case <-w.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("response did not start")
+	}
+	snapshotDone := make(chan Workspace, 1)
+	go func() { snapshotDone <- store.snapshot() }()
+	select {
+	case snapshot := <-snapshotDone:
+		if snapshot.Revision != 2 {
+			t.Fatalf("snapshot revision = %d", snapshot.Revision)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("response encoding retained the store lock")
+	}
+	close(w.release)
+	<-done
+}
+
+type blockingResponseWriter struct {
+	header  http.Header
+	started chan struct{}
+	release chan struct{}
+}
+
+func (w *blockingResponseWriter) Header() http.Header { return w.header }
+
+func (w *blockingResponseWriter) WriteHeader(int) {
+	close(w.started)
+	<-w.release
+}
+
+func (w *blockingResponseWriter) Write(p []byte) (int, error) { return len(p), nil }
+
 func TestRecursiveDeletionCommitsBeforeBlobCleanup(t *testing.T) {
 	store, server := initializedTestServer(t)
 	entries := []struct {
@@ -669,7 +815,8 @@ func TestSSENotifiesAfterMutation(t *testing.T) {
 	}
 	defer response.Body.Close()
 	reader := bufio.NewReader(response.Body)
-	if event := readSSEEvent(t, reader); event != "id: 1\nevent: workspace\ndata: {\"revision\":1}\n" {
+	identity := store.snapshot()
+	if event := readSSEEvent(t, reader); event != fmt.Sprintf("id: 1\nevent: workspace\ndata: {\"revision\":1,\"schemaVersion\":1,\"workspaceId\":%q}\n", identity.WorkspaceID) {
 		t.Fatalf("initial SSE event = %q", event)
 	}
 
@@ -677,7 +824,7 @@ func TestSSENotifiesAfterMutation(t *testing.T) {
 	if mutation.Code != http.StatusOK || store.snapshot().Revision != 2 {
 		t.Fatalf("mutation failed: %d %s", mutation.Code, mutation.Body.String())
 	}
-	if event := readSSEEvent(t, reader); event != "id: 2\nevent: workspace\ndata: {\"revision\":2}\n" {
+	if event := readSSEEvent(t, reader); event != fmt.Sprintf("id: 2\nevent: workspace\ndata: {\"revision\":2,\"schemaVersion\":1,\"workspaceId\":%q}\n", identity.WorkspaceID) {
 		t.Fatalf("mutation SSE event = %q", event)
 	}
 

@@ -1,16 +1,17 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Desktop, Folder, X } from "@phosphor-icons/react";
 import type { DesktopEntry, FolderEntry } from "../types";
 
 export interface MoveDialogProps {
   entry: DesktopEntry;
-  folders: FolderEntry[];
+  folders: readonly FolderEntry[];
   invalidIds: Set<string>;
   onClose: () => void;
   onMove: (parentId: string | null) => Promise<void> | void;
+  onSubmittingChange?: (submitting: boolean) => void;
 }
 
-function flattenFolders(folders: FolderEntry[], invalidIds: Set<string>) {
+function flattenFolders(folders: readonly FolderEntry[], invalidIds: Set<string>) {
   const valid = folders.filter((folder) => !invalidIds.has(folder.id));
   const validIds = new Set(valid.map((folder) => folder.id));
   const children = new Map<string | null, FolderEntry[]>();
@@ -35,30 +36,24 @@ function flattenFolders(folders: FolderEntry[], invalidIds: Set<string>) {
   return flattened;
 }
 
-export function MoveDialog({ entry, folders, invalidIds, onClose, onMove }: MoveDialogProps) {
+export function MoveDialog({ entry, folders, invalidIds, onClose, onMove, onSubmittingChange }: MoveDialogProps) {
   const initialParent = entry.parentId && !invalidIds.has(entry.parentId) ? entry.parentId : null;
   const [selectedId, setSelectedId] = useState<string | null>(initialParent);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const destinations = flattenFolders(folders, invalidIds);
 
-  useEffect(() => {
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape" && !submitting) onClose();
-    }
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onClose, submitting]);
-
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
     setSubmitting(true);
+    onSubmittingChange?.(true);
     setError("");
     try {
       await onMove(selectedId);
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : "The item could not be moved.");
       setSubmitting(false);
+      onSubmittingChange?.(false);
     }
   }
 

@@ -452,20 +452,16 @@ func (s *Store) watchFilesystem() {
 			}
 		case <-timerC:
 			timerC = nil
-			s.mu.Lock()
-			if err := s.reconcileFilesystemLocked(); err != nil {
+			if err := s.reconcileFilesystem(); err != nil {
 				slog.Warn("could not reconcile external filesystem change", "error", err)
 			}
-			s.mu.Unlock()
 			if err := s.addWatchDirs(); err != nil {
 				slog.Warn("could not watch new filesystem directory", "error", err)
 			}
 		case <-fallback.C:
-			s.mu.Lock()
-			if err := s.reconcileFilesystemLocked(); err != nil {
+			if err := s.reconcileFilesystem(); err != nil {
 				slog.Warn("could not reconcile filesystem during watcher fallback", "error", err)
 			}
-			s.mu.Unlock()
 		case <-s.done:
 			if timer != nil {
 				timer.Stop()
@@ -475,11 +471,27 @@ func (s *Store) watchFilesystem() {
 	}
 }
 
-func (s *Store) reconcileFilesystemLocked() error {
-	nodes, err := scanFilesystem(s.filesDir)
-	if err != nil {
+func (s *Store) reconcileFilesystem() error {
+	for {
+		s.mu.RLock()
+		generation := s.filesystemGeneration
+		s.mu.RUnlock()
+		nodes, err := s.scanFiles(s.filesDir)
+		if err != nil {
+			return err
+		}
+		s.mu.Lock()
+		if generation != s.filesystemGeneration {
+			s.mu.Unlock()
+			continue
+		}
+		err = s.reconcileFilesystemLocked(nodes)
+		s.mu.Unlock()
 		return err
 	}
+}
+
+func (s *Store) reconcileFilesystemLocked(nodes map[string]diskNode) error {
 	// Watch newly discovered directories before publishing their metadata so
 	// immediate child edits cannot race the next watch registration.
 	if s.watcher != nil {

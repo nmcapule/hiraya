@@ -1,4 +1,5 @@
 import type { DesktopEntry, DesktopLayout } from "../types";
+import { isValidId } from "./contracts";
 
 export type DesktopRoute = {
   viewId: string;
@@ -9,7 +10,7 @@ export type DesktopRoute = {
 function decodeId(value: string) {
   try {
     const decoded = decodeURIComponent(value);
-    return decoded ? decoded : null;
+    return isValidId(decoded) ? decoded : null;
   } catch {
     return null;
   }

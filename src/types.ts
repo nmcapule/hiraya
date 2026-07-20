@@ -45,12 +45,12 @@ export type DesktopEntry = FileEntry | FolderEntry;
 export type DialogState =
   | { type: "create-file"; parentId: string | null }
   | { type: "create-folder"; parentId: string | null }
-  | { type: "rename"; entry: DesktopEntry }
-  | { type: "delete"; entry: DesktopEntry }
+  | { type: "rename"; entryId: string }
+  | { type: "delete"; entryId: string }
   | null;
 
 export type ContextMenuState = {
-  entry: DesktopEntry;
+  entryId: string;
   x: number;
   y: number;
 } | null;

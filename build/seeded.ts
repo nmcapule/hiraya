@@ -1,7 +1,7 @@
 import { lstat, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 import type { Plugin } from "vite";
-import { parseSeededManifest, type SeededFileEntry } from "../src/lib/seeded-manifest";
+import { parsePortableSeededManifest, type PortableSeededFileEntry } from "../src/lib/seeded-manifest";
 
 const PUBLIC_ID = "virtual:hiraya-seeded";
 const RESOLVED_ID = `\0${PUBLIC_ID}`;
@@ -47,15 +47,12 @@ export function seededDesktopPlugin(projectRoot: string, configuredDirectory?: s
       } catch (error) {
         throw new Error(`Could not read seeded desktop manifest at ${manifestPath}.`, { cause: error });
       }
-      const manifest = parseSeededManifest(parsed);
+      const manifest = parsePortableSeededManifest(parsed);
       const imports: string[] = [];
 
       for (const [index, entry] of manifest.entries.entries()) {
         if (entry.kind !== "file") continue;
-        const contentUrl = (entry as SeededFileEntry).contentUrl;
-        if (path.isAbsolute(contentUrl) || contentUrl.includes("\\") || /[?#]/.test(contentUrl) || /^[a-z][a-z\d+.-]*:/i.test(contentUrl)) {
-          throw new Error(`Seeded file “${entry.name}” must use a relative contentUrl without a query or fragment.`);
-        }
+        const contentUrl = (entry as PortableSeededFileEntry).contentUrl;
         const assetPath = path.resolve(sourceDirectory, contentUrl);
         if (!isInside(sourceDirectory, assetPath)) throw new Error(`Seeded file “${entry.name}” points outside HIRAYA_SEEDED_DIR.`);
         const unresolvedStats = await lstat(assetPath);

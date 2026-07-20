@@ -15,11 +15,12 @@ import (
 )
 
 const (
-	metadataName  = "workspace.json"
-	logicalMarker = ".logical-path-storage"
-	diskIndexName = ".filesystem.json"
-	watchDebounce = 75 * time.Millisecond
-	watchFallback = time.Second
+	workspaceSchemaVersion = 1
+	metadataName           = "workspace.json"
+	logicalMarker          = ".logical-path-storage"
+	diskIndexName          = ".filesystem.json"
+	watchDebounce          = 75 * time.Millisecond
+	watchFallback          = time.Second
 )
 
 type Store struct {
@@ -34,6 +35,10 @@ type Store struct {
 	done      chan struct{}
 	closeOnce sync.Once
 	wg        sync.WaitGroup
+	// filesystemGeneration invalidates scans that overlap an API mutation.
+	filesystemGeneration uint64
+	writeMetadata        func(string, []byte, os.FileMode) error
+	scanFiles            func(string) (map[string]diskNode, error)
 }
 
 func OpenStore(dir string) (*Store, error) {
@@ -63,13 +68,28 @@ func OpenStore(dir string) (*Store, error) {
 	if !filesInfo.IsDir() || filesInfo.Mode()&os.ModeSymlink != 0 {
 		return nil, fmt.Errorf("files path must be a real directory")
 	}
-	s := &Store{dir: dir, filesDir: filesDir, subs: make(map[chan int64]struct{}), disk: make(map[string]diskFingerprint), done: make(chan struct{}), watched: make(map[string]bool)}
+	if backups, globErr := filepath.Glob(filepath.Join(dir, ".content-backup-*")); globErr == nil {
+		for _, backup := range backups {
+			if removeErr := os.Remove(backup); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				slog.Warn("could not remove orphaned content backup", "path", backup, "error", removeErr)
+			}
+		}
+	}
+	s := &Store{dir: dir, filesDir: filesDir, subs: make(map[chan int64]struct{}), disk: make(map[string]diskFingerprint), done: make(chan struct{}), watched: make(map[string]bool), writeMetadata: atomicWrite, scanFiles: scanFilesystem}
 	s.workspace.Entries = []Entry{}
 	s.workspace.Layout.Views = []View{}
 	s.workspace.Layout.Wallpaper = "dusk"
 	s.workspace.EditorSettings = EditorSettings{AutoSave: true, FontSize: 13, Language: "auto"}
 	b, err := os.ReadFile(filepath.Join(dir, metadataName))
 	if errors.Is(err, os.ErrNotExist) {
+		s.workspace.SchemaVersion = workspaceSchemaVersion
+		s.workspace.WorkspaceID, err = newEntryID()
+		if err != nil {
+			return nil, err
+		}
+		if err := s.persistLocked(s.workspace); err != nil {
+			return nil, err
+		}
 		if err := s.initializeFilesystem(); err != nil {
 			return nil, err
 		}
@@ -81,6 +101,20 @@ func OpenStore(dir string) (*Store, error) {
 	if err := json.Unmarshal(b, &s.workspace); err != nil {
 		return nil, fmt.Errorf("decode workspace: %w", err)
 	}
+	if s.workspace.SchemaVersion < 0 || s.workspace.SchemaVersion > workspaceSchemaVersion {
+		return nil, fmt.Errorf("unsupported workspace schema version %d", s.workspace.SchemaVersion)
+	}
+	migrateMetadata := s.workspace.SchemaVersion == 0 || s.workspace.WorkspaceID == ""
+	if s.workspace.WorkspaceID == "" {
+		s.workspace.WorkspaceID, err = newEntryID()
+		if err != nil {
+			return nil, err
+		}
+	}
+	if !validID(s.workspace.WorkspaceID) {
+		return nil, fmt.Errorf("stored workspace has invalid workspace ID")
+	}
+	s.workspace.SchemaVersion = workspaceSchemaVersion
 	if s.workspace.Entries == nil {
 		s.workspace.Entries = []Entry{}
 	}
@@ -96,6 +130,11 @@ func OpenStore(dir string) (*Store, error) {
 		}
 		if err := validateEntries(s.workspace.Entries, s.workspace.Layout); err != nil {
 			return nil, fmt.Errorf("stored workspace: %w", err)
+		}
+	}
+	if migrateMetadata {
+		if err := s.persistLocked(s.workspace); err != nil {
+			return nil, fmt.Errorf("migrate workspace metadata: %w", err)
 		}
 	}
 	if err := s.initializeFilesystem(); err != nil {
@@ -132,12 +171,9 @@ func (s *Store) initializeFilesystem() error {
 			return err
 		}
 	} else if s.workspace.Initialized {
-		s.mu.Lock()
-		if err := s.reconcileFilesystemLocked(); err != nil {
-			s.mu.Unlock()
+		if err := s.reconcileFilesystem(); err != nil {
 			return fmt.Errorf("reconcile filesystem: %w", err)
 		}
-		s.mu.Unlock()
 	} else if err := s.refreshDiskIndexLocked(); err != nil {
 		return err
 	}
@@ -189,11 +225,15 @@ func (s *Store) persistLocked(next Workspace) error {
 	if err != nil {
 		return err
 	}
-	if err := atomicWrite(filepath.Join(s.dir, metadataName), b, 0o600); err != nil {
+	if err := s.writeMetadata(filepath.Join(s.dir, metadataName), b, 0o600); err != nil {
 		return fmt.Errorf("persist workspace: %w", err)
 	}
 	s.workspace = next
 	return nil
+}
+
+func (s *Store) beginMutationLocked() {
+	s.filesystemGeneration++
 }
 
 func nonNilEntries(v []Entry) []Entry {
@@ -278,6 +318,89 @@ func atomicCopy(path string, r io.Reader, max int64) (int64, error) {
 	}
 	defer d.Close()
 	return n, d.Sync()
+}
+
+type contentReplacement struct {
+	target string
+	backup string
+}
+
+func replaceFileContent(target, source, backupDir string, max int64) (*contentReplacement, error) {
+	replacement := &contentReplacement{target: target}
+	if info, err := os.Lstat(target); err == nil {
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("content target is not a regular file")
+		}
+		tmp, err := os.CreateTemp(backupDir, ".content-backup-*")
+		if err != nil {
+			return nil, err
+		}
+		replacement.backup = tmp.Name()
+		old, err := os.Open(target)
+		if err != nil {
+			tmp.Close()
+			_ = os.Remove(replacement.backup)
+			return nil, err
+		}
+		_, copyErr := io.Copy(tmp, old)
+		oldCloseErr := old.Close()
+		syncErr := tmp.Sync()
+		closeErr := tmp.Close()
+		if err := errors.Join(copyErr, oldCloseErr, syncErr, closeErr); err != nil {
+			_ = os.Remove(replacement.backup)
+			return nil, err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+
+	file, err := os.Open(source)
+	if err == nil {
+		_, err = atomicCopy(target, file, max)
+		closeErr := file.Close()
+		if err == nil {
+			err = closeErr
+		}
+	}
+	if err != nil {
+		if rollbackErr := replacement.rollback(); rollbackErr != nil {
+			return nil, errors.Join(err, fmt.Errorf("roll back content replacement: %w", rollbackErr))
+		}
+		return nil, err
+	}
+	return replacement, nil
+}
+
+func (r *contentReplacement) rollback() error {
+	if r.backup == "" {
+		removeErr := os.Remove(r.target)
+		if errors.Is(removeErr, os.ErrNotExist) {
+			return nil
+		}
+		return removeErr
+	}
+	backup, err := os.Open(r.backup)
+	if err != nil {
+		return err
+	}
+	info, statErr := backup.Stat()
+	if statErr != nil {
+		backup.Close()
+		return statErr
+	}
+	_, copyErr := atomicCopy(r.target, backup, info.Size())
+	closeErr := backup.Close()
+	if err := errors.Join(copyErr, closeErr); err != nil {
+		return err
+	}
+	return os.Remove(r.backup)
+}
+
+func (r *contentReplacement) commit() error {
+	if r.backup == "" {
+		return nil
+	}
+	return os.Remove(r.backup)
 }
 
 func (s *Store) subscribe() (chan int64, func()) {

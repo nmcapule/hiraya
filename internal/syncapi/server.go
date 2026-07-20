@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -29,7 +30,8 @@ func New(store *Store, staticDir string, maxUpload int64) *Server {
 	s := &Server{store: store, staticDir: staticDir, maxUpload: maxUpload, now: time.Now}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "revision": s.store.snapshot().Revision})
+		workspace := s.store.snapshot()
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "revision": workspace.Revision, "schemaVersion": workspace.SchemaVersion, "workspaceId": workspace.WorkspaceID})
 	})
 	mux.HandleFunc("GET /api/workspace", s.getWorkspace)
 	mux.HandleFunc("POST /api/bootstrap", s.bootstrap)
@@ -162,7 +164,9 @@ func (s *Server) bootstrap(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.store.mu.Lock()
-	defer s.store.mu.Unlock()
+	s.store.beginMutationLocked()
+	w, unlock := unlockBeforeResponse(w, s.store.mu.Unlock)
+	defer unlock()
 	if s.store.workspace.Initialized {
 		writeError(w, http.StatusConflict, "workspace is already initialized")
 		return
@@ -242,7 +246,7 @@ func (s *Server) bootstrap(w http.ResponseWriter, r *http.Request) {
 		}
 		promoted = append(promoted, rel)
 	}
-	next := Workspace{Initialized: true, Revision: 1, Entries: input.Entries, Layout: input.Layout, LayoutRevision: 1, EditorSettings: input.EditorSettings, SettingsRevision: 1}
+	next := Workspace{SchemaVersion: workspaceSchemaVersion, WorkspaceID: s.store.workspace.WorkspaceID, Initialized: true, Revision: 1, Entries: input.Entries, Layout: input.Layout, LayoutRevision: 1, EditorSettings: input.EditorSettings, SettingsRevision: 1}
 	if err := s.store.persistLocked(next); err != nil {
 		for i := len(promoted) - 1; i >= 0; i-- {
 			_ = os.Rename(filepath.Join(s.store.filesDir, promoted[i]), filepath.Join(treeStage, promoted[i]))
@@ -383,7 +387,9 @@ func (s *Server) importEntries(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.store.mu.Lock()
-	defer s.store.mu.Unlock()
+	s.store.beginMutationLocked()
+	w, unlock := unlockBeforeResponse(w, s.store.mu.Unlock)
+	defer unlock()
 	if !s.requireInitializedLocked(w) {
 		return
 	}
@@ -537,7 +543,9 @@ func (s *Server) upsertEntry(w http.ResponseWriter, r *http.Request) {
 		entry.Size = contentSize
 	}
 	s.store.mu.Lock()
-	defer s.store.mu.Unlock()
+	s.store.beginMutationLocked()
+	w, unlock := unlockBeforeResponse(w, s.store.mu.Unlock)
+	defer unlock()
 	if !s.requireInitializedLocked(w) {
 		return
 	}
@@ -599,12 +607,20 @@ func (s *Server) upsertEntry(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	rollbackMove := func() {
+		if moved {
+			if rollbackErr := os.Rename(target, oldPath); rollbackErr != nil {
+				slog.Error("could not roll back failed entry move", "from", target, "to", oldPath, "error", rollbackErr)
+			}
+		}
+	}
 	if entry.Kind == "folder" && idx < 0 {
 		if err := os.Mkdir(target, 0o700); err != nil {
 			writeError(w, http.StatusConflict, "could not create folder path")
 			return
 		}
 	}
+	var replacement *contentReplacement
 	if entry.Kind == "file" && (gotContent || idx < 0) {
 		if idx < 0 {
 			if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
@@ -612,38 +628,40 @@ func (s *Server) upsertEntry(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		var f *os.File
-		if gotContent {
-			f, err = os.Open(contentPath)
-		} else {
-			f, err = os.Open(os.DevNull)
-		}
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "could not read staged content")
-			return
-		}
 		if mkdirErr := os.MkdirAll(filepath.Dir(target), 0o700); mkdirErr != nil {
 			err = mkdirErr
 		} else {
-			_, err = atomicCopy(target, f, s.maxUpload)
+			source := contentPath
+			if !gotContent {
+				source = os.DevNull
+			}
+			replacement, err = replaceFileContent(target, source, s.store.dir, s.maxUpload)
 		}
-		f.Close()
 		if err != nil {
+			rollbackMove()
 			writeError(w, http.StatusInternalServerError, "could not persist content")
 			return
 		}
 	}
 	next.Revision++
 	if err := s.store.persistLocked(next); err != nil {
-		if moved {
-			if rollbackErr := os.Rename(target, oldPath); rollbackErr != nil {
-				slog.Error("could not roll back failed entry move", "from", target, "to", oldPath, "error", rollbackErr)
+		if replacement != nil {
+			if rollbackErr := replacement.rollback(); rollbackErr != nil {
+				slog.Error("could not roll back failed content replacement", "path", target, "error", rollbackErr)
 			}
+		}
+		if moved {
+			rollbackMove()
 		} else if idx < 0 {
 			_ = os.RemoveAll(target)
 		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	if replacement != nil {
+		if err := replacement.commit(); err != nil {
+			slog.Warn("could not remove replaced content backup", "path", replacement.backup, "error", err)
+		}
 	}
 	if moved {
 		s.store.moveDiskPathLocked(oldPath, target)
@@ -686,7 +704,9 @@ func (s *Server) patchEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.store.mu.Lock()
-	defer s.store.mu.Unlock()
+	s.store.beginMutationLocked()
+	w, unlock := unlockBeforeResponse(w, s.store.mu.Unlock)
+	defer unlock()
 	if !s.requireInitializedLocked(w) {
 		return
 	}
@@ -776,7 +796,9 @@ func (s *Server) putContent(w http.ResponseWriter, r *http.Request) {
 		contentType = "application/octet-stream"
 	}
 	s.store.mu.Lock()
-	defer s.store.mu.Unlock()
+	s.store.beginMutationLocked()
+	w, unlock := unlockBeforeResponse(w, s.store.mu.Unlock)
+	defer unlock()
 	if !s.requireInitializedLocked(w) {
 		return
 	}
@@ -801,27 +823,26 @@ func (s *Server) putContent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	f, err := os.Open(tmpPath)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not read staged content")
-		return
-	}
 	path, pathErr := s.store.entryPathLocked(next.Entries, id)
 	if pathErr != nil || ensureNoSymlink(s.store.filesDir, path) != nil {
-		f.Close()
 		writeError(w, http.StatusConflict, "invalid file path")
 		return
 	}
-	_, err = atomicCopy(path, f, s.maxUpload)
-	f.Close()
+	replacement, err := replaceFileContent(path, tmpPath, s.store.dir, s.maxUpload)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not persist content")
 		return
 	}
 	next.Revision++
 	if err := s.store.persistLocked(next); err != nil {
+		if rollbackErr := replacement.rollback(); rollbackErr != nil {
+			slog.Error("could not roll back failed content update", "path", path, "error", rollbackErr)
+		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	if err := replacement.commit(); err != nil {
+		slog.Warn("could not remove replaced content backup", "path", replacement.backup, "error", err)
 	}
 	if err := s.store.trackExpectedFileLocked(path, tmpPath); err != nil {
 		slog.Warn("could not index updated file", "id", id, "error", err)
@@ -886,7 +907,9 @@ func (s *Server) deleteEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.store.mu.Lock()
-	defer s.store.mu.Unlock()
+	s.store.beginMutationLocked()
+	w, unlock := unlockBeforeResponse(w, s.store.mu.Unlock)
+	defer unlock()
 	if !s.requireInitializedLocked(w) {
 		return
 	}
@@ -981,7 +1004,9 @@ func (s *Server) putLayout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.store.mu.Lock()
-	defer s.store.mu.Unlock()
+	s.store.beginMutationLocked()
+	w, unlock := unlockBeforeResponse(w, s.store.mu.Unlock)
+	defer unlock()
 	if !s.requireInitializedLocked(w) {
 		return
 	}
@@ -1012,7 +1037,9 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.store.mu.Lock()
-	defer s.store.mu.Unlock()
+	s.store.beginMutationLocked()
+	w, unlock := unlockBeforeResponse(w, s.store.mu.Unlock)
+	defer unlock()
 	if !s.requireInitializedLocked(w) {
 		return
 	}
@@ -1044,7 +1071,8 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case revision := <-ch:
-			fmt.Fprintf(w, "id: %d\nevent: workspace\ndata: {\"revision\":%d}\n\n", revision, revision)
+			workspace := s.store.snapshot()
+			fmt.Fprintf(w, "id: %d\nevent: workspace\ndata: {\"revision\":%d,\"schemaVersion\":%d,\"workspaceId\":%q}\n\n", revision, revision, workspace.SchemaVersion, workspace.WorkspaceID)
 			flusher.Flush()
 		case <-heartbeat.C:
 			fmt.Fprint(w, ": heartbeat\n\n")
@@ -1152,4 +1180,26 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 
 func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]string{"error": message})
+}
+
+type unlockResponseWriter struct {
+	http.ResponseWriter
+	once   sync.Once
+	unlock func()
+}
+
+func unlockBeforeResponse(w http.ResponseWriter, unlock func()) (http.ResponseWriter, func()) {
+	wrapped := &unlockResponseWriter{ResponseWriter: w, unlock: unlock}
+	release := func() { wrapped.once.Do(wrapped.unlock) }
+	return wrapped, release
+}
+
+func (w *unlockResponseWriter) WriteHeader(status int) {
+	w.once.Do(w.unlock)
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *unlockResponseWriter) Write(p []byte) (int, error) {
+	w.once.Do(w.unlock)
+	return w.ResponseWriter.Write(p)
 }

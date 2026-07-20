@@ -1,8 +1,9 @@
 import { DownloadSimple, FolderOpen, FolderSimplePlus, PencilSimple, Trash } from "@phosphor-icons/react";
-import type { ContextMenuState } from "../types";
+import type { ContextMenuState, DesktopEntry } from "../types";
 
 type Props = {
   menu: Exclude<ContextMenuState, null>;
+  entry: DesktopEntry;
   onOpen: () => void;
   onRename: () => void;
   onDownload?: () => void;
@@ -11,7 +12,7 @@ type Props = {
   readOnly?: boolean;
 };
 
-export function ContextMenu({ menu, onOpen, onRename, onDownload, onMove, onDelete, readOnly = false }: Props) {
+export function ContextMenu({ menu, entry, onOpen, onRename, onDownload, onMove, onDelete, readOnly = false }: Props) {
   const left = Math.min(menu.x, window.innerWidth - 190);
   const top = Math.min(menu.y, window.innerHeight - 210);
 
@@ -24,7 +25,7 @@ export function ContextMenu({ menu, onOpen, onRename, onDownload, onMove, onDele
         <PencilSimple size={17} /> Rename
         <kbd>R</kbd>
       </button>
-      {menu.entry.kind === "file" && onDownload && (
+      {entry.kind === "file" && onDownload && (
         <button type="button" role="menuitem" onClick={onDownload}>
           <DownloadSimple size={17} /> Download
         </button>

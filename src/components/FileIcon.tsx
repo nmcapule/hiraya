@@ -11,6 +11,7 @@ import {
   Folder,
 } from "@phosphor-icons/react";
 import type { DesktopEntry, EntryPosition } from "../types";
+import { fileCapabilities } from "../ui/file-capabilities";
 
 type Props = {
   entry: DesktopEntry;
@@ -32,20 +33,16 @@ type Props = {
 
 function FileTypeIcon({ entry }: { entry: DesktopEntry }) {
   if (entry.kind === "folder") return <Folder size={45} weight="duotone" aria-hidden="true" />;
-  const file = entry;
-  const type = file.mimeType;
-  const extension = file.name.split(".").pop()?.toLowerCase();
+  const { icon } = fileCapabilities(entry);
   const props = { size: 43, weight: "duotone" as const, "aria-hidden": true };
 
-  if (type.startsWith("image/")) return <FileImage {...props} />;
-  if (type.startsWith("video/")) return <FileVideo {...props} />;
-  if (type.startsWith("audio/")) return <FileAudio {...props} />;
-  if (type === "application/pdf") return <FilePdf {...props} />;
-  if (type.includes("zip") || type.includes("compressed")) return <FileArchive {...props} />;
-  if (["js", "jsx", "ts", "tsx", "css", "html", "json", "md"].includes(extension ?? "")) {
-    return <FileCode {...props} />;
-  }
-  if (type.startsWith("text/")) return <FileText {...props} />;
+  if (icon === "image") return <FileImage {...props} />;
+  if (icon === "video") return <FileVideo {...props} />;
+  if (icon === "audio") return <FileAudio {...props} />;
+  if (icon === "pdf") return <FilePdf {...props} />;
+  if (icon === "archive") return <FileArchive {...props} />;
+  if (icon === "code") return <FileCode {...props} />;
+  if (icon === "text") return <FileText {...props} />;
   return <FileGlyph {...props} />;
 }
 

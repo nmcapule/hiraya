@@ -1,4 +1,3 @@
-import { useEffect } from "react";
 import { ArrowsOut, CornersIn, CornersOut, ExportIcon, GridFour, PaintBrush, X } from "@phosphor-icons/react";
 import { WALLPAPERS, type DesktopLayout, type Wallpaper } from "../types";
 
@@ -22,14 +21,6 @@ type Props = {
 };
 
 export function SettingsWindow({ layout, canMutate, exportDisabled, exporting, fullscreenEnabled, isFullscreen, onClose, onLayoutChange, onExport, onToggleFullscreen }: Props) {
-  useEffect(() => {
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") onClose();
-    }
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
-
   return (
     <div className="modal-backdrop modal-backdrop--window" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <section className="settings-window" role="dialog" aria-modal="true" aria-labelledby="settings-window-title">

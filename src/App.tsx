@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, CloudCheck, CloudSlash, FolderPlus, GearSix, HardDrive, Plus, SpinnerGap, Trash, UploadSimple, WarningCircle } from "@phosphor-icons/react";
 import seededDesktop from "virtual:hiraya-seeded";
 import { ContextMenu } from "./components/ContextMenu";
@@ -23,41 +23,24 @@ import {
   saveTextFile,
   updateEntryPosition,
   subscribeToSync,
+  stopDesktopSync,
   type SyncStatus,
 } from "./lib/sync";
 import { DEFAULT_EDITOR_SETTINGS } from "./lib/opfs";
 import { exportSeededDesktop } from "./lib/seeded";
 import { formatDesktopRoute, normalizeDesktopRoute, parseDesktopRoute, type DesktopRoute } from "./lib/routes";
-import { DEFAULT_WALLPAPER, type ContextMenuState, type DesktopEntry, type DesktopLayout, type DialogState, type EditorSettings, type EntryPosition, type FileEntry, type FolderEntry } from "./types";
+import { DEFAULT_WALLPAPER, type ContextMenuState, type DesktopEntry, type DesktopLayout, type DialogState, type EditorSettings, type EntryPosition, type FileEntry } from "./types";
+import { desktopGrid, desktopPositionTarget, FILE_ICON_SIZE, GRID_ORIGIN, GRID_STEP, nextDesktopPosition, snapAxis, viewPage } from "./ui/desktop-geometry";
+import { fileCapabilities } from "./ui/file-capabilities";
+import { topOverlay } from "./ui/overlay";
+import { createWorkspaceIndex } from "./ui/workspace-index";
 
 type OpenFile = { file: FileEntry; blob: File; editable: boolean; contentRevision: number; remoteChanged: boolean } | null;
 type RouteHistoryState = { hiraya: true; parentHash?: string };
-const FILE_ICON_WIDTH = 98;
-const FILE_ICON_HEIGHT = 102;
-const GRID_ORIGIN = { x: 22, y: 22 };
-const GRID_STEP = { x: 104, y: 112 };
 const MINIMAP_LONG_PRESS_MS = 500;
-const TEXT_EXTENSIONS = new Set(["txt", "md", "markdown", "json", "js", "jsx", "ts", "tsx", "css", "html", "xml", "csv", "yaml", "yml"]);
-
-function isEditable(file: FileEntry) {
-  const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
-  return file.mimeType.startsWith("text/") || file.mimeType.includes("json") || TEXT_EXTENSIONS.has(extension);
-}
 
 function formatClock(date: Date) {
   return new Intl.DateTimeFormat(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" }).format(date);
-}
-
-function nextPosition(index: number, base?: EntryPosition) {
-  if (base) return { x: Math.max(12, base.x + (index % 4) * 18), y: Math.max(12, base.y + (index % 4) * 18) };
-  const rows = Math.max(1, Math.floor((window.innerHeight - 130) / 112));
-  return { x: 22 + Math.floor(index / rows) * 104, y: 22 + (index % rows) * 112 };
-}
-
-function snapAxis(value: number, origin: number, step: number, max: number) {
-  if (max <= origin) return Math.max(8, max);
-  const index = Math.max(0, Math.min(Math.floor((max - origin) / step), Math.round((value - origin) / step)));
-  return origin + index * step;
 }
 
 function App() {
@@ -68,7 +51,8 @@ function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [dialog, setDialog] = useState<DialogState>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState>(null);
-  const [moveDialogEntry, setMoveDialogEntry] = useState<DesktopEntry | null>(null);
+  const [moveDialogEntryId, setMoveDialogEntryId] = useState<string | null>(null);
+  const [moveDialogSubmitting, setMoveDialogSubmitting] = useState(false);
   const [openFile, setOpenFile] = useState<OpenFile>(null);
   const [route, setRoute] = useState<DesktopRoute | null>(null);
   const [clock, setClock] = useState(() => new Date());
@@ -104,6 +88,7 @@ function App() {
   const navigationReadyRef = useRef(false);
   const applyLocationRouteRef = useRef<(entriesValue?: DesktopEntry[], layoutValue?: DesktopLayout) => void>(() => undefined);
   const navigateRouteRef = useRef<(next: DesktopRoute, mode?: "push" | "replace") => void>(() => undefined);
+  const closeToRouteRef = useRef<(next: DesktopRoute) => void>(() => undefined);
   const fileLoadGenerationRef = useRef(0);
   const openFileRef = useRef<OpenFile>(null);
   const layoutSaveRef = useRef<Promise<void>>(Promise.resolve());
@@ -113,27 +98,18 @@ function App() {
   const activeViewId = route?.viewId ?? "";
   const explorerFolderId = route?.explorerFolderId;
   const canMutate = syncStatus === "online" || syncStatus === "local";
-  const rootEntries = entries.filter((entry) => entry.parentId === null);
-  const folders = entries.filter((entry): entry is FolderEntry => entry.kind === "folder");
-  const explorerFolder = explorerFolderId === null ? null : folders.find((folder) => folder.id === explorerFolderId) ?? null;
-  const explorerChildren = explorerFolderId === undefined ? [] : entries.filter((entry) => entry.parentId === (explorerFolder?.id ?? null));
-  const breadcrumbs: FolderEntry[] = [];
-  if (explorerFolder) {
-    const parents: FolderEntry[] = [];
-    let parentId = explorerFolder.parentId;
-    while (parentId) {
-      const parent = folders.find((folder) => folder.id === parentId);
-      if (!parent) break;
-      parents.unshift(parent);
-      parentId = parent.parentId;
-    }
-    breadcrumbs.push(...parents);
-  }
-
-  const pageColumns = Math.max(1, Math.min(layout.columns, layout.views.length));
-  const pageRows = Math.ceil(layout.views.length / pageColumns);
-  const activeViewIndex = Math.max(0, layout.views.findIndex((view) => view.id === activeViewId));
-  const page = { column: activeViewIndex % pageColumns, row: Math.floor(activeViewIndex / pageColumns) };
+  const workspace = useMemo(() => createWorkspaceIndex(entries), [entries]);
+  const rootEntries = workspace.roots;
+  const folders = workspace.folders;
+  const explorerFolderEntry = explorerFolderId ? workspace.byId.get(explorerFolderId) : null;
+  const explorerFolder = explorerFolderEntry?.kind === "folder" ? explorerFolderEntry : null;
+  const explorerChildren = explorerFolderId === undefined ? [] : workspace.children.get(explorerFolder?.id ?? null) ?? [];
+  const breadcrumbs = explorerFolder ? workspace.ancestors(explorerFolder.id) : [];
+  const dialogEntry = dialog && (dialog.type === "rename" || dialog.type === "delete") ? workspace.byId.get(dialog.entryId) ?? null : null;
+  const contextMenuEntry = contextMenu ? workspace.byId.get(contextMenu.entryId) ?? null : null;
+  const moveDialogEntry = moveDialogEntryId ? workspace.byId.get(moveDialogEntryId) ?? null : null;
+  const { columns: pageColumns, rows: pageRows, index: activeViewIndex, column, row } = viewPage(layout, activeViewId);
+  const page = { column, row };
 
   function setCurrentRoute(next: DesktopRoute) {
     routeRef.current = next;
@@ -180,6 +156,7 @@ function App() {
 
   applyLocationRouteRef.current = applyLocationRoute;
   navigateRouteRef.current = navigateRoute;
+  closeToRouteRef.current = closeToRoute;
 
   useEffect(() => {
     let active = true;
@@ -192,14 +169,15 @@ function App() {
       setEntries(synced.entries);
       setEditorSettings(synced.editorSettings);
       setSelectedId((current) => current && !synced.entries.some((entry) => entry.id === current) ? null : current);
-      setContextMenu((current) => current && !synced.entries.some((entry) => entry.id === current.entry.id) ? null : current);
-      setMoveDialogEntry((current) => current && !synced.entries.some((entry) => entry.id === current.id) ? null : current);
+      const syncedIds = new Set(synced.entries.map((entry) => entry.id));
+      setContextMenu((current) => current && !syncedIds.has(current.entryId) ? null : current);
+      setMoveDialogEntryId((current) => current && !syncedIds.has(current) ? null : current);
       setDialog((current) => {
         if (!current) return null;
         if (current.type === "create-file" || current.type === "create-folder") {
           return current.parentId && !synced.entries.some((entry) => entry.id === current.parentId && entry.kind === "folder") ? null : current;
         }
-        return synced.entries.some((entry) => entry.id === current.entry.id) ? current : null;
+        return syncedIds.has(current.entryId) ? current : null;
       });
       applyLocationRouteRef.current(synced.entries, synced.layout);
     }, (nextStatus) => { if (active) setSyncStatus(nextStatus); });
@@ -226,6 +204,7 @@ function App() {
     return () => {
       active = false;
       unsubscribe();
+      stopDesktopSync();
     };
   }, []);
 
@@ -239,7 +218,7 @@ function App() {
       if (!navigationReadyRef.current) return;
       setDialog(null);
       setContextMenu(null);
-      setMoveDialogEntry(null);
+      setMoveDialogEntryId(null);
       setEditingViews(false);
       setDraggedViewId(null);
       setSettingsOpen(false);
@@ -260,7 +239,8 @@ function App() {
       if (!fileId && openFileRef.current) updateOpenFile(null);
       return;
     }
-    const file = entries.find((entry): entry is FileEntry => entry.id === fileId && entry.kind === "file");
+    const entry = workspace.byId.get(fileId);
+    const file = entry?.kind === "file" ? entry : null;
     if (!file) return;
     const expectedRevision = contentRevisionsRef.current[file.id] ?? 0;
     const current = openFileRef.current;
@@ -274,7 +254,7 @@ function App() {
     }
     void readFile(file.id).then((blob) => {
       if (generation !== fileLoadGenerationRef.current || routeRef.current?.fileId !== file.id || (contentRevisionsRef.current[file.id] ?? 0) !== expectedRevision) return;
-      updateOpenFile({ file, blob, editable: isEditable(file), contentRevision: expectedRevision, remoteChanged: false });
+      updateOpenFile({ file, blob, editable: fileCapabilities(file).editable, contentRevision: expectedRevision, remoteChanged: false });
     }).catch((openError) => {
       if (generation !== fileLoadGenerationRef.current || routeRef.current?.fileId !== file.id) return;
       if (openFileRef.current?.file.id === file.id) {
@@ -285,7 +265,7 @@ function App() {
       const currentRoute = routeRef.current;
       if (currentRoute) navigateRouteRef.current({ ...currentRoute, fileId: undefined }, "replace");
     });
-  }, [entries, loading, route?.fileId]);
+  }, [loading, route?.fileId, workspace]);
 
   useEffect(() => {
     function syncFullscreen() {
@@ -314,18 +294,8 @@ function App() {
         setDraggedViewId(null);
       }
     }
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape" && editingViews) {
-        setEditingViews(false);
-        setDraggedViewId(null);
-      }
-    }
     window.addEventListener("pointerdown", onPointerDown);
-    window.addEventListener("keydown", onKeyDown);
-    return () => {
-      window.removeEventListener("pointerdown", onPointerDown);
-      window.removeEventListener("keydown", onKeyDown);
-    };
+    return () => window.removeEventListener("pointerdown", onPointerDown);
   }, [editingViews]);
 
   useEffect(() => {
@@ -333,9 +303,8 @@ function App() {
       if (!(event.target as Element).closest?.(".context-menu")) setContextMenu(null);
     }
     function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") setContextMenu(null);
-      if (event.key.toLowerCase() === "r" && contextMenu && canMutate) {
-        setDialog({ type: "rename", entry: contextMenu.entry });
+      if (event.key.toLowerCase() === "r" && contextMenuEntry && canMutate) {
+        setDialog({ type: "rename", entryId: contextMenuEntry.id });
         setContextMenu(null);
       }
     }
@@ -345,7 +314,41 @@ function App() {
       window.removeEventListener("mousedown", closeMenu);
       window.removeEventListener("keydown", onKeyDown);
     };
-  }, [canMutate, contextMenu]);
+  }, [canMutate, contextMenuEntry]);
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      const owner = topOverlay({
+        dialog: Boolean(dialog),
+        moveDialog: Boolean(moveDialogEntry),
+        settings: settingsOpen,
+        contextMenu: Boolean(contextMenuEntry),
+        file: Boolean(openFile),
+        explorer: explorerFolderId !== undefined,
+        viewEditor: editingViews,
+      });
+      if (!owner) return;
+      if (owner === "moveDialog" && moveDialogSubmitting) return;
+      event.preventDefault();
+      if (owner === "dialog") setDialog(null);
+      else if (owner === "moveDialog") setMoveDialogEntryId(null);
+      else if (owner === "settings") setSettingsOpen(false);
+      else if (owner === "contextMenu") setContextMenu(null);
+      else if (owner === "viewEditor") { setEditingViews(false); setDraggedViewId(null); }
+      else {
+        const current = routeRef.current;
+        if (!current) return;
+        if (owner === "file") closeToRouteRef.current({
+          viewId: current.viewId,
+          ...(current.explorerFolderId !== undefined ? { explorerFolderId: current.explorerFolderId } : {}),
+        });
+        else closeToRouteRef.current({ viewId: current.viewId });
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [contextMenuEntry, dialog, editingViews, explorerFolderId, moveDialogEntry, moveDialogSubmitting, openFile, settingsOpen]);
 
   useEffect(() => {
     if (!notice) return;
@@ -354,27 +357,25 @@ function App() {
   }, [notice]);
 
   function childrenCount(parentId: string | null) {
-    return entries.filter((entry) => entry.parentId === parentId && (parentId !== null || entry.viewId === activeViewId)).length;
+    if (parentId !== null) return workspace.children.get(parentId)?.length ?? 0;
+    return workspace.rootsByView.get(activeViewId)?.length ?? 0;
   }
 
   function positionFor(parentId: string | null) {
-    const position = nextPosition(childrenCount(parentId));
+    const position = nextDesktopPosition(childrenCount(parentId), window.innerHeight);
     return parentId === null && layoutRef.current.snapToGrid ? snapPositionInView(position) : position;
   }
 
   function snapPositionInView(position: EntryPosition) {
     return {
-      x: snapAxis(position.x, GRID_ORIGIN.x, GRID_STEP.x, Math.max(8, desktopSize.width - FILE_ICON_WIDTH)),
-      y: snapAxis(position.y, GRID_ORIGIN.y, GRID_STEP.y, Math.max(8, desktopSize.height - FILE_ICON_HEIGHT)),
+      x: snapAxis(position.x, GRID_ORIGIN.x, GRID_STEP.x, Math.max(8, desktopSize.width - FILE_ICON_SIZE.width)),
+      y: snapAxis(position.y, GRID_ORIGIN.y, GRID_STEP.y, Math.max(8, desktopSize.height - FILE_ICON_SIZE.height)),
     };
   }
 
   function snapDesktopPosition(position: EntryPosition) {
     const currentLayout = layoutRef.current;
-    const columns = Math.max(1, Math.min(currentLayout.columns, currentLayout.views.length));
-    const rows = Math.ceil(currentLayout.views.length / columns);
-    const column = Math.max(0, Math.min(columns - 1, Math.floor(position.x / desktopSize.width)));
-    const row = Math.max(0, Math.min(rows - 1, Math.floor(position.y / desktopSize.height)));
+    const { column, row } = desktopPositionTarget(currentLayout, { x: desktopSize.width, y: desktopSize.height }, position);
     const local = snapPositionInView({
       x: position.x - column * desktopSize.width,
       y: position.y - row * desktopSize.height,
@@ -422,16 +423,18 @@ function App() {
       if (parentId === null && created.viewId) goToView(created.viewId);
       setNotice(`${created.name} created`);
     } else if (dialog.type === "rename") {
-      const renamed = await renameEntry(dialog.entry.id, name);
+      if (!dialogEntry) { setDialog(null); return; }
+      const renamed = await renameEntry(dialogEntry.id, name);
       setEntries((current) => current.map((entry) => entry.id === renamed.id ? renamed : entry));
       if (renamed.kind === "file" && openFileRef.current?.file.id === renamed.id) updateOpenFile({ ...openFileRef.current, file: renamed });
       setNotice(`${renamed.kind === "folder" ? "Folder" : "File"} renamed`);
     } else {
-      const deleted = await deleteEntry(dialog.entry.id);
+      if (!dialogEntry) { setDialog(null); return; }
+      const deleted = await deleteEntry(dialogEntry.id);
       const deletedIds = new Set(deleted.map((entry) => entry.id));
       setEntries((current) => current.filter((entry) => !deletedIds.has(entry.id)));
       setSelectedId((current) => current && deletedIds.has(current) ? null : current);
-      setNotice(`${dialog.entry.name} deleted`);
+      setNotice(`${dialogEntry.name} deleted`);
     }
     setDialog(null);
   }
@@ -442,7 +445,7 @@ function App() {
     try {
       const offset = childrenCount(parentId);
       const viewId = parentId === null ? activeViewId || layout.views[0].id : null;
-      const positions = sources.map((_, index) => nextPosition(offset + index, base));
+      const positions = sources.map((_, index) => nextDesktopPosition(offset + index, window.innerHeight, base));
       const imported = await importFiles(sources, parentId, parentId === null && layoutRef.current.snapToGrid ? positions.map(snapPositionInView) : positions, viewId);
       setEntries((current) => {
         const existingIds = new Set(current.map((entry) => entry.id));
@@ -464,19 +467,15 @@ function App() {
       return;
     }
     const finalPosition = layoutRef.current.snapToGrid ? snapDesktopPosition(position) : position;
-    const columns = Math.max(1, Math.min(layoutRef.current.columns, layoutRef.current.views.length));
-    const rows = Math.ceil(layoutRef.current.views.length / columns);
-    const column = Math.max(0, Math.min(columns - 1, Math.floor(finalPosition.x / desktopSize.width)));
-    const row = Math.max(0, Math.min(rows - 1, Math.floor(finalPosition.y / desktopSize.height)));
-    const targetView = layoutRef.current.views[Math.min(layoutRef.current.views.length - 1, row * columns + column)];
+    const target = desktopPositionTarget(layoutRef.current, { x: desktopSize.width, y: desktopSize.height }, finalPosition);
     const localPosition = {
-      x: Math.max(8, finalPosition.x - column * desktopSize.width),
-      y: Math.max(8, finalPosition.y - row * desktopSize.height),
+      x: Math.max(8, finalPosition.x - target.column * desktopSize.width),
+      y: Math.max(8, finalPosition.y - target.row * desktopSize.height),
     };
-    setEntries((current) => current.map((item) => item.id === entry.id ? { ...item, position: localPosition, viewId: targetView.id } : item));
+    setEntries((current) => current.map((item) => item.id === entry.id ? { ...item, position: localPosition, viewId: target.view.id } : item));
     try {
       await layoutSaveRef.current;
-      await updateEntryPosition(entry.id, localPosition, targetView.id);
+      await updateEntryPosition(entry.id, localPosition, target.view.id);
     } catch {
       setError("The new icon position could not be saved.");
     }
@@ -559,7 +558,7 @@ function App() {
     const index = layoutRef.current.views.findIndex((view) => view.id === viewId);
     const currentRoute = routeRef.current;
     if (index < 0 || !currentRoute) return;
-    const columns = Math.max(1, Math.min(layoutRef.current.columns, layoutRef.current.views.length));
+    const { columns } = desktopGrid(layoutRef.current);
     const column = index % columns;
     const row = Math.floor(index / columns);
     if (canvasRef.current) canvasRef.current.style.transform = `translate3d(${-column * desktopSize.width}px, ${-row * desktopSize.height}px, 0)`;
@@ -622,8 +621,8 @@ function App() {
     return {
       deltaX: (nextColumn - previousColumn) * desktopSize.width,
       deltaY: (nextRow - previousRow) * desktopSize.height,
-      maxX: Math.max(8, columns * desktopSize.width - FILE_ICON_WIDTH),
-      maxY: Math.max(8, Math.ceil(views.length / columns) * desktopSize.height - FILE_ICON_HEIGHT),
+      maxX: Math.max(8, columns * desktopSize.width - FILE_ICON_SIZE.width),
+      maxY: Math.max(8, Math.ceil(views.length / columns) * desktopSize.height - FILE_ICON_SIZE.height),
     };
   }
 
@@ -770,18 +769,7 @@ function App() {
   }
 
   function invalidMoveIds(entry: DesktopEntry) {
-    const ids = new Set([entry.id]);
-    let changed = true;
-    while (changed) {
-      changed = false;
-      for (const candidate of entries) {
-        if (candidate.parentId && ids.has(candidate.parentId) && !ids.has(candidate.id)) {
-          ids.add(candidate.id);
-          changed = true;
-        }
-      }
-    }
-    return ids;
+    return new Set([entry.id, ...workspace.descendants(entry.id).map((descendant) => descendant.id)]);
   }
 
   async function toggleFullscreen() {
@@ -869,7 +857,7 @@ function App() {
               onContextMenu={(event) => {
                 event.preventDefault();
                 setSelectedId(entry.id);
-                setContextMenu({ entry, x: event.clientX, y: event.clientY });
+                setContextMenu({ entryId: entry.id, x: event.clientX, y: event.clientY });
               }}
             />;
           })}
@@ -903,7 +891,7 @@ function App() {
             {layout.views.map((view, index) => {
               const column = index % pageColumns;
               const row = Math.floor(index / pageColumns);
-              const viewEntries = rootEntries.filter((entry) => entry.viewId === view.id);
+              const viewEntries = workspace.rootsByView.get(view.id) ?? [];
               const deleteDisabled = viewEntries.length > 0 || layout.views.length === 1;
               return (
                 <div className="desktop-minimap__slot" data-view-id={view.id} data-dragging={draggedViewId === view.id || undefined} key={view.id}>
@@ -972,30 +960,32 @@ function App() {
           onCreateFile={(parentId) => setDialog({ type: "create-file", parentId })}
           onUpload={chooseUpload}
           onMove={(entry, parentId) => void handleMoveTo(entry, parentId)}
-          onContextMenu={(entry, x, y) => setContextMenu({ entry, x, y })}
+          onContextMenu={(entry, x, y) => setContextMenu({ entryId: entry.id, x, y })}
           readOnly={!canMutate}
         />
       )}
 
-      {contextMenu && (
+      {contextMenu && contextMenuEntry && (
         <ContextMenu
           menu={contextMenu}
-          onOpen={() => handleOpen(contextMenu.entry)}
-          onRename={() => { setDialog({ type: "rename", entry: contextMenu.entry }); setContextMenu(null); }}
-          onDownload={contextMenu.entry.kind === "file" ? () => void download(contextMenu.entry as FileEntry) : undefined}
-          onMove={() => { setMoveDialogEntry(contextMenu.entry); setContextMenu(null); }}
-          onDelete={() => { setDialog({ type: "delete", entry: contextMenu.entry }); setContextMenu(null); }}
+          entry={contextMenuEntry}
+          onOpen={() => handleOpen(contextMenuEntry)}
+          onRename={() => { setDialog({ type: "rename", entryId: contextMenuEntry.id }); setContextMenu(null); }}
+          onDownload={contextMenuEntry.kind === "file" ? () => void download(contextMenuEntry) : undefined}
+          onMove={() => { setMoveDialogSubmitting(false); setMoveDialogEntryId(contextMenuEntry.id); setContextMenu(null); }}
+          onDelete={() => { setDialog({ type: "delete", entryId: contextMenuEntry.id }); setContextMenu(null); }}
           readOnly={!canMutate}
         />
       )}
-      {dialog && <FileDialog dialog={dialog} onClose={() => setDialog(null)} onSubmit={handleDialogSubmit} />}
+      {dialog && (!(dialog.type === "rename" || dialog.type === "delete") || dialogEntry) && <FileDialog dialog={dialog} entry={dialogEntry} onClose={() => setDialog(null)} onSubmit={handleDialogSubmit} />}
       {moveDialogEntry && (
         <MoveDialog
           entry={moveDialogEntry}
           folders={folders}
           invalidIds={invalidMoveIds(moveDialogEntry)}
-          onClose={() => setMoveDialogEntry(null)}
-          onMove={async (parentId) => { await handleMoveTo(moveDialogEntry, parentId, true); setMoveDialogEntry(null); }}
+          onClose={() => { setMoveDialogSubmitting(false); setMoveDialogEntryId(null); }}
+          onMove={async (parentId) => { await handleMoveTo(moveDialogEntry, parentId, true); setMoveDialogSubmitting(false); setMoveDialogEntryId(null); }}
+          onSubmittingChange={setMoveDialogSubmitting}
         />
       )}
       {settingsOpen && (

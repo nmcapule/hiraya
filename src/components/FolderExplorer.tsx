@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import {
   ArrowLeft,
   CaretRight,
@@ -14,8 +14,8 @@ import type { DesktopEntry, FolderEntry } from "../types";
 export interface FolderExplorerProps {
   folder: FolderEntry | null;
   /** Ordered ancestors of folder, starting immediately below Desktop. */
-  breadcrumbs: FolderEntry[];
-  children: DesktopEntry[];
+  breadcrumbs: readonly FolderEntry[];
+  children: readonly DesktopEntry[];
   onClose: () => void;
   onNavigate: (folder: FolderEntry | null) => void;
   onOpen: (entry: DesktopEntry) => void;
@@ -58,14 +58,6 @@ export function FolderExplorer({
   const suppressClick = useRef(false);
   const parentId = folder?.id ?? null;
   const trail = folder && breadcrumbs.at(-1)?.id !== folder.id ? [...breadcrumbs, folder] : breadcrumbs;
-
-  useEffect(() => {
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") onClose();
-    }
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onClose]);
 
   function open(entry: DesktopEntry) {
     if (entry.kind === "folder") onNavigate(entry);

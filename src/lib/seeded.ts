@@ -1,6 +1,6 @@
 import { strToU8, zip, type Zippable } from "fflate";
 import { readDesktopSnapshot } from "./opfs";
-import { parseSeededManifest, type SeededFileEntry, type SeededManifest } from "./seeded-manifest";
+import { toPortableSeededManifest } from "./seeded-manifest";
 import type { DesktopEntry } from "../types";
 
 const EXPORT_ROOT = "hiraya-seeded";
@@ -17,6 +17,10 @@ function logicalPath(entry: DesktopEntry, byId: Map<string, DesktopEntry>) {
   return segments.join("/");
 }
 
+function portablePath(entry: DesktopEntry, byId: Map<string, DesktopEntry>) {
+  return logicalPath(entry, byId).split("/").map((segment) => encodeURIComponent(segment)).join("/");
+}
+
 function createZip(files: Zippable) {
   return new Promise<Uint8Array>((resolve, reject) => {
     zip(files, { level: 6 }, (error, archive) => {
@@ -30,23 +34,22 @@ export async function exportSeededDesktop() {
   const snapshot = await readDesktopSnapshot();
   const byId = new Map(snapshot.entries.map((entry) => [entry.id, entry]));
   const archive: Zippable = { [`${EXPORT_ROOT}/`]: new Uint8Array() };
-  const entries = await Promise.all(snapshot.entries.map(async (entry) => {
-    const path = logicalPath(entry, byId);
+  await Promise.all(snapshot.entries.map(async (entry) => {
+    const path = portablePath(entry, byId);
     if (entry.kind === "folder") {
       archive[`${EXPORT_ROOT}/content/${path}/`] = new Uint8Array();
-      return entry;
+      return;
     }
     const content = snapshot.contents.get(entry.id);
     if (!content) throw new Error(`The contents of “${entry.name}” could not be read.`);
     archive[`${EXPORT_ROOT}/content/${path}`] = new Uint8Array(await content.arrayBuffer());
-    return { ...entry, contentUrl: `content/${path}` } satisfies SeededFileEntry;
+    return;
   }));
-  const manifest = parseSeededManifest({
-    version: 3,
+  const manifest = toPortableSeededManifest({
     layout: snapshot.layout,
     editorSettings: snapshot.editorSettings,
-    entries,
-  }) satisfies SeededManifest;
+    entries: snapshot.entries,
+  }, (entry) => `content/${portablePath(entry, byId)}`);
   archive[`${EXPORT_ROOT}/manifest.json`] = strToU8(`${JSON.stringify(manifest, null, 2)}\n`);
 
   const zipped = await createZip(archive);

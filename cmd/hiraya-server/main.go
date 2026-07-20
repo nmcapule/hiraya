@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
+	"syscall"
 	"time"
 
 	"hiraya/internal/syncapi"
@@ -35,11 +39,25 @@ func main() {
 		IdleTimeout:       2 * time.Minute,
 	}
 	log.Printf("Hiraya server listening on http://%s", addr)
-	serveErr := server.ListenAndServe()
+	serveErrors := make(chan error, 1)
+	go func() { serveErrors <- server.ListenAndServe() }()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	var serveErr error
+	select {
+	case serveErr = <-serveErrors:
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			log.Printf("graceful shutdown: %v", err)
+		}
+		cancel()
+		serveErr = <-serveErrors
+	}
 	if err := store.Close(); err != nil {
 		log.Printf("close store: %v", err)
 	}
-	if serveErr != nil && serveErr != http.ErrServerClosed {
+	if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
 		log.Fatal(serveErr)
 	}
 }

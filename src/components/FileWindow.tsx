@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Check, DownloadSimple, FloppyDisk, X } from "@phosphor-icons/react";
 import type { EditorLanguage, EditorSettings, FileEntry } from "../types";
+import { fileCapabilities } from "../ui/file-capabilities";
 import { TextEditor } from "./TextEditor";
 
 const LANGUAGE_OPTIONS: Array<{ value: EditorLanguage; label: string }> = [
@@ -64,14 +65,6 @@ export function FileWindow({ file, blob, editable, readOnly = false, remoteChang
     return () => URL.revokeObjectURL(url);
   }, [blob, editable]);
 
-  useEffect(() => {
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") onClose();
-    }
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
-
   const save = useCallback(async (nextContent: string) => {
     if (savingRef.current) return;
     savingRef.current = true;
@@ -89,10 +82,7 @@ export function FileWindow({ file, blob, editable, readOnly = false, remoteChang
   }, []);
 
   const dirty = content !== savedContent;
-  const isImage = file.mimeType.startsWith("image/");
-  const isPdf = file.mimeType === "application/pdf";
-  const isVideo = file.mimeType.startsWith("video/");
-  const isAudio = file.mimeType.startsWith("audio/");
+  const preview = fileCapabilities(file).preview;
 
   useEffect(() => {
     onDirtyChange?.(dirty);
@@ -180,11 +170,11 @@ export function FileWindow({ file, blob, editable, readOnly = false, remoteChang
               onOpenLinkedFile={onOpenLinkedFile}
             />
           )}
-          {!editable && isImage && objectUrl && <img className="preview-image" src={objectUrl} alt={file.name} />}
-          {!editable && isPdf && objectUrl && <iframe className="preview-frame" src={objectUrl} title={file.name} />}
-          {!editable && isVideo && objectUrl && <video className="preview-media" src={objectUrl} controls />}
-          {!editable && isAudio && objectUrl && <audio className="preview-audio" src={objectUrl} controls />}
-          {!editable && !isImage && !isPdf && !isVideo && !isAudio && (
+          {!editable && preview === "image" && objectUrl && <img className="preview-image" src={objectUrl} alt={file.name} />}
+          {!editable && preview === "pdf" && objectUrl && <iframe className="preview-frame" src={objectUrl} title={file.name} />}
+          {!editable && preview === "video" && objectUrl && <video className="preview-media" src={objectUrl} controls />}
+          {!editable && preview === "audio" && objectUrl && <audio className="preview-audio" src={objectUrl} controls />}
+          {!editable && preview === "none" && (
             <div className="no-preview">
               <p>No preview is available for this file type.</p>
               <button className="button button--primary" type="button" onClick={onDownload}>Download file</button>

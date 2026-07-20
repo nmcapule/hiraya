@@ -1,80 +1,21 @@
-import { DEFAULT_WALLPAPER, WALLPAPERS, type DesktopEntry, type DesktopLayout, type DesktopView, type EditorLanguage, type EditorSettings, type EntryPosition, type FileEntry, type FolderEntry, type Wallpaper } from "../types";
+import { DEFAULT_WALLPAPER, type DesktopEntry, type DesktopLayout, type EditorSettings, type EntryPosition, type FileEntry, type FolderEntry } from "../types";
 import { assertUniqueName, namesMatch, validateEntryName } from "./entry-validation";
-import type { SeededManifest } from "./seeded-manifest";
+import { parseBundledSeededManifest, type SeededManifest } from "./seeded-manifest";
+import {
+  DEFAULT_EDITOR_SETTINGS,
+  decodeManifest,
+  emptySyncState,
+  manifestLayout,
+  parseManifestV9,
+  type DesktopSyncState,
+  type PersistedManifestV9,
+} from "./manifest-codec";
 
 const MANIFEST_NAME = ".hiraya-manifest.json";
 const FILES_DIRECTORY = "files";
 
-type ManifestV1 = {
-  version: 1;
-  files: Array<Omit<FileEntry, "kind" | "parentId" | "viewId">>;
-};
-
-type ManifestV2 = {
-  version: 2;
-  entries: Array<Omit<DesktopEntry, "viewId">>;
-};
-
-type ManifestV3 = {
-  version: 3;
-  entries: DesktopEntry[];
-  views: DesktopView[];
-  viewColumns: number;
-};
-
-type ManifestV4 = {
-  version: 4;
-  entries: DesktopEntry[];
-  views: DesktopView[];
-  viewColumns: number;
-  editorSettings: Omit<EditorSettings, "autoSave">;
-};
-
-type ManifestV5 = {
-  version: 5;
-  entries: DesktopEntry[];
-  views: DesktopView[];
-  viewColumns: number;
-  editorSettings: EditorSettings;
-};
-
-type ManifestV6 = {
-  version: 6;
-  entries: DesktopEntry[];
-  views: DesktopView[];
-  viewColumns: number;
-  editorSettings: EditorSettings;
-  sync: DesktopSyncState;
-};
-
-export type DesktopSyncState = {
-  revision: number;
-  entryRevisions: Record<string, number>;
-  contentRevisions: Record<string, number>;
-  layoutRevision: number;
-  settingsRevision: number;
-};
-
-type ManifestV7 = {
-  version: 7;
-  entries: DesktopEntry[];
-  views: DesktopView[];
-  viewColumns: number;
-  snapToGrid: boolean;
-  editorSettings: EditorSettings;
-  sync: DesktopSyncState;
-};
-
-type Manifest = {
-  version: 8;
-  entries: DesktopEntry[];
-  views: DesktopView[];
-  viewColumns: number;
-  snapToGrid: boolean;
-  wallpaper: Wallpaper;
-  editorSettings: EditorSettings;
-  sync: DesktopSyncState;
-};
+type Manifest = PersistedManifestV9;
+export type { DesktopSyncState } from "./manifest-codec";
 
 export type DesktopSnapshot = {
   entries: DesktopEntry[];
@@ -83,17 +24,7 @@ export type DesktopSnapshot = {
   sync: DesktopSyncState;
 };
 
-const EMPTY_SYNC_STATE: DesktopSyncState = {
-  revision: 0,
-  entryRevisions: {},
-  contentRevisions: {},
-  layoutRevision: 0,
-  settingsRevision: 0,
-};
-
-const EDITOR_LANGUAGES = new Set<EditorLanguage>(["auto", "plain", "markdown", "json", "javascript", "typescript", "jsx", "tsx", "css", "html", "xml", "yaml"]);
-const WALLPAPER_IDS = new Set<Wallpaper>(WALLPAPERS);
-export const DEFAULT_EDITOR_SETTINGS: EditorSettings = { autoSave: true, fontSize: 13, language: "auto" };
+export { DEFAULT_EDITOR_SETTINGS } from "./manifest-codec";
 
 export class StorageUnavailableError extends Error {
   constructor() {
@@ -125,98 +56,16 @@ async function writeManifest(manifest: Manifest) {
   } finally {
     await writable.close();
   }
+  desktopLoad = Promise.resolve(manifest);
 }
 
 function assertValidManifest(manifest: Manifest) {
-  const { editorSettings, entries, snapToGrid, wallpaper, views, viewColumns } = manifest;
-  const byId = new Map<string, DesktopEntry>();
-  const viewIds = new Set<string>();
-
-  if (typeof snapToGrid !== "boolean" || !WALLPAPER_IDS.has(wallpaper) || !Number.isInteger(viewColumns) || viewColumns < 1 || !Array.isArray(views) || views.length < 1) {
-    throw new Error("The desktop view layout has an unsupported format.");
-  }
-  if (
-    !editorSettings ||
-    typeof editorSettings.autoSave !== "boolean" ||
-    !Number.isInteger(editorSettings.fontSize) ||
-    editorSettings.fontSize < 11 ||
-    editorSettings.fontSize > 22 ||
-    !EDITOR_LANGUAGES.has(editorSettings.language)
-  ) {
-    throw new Error("The editor settings have an unsupported format.");
-  }
-  for (const view of views) {
-    if (!view || typeof view.id !== "string" || viewIds.has(view.id)) {
-      throw new Error("The desktop view layout has an unsupported format.");
-    }
-    viewIds.add(view.id);
-  }
-
-  for (const entry of entries) {
-    if (!entry || (entry.kind !== "file" && entry.kind !== "folder") || typeof entry.id !== "string") {
-      throw new Error("The storage index has an unsupported format.");
-    }
-    if (byId.has(entry.id)) throw new Error("The storage index contains duplicate entry IDs.");
-    byId.set(entry.id, entry);
-  }
-
-  for (const entry of entries) {
-    if (entry.parentId === null && !viewIds.has(entry.viewId ?? "")) {
-      throw new Error("The storage index refers to a missing desktop view.");
-    }
-    if (entry.parentId !== null && entry.viewId !== null) {
-      throw new Error("Items inside folders cannot belong to a desktop view.");
-    }
-    if (entry.parentId !== null && typeof entry.parentId !== "string") {
-      throw new Error("The storage index contains an invalid parent ID.");
-    }
-    if (entry.parentId === entry.id) throw new Error("The storage index contains a folder cycle.");
-    if (entry.parentId !== null) {
-      const parent = byId.get(entry.parentId);
-      if (!parent) throw new Error("The storage index refers to a missing parent folder.");
-      if (parent.kind !== "folder") throw new Error("The storage index contains an entry whose parent is a file.");
-    }
-
-    const visited = new Set<string>([entry.id]);
-    let parentId = entry.parentId;
-    while (parentId !== null) {
-      if (visited.has(parentId)) throw new Error("The storage index contains a folder cycle.");
-      visited.add(parentId);
-      parentId = byId.get(parentId)?.parentId ?? null;
-    }
-  }
-}
-
-function migrateEntries(entries: Array<Omit<DesktopEntry, "viewId">>, viewport: EntryPosition): Manifest {
-  const width = Math.max(1, viewport.x);
-  const height = Math.max(1, viewport.y);
-  const rootEntries = entries.filter((entry) => entry.parentId === null);
-  const columns = Math.max(1, ...rootEntries.map((entry) => Math.floor(entry.position.x / width) + 1));
-  const rows = Math.max(1, ...rootEntries.map((entry) => Math.floor(entry.position.y / height) + 1));
-  const views = Array.from({ length: columns * rows }, () => ({ id: crypto.randomUUID() }));
-  return {
-    version: 8,
-    viewColumns: columns,
-    views,
-    snapToGrid: false,
-    wallpaper: DEFAULT_WALLPAPER,
-    editorSettings: DEFAULT_EDITOR_SETTINGS,
-    sync: EMPTY_SYNC_STATE,
-    entries: entries.map((entry) => {
-      if (entry.parentId !== null) return { ...entry, viewId: null } as DesktopEntry;
-      const column = Math.floor(entry.position.x / width);
-      const row = Math.floor(entry.position.y / height);
-      return {
-        ...entry,
-        viewId: views[row * columns + column].id,
-        position: { x: entry.position.x % width, y: entry.position.y % height },
-      } as DesktopEntry;
-    }),
-  };
+  parseManifestV9(manifest);
 }
 
 async function createManifestFromSeeded(seeded: SeededManifest): Promise<Manifest> {
-  const files = seeded.entries.filter((entry) => entry.kind === "file");
+  const parsedSeeded = parseBundledSeededManifest(seeded);
+  const files = parsedSeeded.entries.filter((entry) => entry.kind === "file");
   const contents = await Promise.all(files.map(async (entry) => {
     const response = await fetch(entry.contentUrl);
     if (!response.ok) throw new Error(`The seeded file “${entry.name}” could not be loaded (${response.status}).`);
@@ -226,21 +75,21 @@ async function createManifestFromSeeded(seeded: SeededManifest): Promise<Manifes
     }
     return blob.slice(0, blob.size, entry.mimeType);
   }));
-  const entries: DesktopEntry[] = seeded.entries.map((entry) => {
+  const entries: DesktopEntry[] = parsedSeeded.entries.map((entry) => {
     if (entry.kind === "folder") return entry;
     const { contentUrl, ...file } = entry;
     void contentUrl;
     return file;
   });
   const created: Manifest = {
-    version: 8,
+    version: 9,
     entries,
-    views: seeded.layout.views,
-    viewColumns: seeded.layout.columns,
-    snapToGrid: seeded.layout.snapToGrid,
-    wallpaper: seeded.layout.wallpaper,
-    editorSettings: seeded.editorSettings,
-    sync: EMPTY_SYNC_STATE,
+    views: parsedSeeded.layout.views,
+    viewColumns: parsedSeeded.layout.columns,
+    snapToGrid: parsedSeeded.layout.snapToGrid,
+    wallpaper: parsedSeeded.layout.wallpaper,
+    editorSettings: parsedSeeded.editorSettings,
+    sync: emptySyncState(),
   };
   assertValidManifest(created);
   for (const [index, file] of files.entries()) await writeContent(file.id, contents[index]);
@@ -257,63 +106,13 @@ async function readManifest(
   try {
     const handle = await root.getFileHandle(MANIFEST_NAME);
     const file = await handle.getFile();
-    const parsed = JSON.parse(await file.text()) as Manifest | ManifestV7 | ManifestV6 | ManifestV5 | ManifestV4 | ManifestV3 | ManifestV2 | ManifestV1;
-
-    if (parsed.version === 1 && Array.isArray(parsed.files)) {
-      const migrated = migrateEntries(
-        parsed.files.map((entry) => ({ ...entry, kind: "file" as const, parentId: null })),
-        viewport,
-      );
-      assertValidManifest(migrated);
-      await writeManifest(migrated);
-      return migrated;
-    }
-    if (parsed.version === 2 && Array.isArray(parsed.entries)) {
-      const migrated = migrateEntries(parsed.entries, viewport);
-      assertValidManifest(migrated);
-      await writeManifest(migrated);
-      return migrated;
-    }
-    if (parsed.version === 3 && Array.isArray(parsed.entries)) {
-      const migrated: Manifest = { ...parsed, version: 8, snapToGrid: false, wallpaper: DEFAULT_WALLPAPER, editorSettings: DEFAULT_EDITOR_SETTINGS, sync: EMPTY_SYNC_STATE };
-      assertValidManifest(migrated);
-      await writeManifest(migrated);
-      return migrated;
-    }
-    if (parsed.version === 4 && Array.isArray(parsed.entries)) {
-      const migrated: Manifest = { ...parsed, version: 8, snapToGrid: false, wallpaper: DEFAULT_WALLPAPER, editorSettings: { ...parsed.editorSettings, autoSave: true }, sync: EMPTY_SYNC_STATE };
-      assertValidManifest(migrated);
-      await writeManifest(migrated);
-      return migrated;
-    }
-    if (parsed.version === 5 && Array.isArray(parsed.entries)) {
-      const migrated: Manifest = { ...parsed, version: 8, snapToGrid: false, wallpaper: DEFAULT_WALLPAPER, sync: EMPTY_SYNC_STATE };
-      assertValidManifest(migrated);
-      await writeManifest(migrated);
-      return migrated;
-    }
-    if (parsed.version === 6 && Array.isArray(parsed.entries)) {
-      const migrated: Manifest = { ...parsed, version: 8, snapToGrid: false, wallpaper: DEFAULT_WALLPAPER };
-      assertValidManifest(migrated);
-      await writeManifest(migrated);
-      return migrated;
-    }
-    if (parsed.version === 7 && Array.isArray(parsed.entries)) {
-      const migrated: Manifest = { ...parsed, version: 8, wallpaper: DEFAULT_WALLPAPER };
-      assertValidManifest(migrated);
-      await writeManifest(migrated);
-      return migrated;
-    }
-    if (parsed.version !== 8 || !Array.isArray(parsed.entries)) {
-      throw new Error("The storage index has an unsupported format.");
-    }
-
-    assertValidManifest(parsed);
-    return parsed;
+    const decoded = decodeManifest(JSON.parse(await file.text()), viewport, () => crypto.randomUUID());
+    if (decoded.migrated) await writeManifest(decoded.manifest);
+    return decoded.manifest;
   } catch (error) {
     if (error instanceof DOMException && error.name === "NotFoundError") {
       if (seeded) return createManifestFromSeeded(seeded);
-      const created: Manifest = { version: 8, entries: [], views: [{ id: crypto.randomUUID() }], viewColumns: 1, snapToGrid: false, wallpaper: DEFAULT_WALLPAPER, editorSettings: DEFAULT_EDITOR_SETTINGS, sync: EMPTY_SYNC_STATE };
+       const created: Manifest = { version: 9, entries: [], views: [{ id: crypto.randomUUID() }], viewColumns: 1, snapToGrid: false, wallpaper: DEFAULT_WALLPAPER, editorSettings: DEFAULT_EDITOR_SETTINGS, sync: emptySyncState() };
       await writeManifest(created);
       return created;
     }
@@ -354,20 +153,36 @@ function getFileEntry(entries: DesktopEntry[], id: string): FileEntry {
 }
 
 let desktopLoad: Promise<Manifest> | null = null;
+let storageWork: Promise<void> = Promise.resolve();
 
-export async function loadDesktop(viewport: EntryPosition, seeded: SeededManifest | null = null): Promise<DesktopSnapshot> {
+function withCrossContextLock<T>(operation: () => Promise<T>) {
+  if (!("locks" in navigator) || !navigator.locks) return operation();
+  return navigator.locks.request("hiraya-opfs", { mode: "exclusive" }, operation);
+}
+
+function serializeStorage<T>(operation: () => Promise<T>): Promise<T> {
+  const locked = () => withCrossContextLock(operation);
+  const next = storageWork.then(locked, locked);
+  storageWork = next.then(() => undefined, () => undefined);
+  return next;
+}
+
+async function loadDesktopUnsafe(viewport: EntryPosition, seeded: SeededManifest | null = null): Promise<DesktopSnapshot> {
   desktopLoad ??= readManifest(viewport, seeded).catch((error) => {
     desktopLoad = null;
     throw error;
   });
   const manifest = await desktopLoad;
-  return { entries: manifest.entries, layout: { views: manifest.views, columns: manifest.viewColumns, snapToGrid: manifest.snapToGrid, wallpaper: manifest.wallpaper }, editorSettings: manifest.editorSettings, sync: manifest.sync };
+  return { entries: manifest.entries, layout: manifestLayout(manifest), editorSettings: manifest.editorSettings, sync: manifest.sync };
 }
 
-export async function applyRemoteDesktop(snapshot: DesktopSnapshot, contents: Map<string, Blob>) {
+async function applyRemoteDesktopUnsafe(snapshot: DesktopSnapshot, contents: Map<string, Blob>) {
   const current = await readManifest();
+  if (current.sync.workspaceId === snapshot.sync.workspaceId && current.sync.revision >= snapshot.sync.revision) {
+    return { entries: current.entries, layout: manifestLayout(current), editorSettings: current.editorSettings, sync: current.sync };
+  }
   const next: Manifest = {
-    version: 8,
+    version: 9,
     entries: snapshot.entries,
     views: snapshot.layout.views,
     viewColumns: snapshot.layout.columns,
@@ -380,7 +195,7 @@ export async function applyRemoteDesktop(snapshot: DesktopSnapshot, contents: Ma
 
   for (const entry of snapshot.entries) {
     if (entry.kind !== "file") continue;
-    const changedContent = current.sync.contentRevisions[entry.id] !== snapshot.sync.contentRevisions[entry.id];
+    const changedContent = current.sync.workspaceId !== snapshot.sync.workspaceId || current.sync.contentRevisions[entry.id] !== snapshot.sync.contentRevisions[entry.id];
     if (!changedContent) continue;
     const content = contents.get(entry.id);
     if (!content || content.size !== entry.size) throw new Error(`The server returned invalid contents for “${entry.name}”.`);
@@ -402,7 +217,7 @@ export async function applyRemoteDesktop(snapshot: DesktopSnapshot, contents: Ma
   return snapshot;
 }
 
-export async function saveEditorSettings(settings: EditorSettings) {
+async function saveEditorSettingsUnsafe(settings: EditorSettings) {
   const manifest = { ...await readManifest(), editorSettings: settings };
   assertValidManifest(manifest);
   await writeManifest(manifest);
@@ -414,14 +229,14 @@ function resolveViewId(manifest: Manifest, parentId: string | null, viewId: stri
   return viewId;
 }
 
-export async function saveDesktopLayout(layout: DesktopLayout) {
+async function saveDesktopLayoutUnsafe(layout: DesktopLayout) {
   const manifest = await readManifest();
   const next = { ...manifest, views: layout.views, viewColumns: layout.columns, snapToGrid: layout.snapToGrid, wallpaper: layout.wallpaper };
   assertValidManifest(next);
   await writeManifest(next);
 }
 
-export async function createTextFile(nameValue: string, parentId: string | null, position: EntryPosition, viewId: string | null) {
+async function createTextFileUnsafe(nameValue: string, parentId: string | null, position: EntryPosition, viewId: string | null) {
   const name = validateEntryName(nameValue);
   const manifest = await readManifest();
   findParent(manifest.entries, parentId);
@@ -443,7 +258,7 @@ export async function createTextFile(nameValue: string, parentId: string | null,
   return file;
 }
 
-export async function createFolder(nameValue: string, parentId: string | null, position: EntryPosition, viewId: string | null) {
+async function createFolderUnsafe(nameValue: string, parentId: string | null, position: EntryPosition, viewId: string | null) {
   const name = validateEntryName(nameValue);
   const manifest = await readManifest();
   findParent(manifest.entries, parentId);
@@ -462,7 +277,7 @@ export async function createFolder(nameValue: string, parentId: string | null, p
   return folder;
 }
 
-export async function importFiles(
+async function importFilesUnsafe(
   files: File[],
   parentId: string | null,
   positions: EntryPosition[],
@@ -496,7 +311,7 @@ export async function importFiles(
   return imported;
 }
 
-export async function renameEntry(id: string, nameValue: string) {
+async function renameEntryUnsafe(id: string, nameValue: string) {
   const name = validateEntryName(nameValue);
   const manifest = await readManifest();
   const existing = getEntry(manifest.entries, id);
@@ -509,7 +324,7 @@ export async function renameEntry(id: string, nameValue: string) {
   return renamed;
 }
 
-export async function deleteEntry(id: string): Promise<DesktopEntry[]> {
+async function deleteEntryUnsafe(id: string): Promise<DesktopEntry[]> {
   const manifest = await readManifest();
   getEntry(manifest.entries, id);
   const deletedIds = new Set([id]);
@@ -545,7 +360,7 @@ export async function deleteEntry(id: string): Promise<DesktopEntry[]> {
   return deleted;
 }
 
-export async function moveEntry(id: string, parentId: string | null, position: EntryPosition, viewId: string | null) {
+async function moveEntryUnsafe(id: string, parentId: string | null, position: EntryPosition, viewId: string | null) {
   const manifest = await readManifest();
   const existing = getEntry(manifest.entries, id);
   findParent(manifest.entries, parentId);
@@ -566,7 +381,7 @@ export async function moveEntry(id: string, parentId: string | null, position: E
   return moved;
 }
 
-export async function updateEntryPosition(id: string, position: EntryPosition, viewId: string | null) {
+async function updateEntryPositionUnsafe(id: string, position: EntryPosition, viewId: string | null) {
   const manifest = await readManifest();
   const existing = getEntry(manifest.entries, id);
   const updated: DesktopEntry = { ...existing, position, viewId: resolveViewId(manifest, existing.parentId, viewId) };
@@ -577,7 +392,7 @@ export async function updateEntryPosition(id: string, position: EntryPosition, v
   return updated;
 }
 
-export async function readFile(id: FileEntry["id"]): Promise<File> {
+async function readFileUnsafe(id: FileEntry["id"]): Promise<File> {
   const manifest = await readManifest();
   const entry = getFileEntry(manifest.entries, id);
   const directory = await getFilesDirectory();
@@ -586,7 +401,7 @@ export async function readFile(id: FileEntry["id"]): Promise<File> {
   return new File([stored], entry.name, { type: entry.mimeType, lastModified: entry.modifiedAt });
 }
 
-export async function readDesktopSnapshot(): Promise<{
+async function readDesktopSnapshotUnsafe(): Promise<{
   entries: DesktopEntry[];
   layout: DesktopLayout;
   editorSettings: EditorSettings;
@@ -610,7 +425,7 @@ export async function readDesktopSnapshot(): Promise<{
   };
 }
 
-export async function readFileByRelativePath(
+async function readFileByRelativePathUnsafe(
   fromFileId: FileEntry["id"],
   relativePath: string,
 ): Promise<{ file: FileEntry; blob: Blob }> {
@@ -659,7 +474,7 @@ export async function readFileByRelativePath(
   return { file: resolved, blob: stored.slice(0, stored.size, resolved.mimeType) };
 }
 
-export async function saveTextFile(id: FileEntry["id"], content: string): Promise<FileEntry> {
+async function saveTextFileUnsafe(id: FileEntry["id"], content: string): Promise<FileEntry> {
   const manifest = await readManifest();
   const existing = getFileEntry(manifest.entries, id);
   await writeContent(id, content);
@@ -674,3 +489,32 @@ export async function saveTextFile(id: FileEntry["id"], content: string): Promis
   });
   return saved;
 }
+
+export function loadDesktop(viewport: EntryPosition, seeded: SeededManifest | null = null) {
+  return serializeStorage(() => loadDesktopUnsafe(viewport, seeded));
+}
+
+export function readCurrentDesktop(): Promise<DesktopSnapshot> {
+  return serializeStorage(async () => {
+    const manifest = await readManifest();
+    return { entries: manifest.entries, layout: manifestLayout(manifest), editorSettings: manifest.editorSettings, sync: manifest.sync };
+  });
+}
+
+export function applyRemoteDesktop(snapshot: DesktopSnapshot, contents: Map<string, Blob>) {
+  return serializeStorage(() => applyRemoteDesktopUnsafe(snapshot, contents));
+}
+
+export function saveEditorSettings(settings: EditorSettings) { return serializeStorage(() => saveEditorSettingsUnsafe(settings)); }
+export function saveDesktopLayout(layout: DesktopLayout) { return serializeStorage(() => saveDesktopLayoutUnsafe(layout)); }
+export function createTextFile(name: string, parentId: string | null, position: EntryPosition, viewId: string | null) { return serializeStorage(() => createTextFileUnsafe(name, parentId, position, viewId)); }
+export function createFolder(name: string, parentId: string | null, position: EntryPosition, viewId: string | null) { return serializeStorage(() => createFolderUnsafe(name, parentId, position, viewId)); }
+export function importFiles(files: File[], parentId: string | null, positions: EntryPosition[], viewId: string | null) { return serializeStorage(() => importFilesUnsafe(files, parentId, positions, viewId)); }
+export function renameEntry(id: string, name: string) { return serializeStorage(() => renameEntryUnsafe(id, name)); }
+export function deleteEntry(id: string) { return serializeStorage(() => deleteEntryUnsafe(id)); }
+export function moveEntry(id: string, parentId: string | null, position: EntryPosition, viewId: string | null) { return serializeStorage(() => moveEntryUnsafe(id, parentId, position, viewId)); }
+export function updateEntryPosition(id: string, position: EntryPosition, viewId: string | null) { return serializeStorage(() => updateEntryPositionUnsafe(id, position, viewId)); }
+export function readFile(id: FileEntry["id"]) { return serializeStorage(() => readFileUnsafe(id)); }
+export function readDesktopSnapshot() { return serializeStorage(() => readDesktopSnapshotUnsafe()); }
+export function readFileByRelativePath(fromFileId: FileEntry["id"], relativePath: string) { return serializeStorage(() => readFileByRelativePathUnsafe(fromFileId, relativePath)); }
+export function saveTextFile(id: FileEntry["id"], content: string) { return serializeStorage(() => saveTextFileUnsafe(id, content)); }

@@ -1,20 +1,16 @@
 import type { DesktopEntry } from "../types";
+import { foldEntryName, normalizeEntryName } from "./contracts";
 
 export function validateEntryName(value: string) {
-  const name = value.trim();
-
-  if (!name) throw new Error("Enter a name.");
-  if (name === "." || name === "..") throw new Error("Choose a different name.");
-  if (name.includes("/") || name.includes("\\") || [...name].some((character) => character.charCodeAt(0) < 32)) {
-    throw new Error("Names cannot contain slashes or control characters.");
+  try {
+    return normalizeEntryName(value);
+  } catch {
+    throw new Error("Enter a valid name without slashes or control characters, up to 180 characters.");
   }
-  if (name.length > 180) throw new Error("Keep the name under 180 characters.");
-
-  return name;
 }
 
 export function namesMatch(left: string, right: string) {
-  return left.localeCompare(right, undefined, { sensitivity: "accent" }) === 0;
+  return foldEntryName(left) === foldEntryName(right);
 }
 
 export function assertUniqueName(entries: DesktopEntry[], name: string, parentId: string | null, exceptId?: string) {

@@ -1,28 +1,20 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { X } from "@phosphor-icons/react";
-import type { DialogState } from "../types";
+import type { DesktopEntry, DialogState } from "../types";
 
 type Props = {
   dialog: Exclude<DialogState, null>;
+  entry: DesktopEntry | null;
   onClose: () => void;
   onSubmit: (name: string) => Promise<void>;
 };
 
-export function FileDialog({ dialog, onClose, onSubmit }: Props) {
+export function FileDialog({ dialog, entry, onClose, onSubmit }: Props) {
   const creatingFile = dialog.type === "create-file";
   const creatingFolder = dialog.type === "create-folder";
-  const entry = dialog.type === "rename" || dialog.type === "delete" ? dialog.entry : null;
   const [name, setName] = useState(creatingFile ? "untitled.txt" : creatingFolder ? "New folder" : entry?.name ?? "");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
-
-  useEffect(() => {
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") onClose();
-    }
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();

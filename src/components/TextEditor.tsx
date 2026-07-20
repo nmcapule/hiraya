@@ -10,6 +10,7 @@ import { Compartment, EditorState, type Extension, type Range, StateField } from
 import { Decoration, type DecorationSet, EditorView, keymap, WidgetType } from "@codemirror/view";
 import { basicSetup } from "codemirror";
 import type { EditorLanguage, EditorSettings, FileEntry } from "../types";
+import { editorLanguageFor, fileCapabilities } from "../ui/file-capabilities";
 
 type LinkedFile = { file: FileEntry; blob: Blob };
 
@@ -23,29 +24,6 @@ type Props = {
   onResolveLink: (path: string) => Promise<LinkedFile>;
   onOpenLinkedFile: (file: FileEntry) => void;
 };
-
-const EXTENSION_LANGUAGES: Record<string, EditorLanguage> = {
-  css: "css",
-  htm: "html",
-  html: "html",
-  js: "javascript",
-  jsx: "jsx",
-  json: "json",
-  md: "markdown",
-  markdown: "markdown",
-  ts: "typescript",
-  tsx: "tsx",
-  xml: "xml",
-  yaml: "yaml",
-  yml: "yaml",
-};
-
-const TEXT_EXTENSIONS = new Set(["txt", "md", "markdown", "json", "js", "jsx", "ts", "tsx", "css", "html", "xml", "csv", "yaml", "yml"]);
-
-function resolvedLanguage(language: EditorLanguage, fileName: string) {
-  if (language !== "auto") return language;
-  return EXTENSION_LANGUAGES[fileName.split(".").pop()?.toLowerCase() ?? ""] ?? "plain";
-}
 
 function languageExtension(language: EditorLanguage): Extension {
   switch (language) {
@@ -72,15 +50,6 @@ function markdownLinks(text: string) {
     paths.push(path);
   }
   return paths;
-}
-
-function isTextPreviewable(file: FileEntry) {
-  const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
-  return file.mimeType.startsWith("text/") || file.mimeType.includes("json") || TEXT_EXTENSIONS.has(extension);
-}
-
-function isPreviewable(file: FileEntry) {
-  return isTextPreviewable(file) || file.mimeType.startsWith("image/") || file.mimeType === "application/pdf" || file.mimeType.startsWith("video/") || file.mimeType.startsWith("audio/");
 }
 
 class MediaPreviewWidget extends WidgetType {
@@ -116,7 +85,8 @@ class MediaPreviewWidget extends WidgetType {
 
       void this.resolveLink(path).then(async ({ file, blob }) => {
         if (this.destroyed) return;
-        if (!isPreviewable(file)) {
+        const { preview: previewKind } = fileCapabilities(file);
+        if (previewKind === "none") {
           preview.hidden = true;
           view.requestMeasure();
           return;
@@ -137,7 +107,7 @@ class MediaPreviewWidget extends WidgetType {
         label.textContent = file.name;
         preview.append(label);
 
-        if (isTextPreviewable(file)) {
+        if (previewKind === "text") {
           const text = document.createElement("pre");
           text.className = "inline-media-preview__text";
           text.textContent = await blob.text();
@@ -147,18 +117,18 @@ class MediaPreviewWidget extends WidgetType {
           const url = URL.createObjectURL(blob);
           this.urls.push(url);
 
-          if (file.mimeType.startsWith("image/")) {
+          if (previewKind === "image") {
             const image = document.createElement("img");
             image.src = url;
             image.alt = file.name;
             preview.prepend(image);
-          } else if (file.mimeType === "application/pdf") {
+          } else if (previewKind === "pdf") {
             const frame = document.createElement("iframe");
             frame.src = url;
             frame.title = file.name;
             frame.tabIndex = -1;
             preview.prepend(frame);
-          } else if (file.mimeType.startsWith("video/")) {
+          } else if (previewKind === "video") {
             const video = document.createElement("video");
             video.src = url;
             video.preload = "metadata";
@@ -225,7 +195,7 @@ export function TextEditor({ file, value, settings, readOnly = false, onChange, 
   const onSaveRef = useRef(onSave);
   const resolveLinkRef = useRef(onResolveLink);
   const openLinkedFileRef = useRef(onOpenLinkedFile);
-  const initialConfig = useRef({ value, fileName: file.name, language: resolvedLanguage(settings.language, file.name), fontSize: settings.fontSize, readOnly });
+  const initialConfig = useRef({ value, fileName: file.name, language: editorLanguageFor(file.name, settings.language), fontSize: settings.fontSize, readOnly });
   onChangeRef.current = onChange;
   onSaveRef.current = onSave;
   resolveLinkRef.current = onResolveLink;
@@ -269,7 +239,7 @@ export function TextEditor({ file, value, settings, readOnly = false, onChange, 
   }, [value]);
 
   useEffect(() => {
-    viewRef.current?.dispatch({ effects: languageConfig.current.reconfigure(languageExtension(resolvedLanguage(settings.language, file.name))) });
+    viewRef.current?.dispatch({ effects: languageConfig.current.reconfigure(languageExtension(editorLanguageFor(file.name, settings.language))) });
   }, [file.name, settings.language]);
 
   useEffect(() => {
