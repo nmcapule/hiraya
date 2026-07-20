@@ -1,16 +1,17 @@
 import { namesMatch, validateEntryName } from "./entry-validation";
-import type { DesktopEntry, DesktopLayout, DesktopView, EditorLanguage, EditorSettings, EntryPosition, FileEntry, FolderEntry } from "../types";
+import { DEFAULT_WALLPAPER, WALLPAPERS, type DesktopEntry, type DesktopLayout, type DesktopView, type EditorLanguage, type EditorSettings, type EntryPosition, type FileEntry, type FolderEntry, type Wallpaper } from "../types";
 
 export type PredefinedFileEntry = FileEntry & { contentUrl: string };
 
 export type PredefinedManifest = {
-  version: 2;
+  version: 3;
   layout: DesktopLayout;
   editorSettings: EditorSettings;
   entries: Array<FolderEntry | PredefinedFileEntry>;
 };
 
 const EDITOR_LANGUAGES = new Set<EditorLanguage>(["auto", "plain", "markdown", "json", "javascript", "typescript", "jsx", "tsx", "css", "html", "xml", "yaml"]);
+const WALLPAPER_IDS = new Set<Wallpaper>(WALLPAPERS);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -30,11 +31,14 @@ function assertValidEditorSettings(value: unknown): asserts value is EditorSetti
   }
 }
 
-function readLayout(value: unknown, legacy: boolean): DesktopLayout {
+function readLayout(value: unknown, version: number): DesktopLayout {
   if (!isRecord(value) || !Number.isInteger(value.columns) || (value.columns as number) < 1 || !Array.isArray(value.views) || value.views.length < 1) {
     throw new Error("The predefined desktop layout has an unsupported format.");
   }
-  if (!legacy && typeof value.snapToGrid !== "boolean") {
+  if (version > 1 && typeof value.snapToGrid !== "boolean") {
+    throw new Error("The predefined desktop layout has an unsupported format.");
+  }
+  if (version > 2 && (typeof value.wallpaper !== "string" || !WALLPAPER_IDS.has(value.wallpaper as Wallpaper))) {
     throw new Error("The predefined desktop layout has an unsupported format.");
   }
   const ids = new Set<string>();
@@ -50,7 +54,8 @@ function readLayout(value: unknown, legacy: boolean): DesktopLayout {
   return {
     views: value.views as DesktopView[],
     columns: value.columns as number,
-    snapToGrid: legacy ? false : value.snapToGrid as boolean,
+    snapToGrid: version === 1 ? false : value.snapToGrid as boolean,
+    wallpaper: version < 3 ? DEFAULT_WALLPAPER : value.wallpaper as Wallpaper,
   };
 }
 
@@ -70,10 +75,10 @@ function readPosition(value: unknown): EntryPosition {
 }
 
 export function parsePredefinedManifest(value: unknown): PredefinedManifest {
-  if (!isRecord(value) || (value.version !== 1 && value.version !== 2) || !Array.isArray(value.entries)) {
+  if (!isRecord(value) || (value.version !== 1 && value.version !== 2 && value.version !== 3) || !Array.isArray(value.entries)) {
     throw new Error("The predefined desktop manifest has an unsupported format.");
   }
-  const layout = readLayout(value.layout, value.version === 1);
+  const layout = readLayout(value.layout, value.version);
   assertValidEditorSettings(value.editorSettings);
 
   const viewIds = new Set(layout.views.map((view) => view.id));
@@ -177,7 +182,7 @@ export function parsePredefinedManifest(value: unknown): PredefinedManifest {
   }
 
   return {
-    version: 2,
+    version: 3,
     layout,
     editorSettings: value.editorSettings,
     entries: [...byId.values()],

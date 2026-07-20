@@ -27,6 +27,7 @@ func OpenStore(dir string) (*Store, error) {
 	s := &Store{dir: dir, filesDir: filepath.Join(dir, "files"), subs: make(map[chan int64]struct{})}
 	s.workspace.Entries = []Entry{}
 	s.workspace.Layout.Views = []View{}
+	s.workspace.Layout.Wallpaper = "dusk"
 	s.workspace.EditorSettings = EditorSettings{AutoSave: true, FontSize: 13, Language: "auto"}
 	b, err := os.ReadFile(filepath.Join(dir, metadataName))
 	if errors.Is(err, os.ErrNotExist) {

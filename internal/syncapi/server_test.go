@@ -22,6 +22,7 @@ func TestBootstrapAndPersistenceRestart(t *testing.T) {
 	store, server := newTestServer(t, dir)
 	workspace := testBootstrap()
 	workspace.Layout.SnapToGrid = true
+	workspace.Layout.Wallpaper = "grove"
 	workspace.Entries = []Entry{
 		folder("folder", "Docs", nil, ptr("view-1")),
 		file("file", "hello.txt", ptr("folder"), nil, "text/plain", 5),
@@ -33,7 +34,7 @@ func TestBootstrapAndPersistenceRestart(t *testing.T) {
 	}
 	var created Workspace
 	decodeResponse(t, response, &created)
-	if !created.Initialized || created.Revision != 1 || created.LayoutRevision != 1 || created.SettingsRevision != 1 || !created.Layout.SnapToGrid {
+	if !created.Initialized || created.Revision != 1 || created.LayoutRevision != 1 || created.SettingsRevision != 1 || !created.Layout.SnapToGrid || created.Layout.Wallpaper != "grove" {
 		t.Fatalf("unexpected bootstrap revisions: %+v", created)
 	}
 	if created.Entries[0].Revision != 1 || created.Entries[1].ContentRevision != 1 || created.Entries[1].ModifiedAt == 1 {
@@ -50,12 +51,31 @@ func TestBootstrapAndPersistenceRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	snapshot := reopened.snapshot()
-	if snapshot.Revision != 1 || len(snapshot.Entries) != 2 || !snapshot.Layout.SnapToGrid {
+	if snapshot.Revision != 1 || len(snapshot.Entries) != 2 || !snapshot.Layout.SnapToGrid || snapshot.Layout.Wallpaper != "grove" {
 		t.Fatalf("reopened snapshot = %+v", snapshot)
 	}
 	content, err := os.ReadFile(filepath.Join(store.filesDir, "file"))
 	if err != nil || string(content) != "hello" {
 		t.Fatalf("persisted content = %q, %v", content, err)
+	}
+}
+
+func TestPersistenceDefaultsLegacyWallpaper(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "files"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	legacy := []byte(`{"initialized":true,"revision":1,"entries":[],"layout":{"views":[{"id":"view-1"}],"columns":1,"snapToGrid":false},"layoutRevision":1,"editorSettings":{"autoSave":true,"fontSize":13,"language":"auto"},"settingsRevision":1}`)
+	if err := os.WriteFile(filepath.Join(dir, metadataName), legacy, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wallpaper := store.snapshot().Layout.Wallpaper; wallpaper != "dusk" {
+		t.Fatalf("legacy wallpaper = %q", wallpaper)
 	}
 }
 
@@ -242,10 +262,10 @@ func TestMutationsRevisionsAndLastRequestWins(t *testing.T) {
 	if settingsResult.Revision != 8 || settingsResult.SettingsRevision != 8 {
 		t.Fatalf("settings response = %+v", settingsResult)
 	}
-	layout := jsonRequest(t, server, http.MethodPut, "/api/layout", Layout{Views: []View{{ID: "view-1"}, {ID: "view-2"}}, Columns: 2, SnapToGrid: true})
+	layout := jsonRequest(t, server, http.MethodPut, "/api/layout", Layout{Views: []View{{ID: "view-1"}, {ID: "view-2"}}, Columns: 2, SnapToGrid: true, Wallpaper: "ember"})
 	var layoutResult layoutResponse
 	decodeResponse(t, layout, &layoutResult)
-	if layoutResult.Revision != 9 || layoutResult.LayoutRevision != 9 || !layoutResult.Layout.SnapToGrid {
+	if layoutResult.Revision != 9 || layoutResult.LayoutRevision != 9 || !layoutResult.Layout.SnapToGrid || layoutResult.Layout.Wallpaper != "ember" {
 		t.Fatalf("layout response = %+v", layoutResult)
 	}
 
@@ -326,9 +346,13 @@ func TestValidationRejectsInvalidStructuresAndPayloads(t *testing.T) {
 	if badSettings.Code != http.StatusBadRequest {
 		t.Fatalf("bad settings status = %d", badSettings.Code)
 	}
-	removedView := jsonRequest(t, server, http.MethodPut, "/api/layout", Layout{Views: []View{{ID: "other"}}, Columns: 1})
+	removedView := jsonRequest(t, server, http.MethodPut, "/api/layout", Layout{Views: []View{{ID: "other"}}, Columns: 1, Wallpaper: "dusk"})
 	if removedView.Code != http.StatusConflict {
 		t.Fatalf("linked view removal status = %d", removedView.Code)
+	}
+	badWallpaper := jsonRequest(t, server, http.MethodPut, "/api/layout", Layout{Views: []View{{ID: "view-1"}}, Columns: 1, Wallpaper: "ocean"})
+	if badWallpaper.Code != http.StatusBadRequest {
+		t.Fatalf("bad wallpaper status = %d", badWallpaper.Code)
 	}
 }
 
@@ -415,7 +439,7 @@ func initializedTestServer(t *testing.T) (*Store, *Server) {
 func testBootstrap() bootstrapWorkspace {
 	return bootstrapWorkspace{
 		Entries:        []Entry{},
-		Layout:         Layout{Views: []View{{ID: "view-1"}}, Columns: 1},
+		Layout:         Layout{Views: []View{{ID: "view-1"}}, Columns: 1, Wallpaper: "dusk"},
 		EditorSettings: EditorSettings{AutoSave: true, FontSize: 13, Language: "auto"},
 	}
 }

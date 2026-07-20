@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, CloudCheck, CloudSlash, CornersIn, CornersOut, ExportIcon, FolderPlus, GridFour, HardDrive, Plus, SpinnerGap, Trash, UploadSimple, WarningCircle } from "@phosphor-icons/react";
+import { Check, CloudCheck, CloudSlash, FolderPlus, GearSix, HardDrive, Plus, SpinnerGap, Trash, UploadSimple, WarningCircle } from "@phosphor-icons/react";
 import predefinedDesktop from "virtual:hiraya-predefined";
 import { ContextMenu } from "./components/ContextMenu";
 import { FileDialog } from "./components/FileDialog";
@@ -7,6 +7,7 @@ import { FileIcon } from "./components/FileIcon";
 import { FileWindow } from "./components/FileWindow";
 import { FolderExplorer } from "./components/FolderExplorer";
 import { MoveDialog } from "./components/MoveDialog";
+import { SettingsWindow } from "./components/SettingsWindow";
 import {
   createFolder,
   createTextFile,
@@ -27,7 +28,7 @@ import {
 import { DEFAULT_EDITOR_SETTINGS } from "./lib/opfs";
 import { exportPredefinedDesktop } from "./lib/predefined";
 import { formatDesktopRoute, normalizeDesktopRoute, parseDesktopRoute, type DesktopRoute } from "./lib/routes";
-import type { ContextMenuState, DesktopEntry, DesktopLayout, DialogState, EditorSettings, EntryPosition, FileEntry, FolderEntry } from "./types";
+import { DEFAULT_WALLPAPER, type ContextMenuState, type DesktopEntry, type DesktopLayout, type DialogState, type EditorSettings, type EntryPosition, type FileEntry, type FolderEntry } from "./types";
 
 type OpenFile = { file: FileEntry; blob: File; editable: boolean; contentRevision: number; remoteChanged: boolean } | null;
 type RouteHistoryState = { hiraya: true; parentHash?: string };
@@ -72,13 +73,14 @@ function App() {
   const [route, setRoute] = useState<DesktopRoute | null>(null);
   const [clock, setClock] = useState(() => new Date());
   const [desktopSize, setDesktopSize] = useState(() => ({ width: window.innerWidth, height: Math.max(1, window.innerHeight - 44) }));
-  const [layout, setLayout] = useState<DesktopLayout>(() => ({ views: [{ id: crypto.randomUUID() }], columns: 1, snapToGrid: false }));
+  const [layout, setLayout] = useState<DesktopLayout>(() => ({ views: [{ id: crypto.randomUUID() }], columns: 1, snapToGrid: false, wallpaper: DEFAULT_WALLPAPER }));
   const [editorSettings, setEditorSettings] = useState<EditorSettings>(DEFAULT_EDITOR_SETTINGS);
   const [exporting, setExporting] = useState(false);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("connecting");
   const [editingViews, setEditingViews] = useState(false);
   const [draggedViewId, setDraggedViewId] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(() => Boolean(document.fullscreenElement));
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const desktopRef = useRef<HTMLElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
   const uploadRef = useRef<HTMLInputElement>(null);
@@ -240,6 +242,7 @@ function App() {
       setMoveDialogEntry(null);
       setEditingViews(false);
       setDraggedViewId(null);
+      setSettingsOpen(false);
       applyLocationRouteRef.current();
     }
     window.addEventListener("popstate", restoreRoute);
@@ -799,16 +802,7 @@ function App() {
           <button type="button" aria-label="New file" disabled={!canMutate} onClick={() => setDialog({ type: "create-file", parentId: null })}><Plus size={15} weight="bold" /> <span>New file</span></button>
           <button type="button" aria-label="New folder" disabled={!canMutate} onClick={() => setDialog({ type: "create-folder", parentId: null })}><FolderPlus size={16} /> <span>New folder</span></button>
           <button type="button" aria-label="Upload files" disabled={!canMutate} onClick={() => chooseUpload(null)}><UploadSimple size={16} /> <span>Upload</span></button>
-          <button type="button" aria-label="Export saved desktop" title="Export the saved desktop as a predefined package" disabled={loading || exporting} onClick={() => void handleExport()}><ExportIcon size={16} /> <span>{exporting ? "Exporting" : "Export"}</span></button>
-          <button
-            type="button"
-            aria-label={`${layout.snapToGrid ? "Disable" : "Enable"} snap to grid`}
-            aria-pressed={layout.snapToGrid}
-            title={`${layout.snapToGrid ? "Disable" : "Enable"} snap to grid`}
-            disabled={!canMutate}
-            onClick={() => applyLayout({ ...layoutRef.current, snapToGrid: !layoutRef.current.snapToGrid })}
-          ><GridFour size={16} weight={layout.snapToGrid ? "fill" : "regular"} /> <span>Snap to grid</span></button>
-          {document.fullscreenEnabled && <button type="button" aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"} title={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"} onClick={() => void toggleFullscreen()}>{isFullscreen ? <CornersIn size={16} /> : <CornersOut size={16} />} <span>{isFullscreen ? "Exit fullscreen" : "Fullscreen"}</span></button>}
+          <button type="button" aria-label="Open settings" title="Settings" aria-haspopup="dialog" onClick={() => setSettingsOpen(true)}><GearSix size={16} /> <span>Settings</span></button>
           <span className="menu-bar__sync" data-status={syncStatus} title={syncStatus === "local" ? "Changes are saved in this browser" : syncStatus === "online" ? "Changes are synced" : syncStatus === "connecting" ? "Connecting to sync server" : "Sync server unavailable; editing is disabled"}>
             {syncStatus === "local" ? <HardDrive size={15} /> : syncStatus === "online" ? <CloudCheck size={15} /> : syncStatus === "connecting" ? <SpinnerGap size={15} /> : <CloudSlash size={15} />}
             <span>{syncStatus === "local" ? "Saved locally" : syncStatus === "online" ? "Synced" : syncStatus === "connecting" ? "Connecting" : "Offline"}</span>
@@ -819,6 +813,7 @@ function App() {
 
       <section
         className="desktop"
+        data-wallpaper={layout.wallpaper}
         ref={desktopRef}
         aria-label="Desktop"
         onClickCapture={(event) => {
@@ -1001,6 +996,20 @@ function App() {
           invalidIds={invalidMoveIds(moveDialogEntry)}
           onClose={() => setMoveDialogEntry(null)}
           onMove={async (parentId) => { await handleMoveTo(moveDialogEntry, parentId, true); setMoveDialogEntry(null); }}
+        />
+      )}
+      {settingsOpen && (
+        <SettingsWindow
+          layout={layout}
+          canMutate={canMutate}
+          exportDisabled={loading}
+          exporting={exporting}
+          fullscreenEnabled={document.fullscreenEnabled}
+          isFullscreen={isFullscreen}
+          onClose={() => setSettingsOpen(false)}
+          onLayoutChange={applyLayout}
+          onExport={() => void handleExport()}
+          onToggleFullscreen={() => void toggleFullscreen()}
         />
       )}
       {openFile && (

@@ -46,7 +46,7 @@ If the server has never been initialized, the first browser uploads its complete
 
 ## Install and offline use
 
-Hiraya is an installable progressive web app. In a supported browser, use the browser's **Install app** action to add it to the desktop or home screen. The installed app launches in a standalone window; use **Fullscreen** in Hiraya's menu bar to enter or leave native fullscreen mode where the Fullscreen API is available.
+Hiraya is an installable progressive web app. In a supported browser, use the browser's **Install app** action to add it to the desktop or home screen. The installed app launches in a standalone window; open **Settings** and use **Fullscreen** to enter or leave native fullscreen mode where the Fullscreen API is available.
 
 The production service worker caches Hiraya's app shell, so the installed app can reopen offline after it has loaded successfully once. Saved files and desktop metadata remain available to view from the OPFS cache, but changes are disabled until the sync server reconnects. The cache is tied to the exact browser origin and is not a backup: clearing site data removes it, and using a different hostname or port creates a separate local cache.
 
@@ -61,7 +61,7 @@ HIRAYA_PREDEFINED_DIR=examples/predefined bun run dev
 HIRAYA_PREDEFINED_DIR=examples/predefined bun run build
 ```
 
-The value must be a directory inside the repository. It must contain a `manifest.json`; each file entry's `contentUrl` is resolved relative to that directory. See `examples/predefined` for the version 2 format. Version 1 packages remain supported and default to snap-to-grid being disabled.
+The value must be a directory inside the repository. It must contain a `manifest.json`; each file entry's `contentUrl` is resolved relative to that directory. See `examples/predefined` for the version 3 format. Version 1 and 2 packages remain supported; older packages default to the Dusk wallpaper, and version 1 also defaults to snap-to-grid being disabled.
 
 The predefined desktop is copied into OPFS only when the browser origin has no Hiraya manifest. Existing desktops, including intentionally empty desktops, are never merged with or replaced. After seeding, predefined files and folders behave like ordinary editable entries. If the shared server is also uninitialized, this seeded desktop becomes its initial workspace; an initialized server remains authoritative. Clearing the origin's site data removes the local cache and allows predefined content to seed it again before synchronization.
 
@@ -82,6 +82,6 @@ Pushes to `main` deploy this frontend-only build to GitHub Pages using `examples
 
 ## Export
 
-Use **Export** in the menu bar to download `hiraya-predefined.zip`. The archive contains `hiraya-predefined/manifest.json` and its `content` tree. Extract that directory into the repository and pass it to `HIRAYA_PREDEFINED_DIR` to seed the exported desktop in a fresh browser origin.
+Open **Settings** and use **Export desktop** to download `hiraya-predefined.zip`. The archive contains `hiraya-predefined/manifest.json` and its `content` tree. Extract that directory into the repository and pass it to `HIRAYA_PREDEFINED_DIR` to seed the exported desktop in a fresh browser origin.
 
-Export includes all saved files, folders, views, icon positions, layout, snap-to-grid preference, and editor settings from the synchronized OPFS cache. Unsaved editor changes are not included.
+Export includes all saved files, folders, views, icon positions, layout, shared wallpaper, snap-to-grid preference, and editor settings from the synchronized OPFS cache. Unsaved editor changes are not included.

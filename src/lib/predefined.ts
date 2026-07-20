@@ -42,7 +42,7 @@ export async function exportPredefinedDesktop() {
     return { ...entry, contentUrl: `content/${path}` } satisfies PredefinedFileEntry;
   }));
   const manifest = parsePredefinedManifest({
-    version: 2,
+    version: 3,
     layout: snapshot.layout,
     editorSettings: snapshot.editorSettings,
     entries,

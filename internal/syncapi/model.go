@@ -22,6 +22,7 @@ type Layout struct {
 	Views      []View `json:"views"`
 	Columns    int    `json:"columns"`
 	SnapToGrid bool   `json:"snapToGrid"`
+	Wallpaper  string `json:"wallpaper"`
 }
 
 type EditorSettings struct {
@@ -89,6 +90,8 @@ var editorLanguages = map[string]bool{
 	"css": true, "html": true, "xml": true, "yaml": true,
 }
 
+var wallpapers = map[string]bool{"dusk": true, "grove": true, "ember": true}
+
 func validID(id string) bool {
 	if id == "" || len(id) > 180 || id == "." || id == ".." || strings.ContainsAny(id, `/\\`) || !utf8.ValidString(id) {
 		return false
@@ -117,7 +120,7 @@ func validateName(name string) error {
 }
 
 func validateLayout(layout Layout) error {
-	if len(layout.Views) == 0 || layout.Columns < 1 || layout.Columns > len(layout.Views) {
+	if len(layout.Views) == 0 || layout.Columns < 1 || layout.Columns > len(layout.Views) || !wallpapers[layout.Wallpaper] {
 		return fmt.Errorf("invalid desktop layout")
 	}
 	ids := make(map[string]bool, len(layout.Views))

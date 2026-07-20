@@ -176,13 +176,43 @@ textarea:focus-visible {
   inset: 44px 0 0;
   overflow: hidden;
   isolation: isolate;
-  background:
+  --wallpaper-main:
     radial-gradient(circle at 78% 25%, rgba(239, 186, 100, 0.34) 0 3%, transparent 19%),
     radial-gradient(ellipse at 86% 37%, rgba(218, 134, 84, 0.23), transparent 27%),
     linear-gradient(165deg, transparent 0 48%, rgba(32, 53, 56, 0.58) 48.2% 57%, transparent 57.2%),
     linear-gradient(150deg, transparent 0 55%, rgba(19, 44, 44, 0.75) 55.2% 68%, transparent 68.2%),
     linear-gradient(128deg, transparent 0 57%, rgba(23, 54, 50, 0.86) 57.2% 73%, transparent 73.2%),
     linear-gradient(155deg, #647875 0%, #4a6262 37%, #384f50 60%, #243b3d 100%);
+  --wallpaper-fore:
+    radial-gradient(ellipse at 30% 0, rgba(234, 184, 93, 0.28), transparent 19%),
+    linear-gradient(178deg, rgba(40, 72, 65, 0.96), rgba(18, 42, 39, 0.98));
+  --wallpaper-back: linear-gradient(175deg, rgba(53, 77, 68, 0.91), rgba(23, 43, 40, 0.98));
+  background: var(--wallpaper-main);
+}
+
+.desktop[data-wallpaper="grove"] {
+  --wallpaper-main:
+    radial-gradient(circle at 24% 20%, rgba(209, 179, 111, 0.2), transparent 18%),
+    linear-gradient(160deg, transparent 0 42%, rgba(33, 66, 56, 0.7) 42.2% 55%, transparent 55.2%),
+    linear-gradient(138deg, transparent 0 54%, rgba(20, 48, 43, 0.9) 54.2% 70%, transparent 70.2%),
+    linear-gradient(150deg, #557168 0%, #38574f 38%, #29483f 64%, #19352f 100%);
+  --wallpaper-fore:
+    radial-gradient(ellipse at 72% 3%, rgba(216, 181, 109, 0.16), transparent 22%),
+    linear-gradient(176deg, rgba(36, 76, 60, 0.97), rgba(15, 44, 37, 0.99));
+  --wallpaper-back: linear-gradient(170deg, rgba(50, 90, 71, 0.92), rgba(19, 48, 39, 0.98));
+}
+
+.desktop[data-wallpaper="ember"] {
+  --wallpaper-main:
+    radial-gradient(circle at 77% 24%, rgba(236, 173, 91, 0.44) 0 4%, transparent 21%),
+    radial-gradient(ellipse at 84% 38%, rgba(180, 93, 62, 0.25), transparent 31%),
+    linear-gradient(158deg, transparent 0 48%, rgba(77, 66, 54, 0.63) 48.2% 59%, transparent 59.2%),
+    linear-gradient(132deg, transparent 0 58%, rgba(63, 57, 48, 0.88) 58.2% 72%, transparent 72.2%),
+    linear-gradient(150deg, #7a7468 0%, #665f54 40%, #514b43 65%, #373a37 100%);
+  --wallpaper-fore:
+    radial-gradient(ellipse at 30% 0, rgba(234, 157, 82, 0.32), transparent 22%),
+    linear-gradient(178deg, rgba(76, 65, 50, 0.97), rgba(43, 42, 36, 0.99));
+  --wallpaper-back: linear-gradient(175deg, rgba(83, 76, 61, 0.93), rgba(45, 47, 40, 0.99));
 }
 
 .desktop::before,
@@ -200,9 +230,7 @@ textarea:focus-visible {
   height: 104%;
   transform: rotate(-7deg);
   border-radius: 50% 12% 0 0;
-  background:
-    radial-gradient(ellipse at 30% 0, rgba(234, 184, 93, 0.28), transparent 19%),
-    linear-gradient(178deg, rgba(40, 72, 65, 0.96), rgba(18, 42, 39, 0.98));
+  background: var(--wallpaper-fore);
   box-shadow: -50px -24px 90px rgba(19, 37, 37, 0.45);
 }
 
@@ -214,7 +242,7 @@ textarea:focus-visible {
   height: 85%;
   transform: rotate(9deg);
   border-radius: 22% 55% 0 0;
-  background: linear-gradient(175deg, rgba(53, 77, 68, 0.91), rgba(23, 43, 40, 0.98));
+  background: var(--wallpaper-back);
   box-shadow: 20px -25px 60px rgba(25, 49, 46, 0.54);
 }
 
@@ -634,7 +662,8 @@ textarea:focus-visible {
 }
 
 .file-dialog,
-.file-window {
+.file-window,
+.settings-window {
   color: var(--ink);
   border: 1px solid rgba(255, 255, 255, 0.55);
   border-radius: var(--radius);
@@ -646,6 +675,259 @@ textarea:focus-visible {
 .file-dialog {
   width: min(430px, 100%);
   overflow: hidden;
+}
+
+.settings-window {
+  display: flex;
+  width: min(720px, calc(100vw - 40px));
+  max-height: min(760px, calc(100dvh - 84px));
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.settings-window__content {
+  padding: 5px 22px 22px;
+  overflow-y: auto;
+}
+
+.settings-section {
+  padding: 20px 0;
+  border-bottom: 1px solid #d4d6cf;
+}
+
+.settings-section:last-of-type {
+  border-bottom: 0;
+}
+
+.settings-section__heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  margin-bottom: 15px;
+  color: #78591f;
+}
+
+.settings-section__heading > svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+.settings-section h3 {
+  margin: 0;
+  color: #27302d;
+  font-size: 12px;
+  letter-spacing: -0.01em;
+}
+
+.settings-section p {
+  margin: 3px 0 0;
+  color: #68706c;
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.wallpaper-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.wallpaper-option {
+  min-width: 0;
+  padding: 5px;
+  overflow: hidden;
+  border: 1px solid #c8cbc4;
+  border-radius: 11px;
+  color: #303936;
+  background: #e7e7e1;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 150ms ease, box-shadow 150ms ease, transform 150ms ease;
+}
+
+.wallpaper-option:hover {
+  border-color: #9da198;
+}
+
+.wallpaper-option:active {
+  transform: scale(0.985);
+}
+
+.wallpaper-option[data-selected] {
+  border-color: #a7782a;
+  box-shadow: 0 0 0 2px rgba(183, 128, 40, 0.18);
+}
+
+.wallpaper-option:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.wallpaper-option__preview {
+  position: relative;
+  display: block;
+  height: 86px;
+  overflow: hidden;
+  border-radius: 7px;
+  background:
+    radial-gradient(circle at 78% 24%, rgba(239, 186, 100, 0.5), transparent 20%),
+    linear-gradient(145deg, #667a76, #30494a 68%, #213738);
+}
+
+.wallpaper-option__preview[data-wallpaper="grove"] {
+  background:
+    radial-gradient(circle at 24% 18%, rgba(209, 179, 111, 0.28), transparent 22%),
+    linear-gradient(145deg, #557168, #29483f 65%, #17342d);
+}
+
+.wallpaper-option__preview[data-wallpaper="ember"] {
+  background:
+    radial-gradient(circle at 77% 23%, rgba(236, 173, 91, 0.56), transparent 22%),
+    linear-gradient(145deg, #7a7468, #514b43 64%, #353936);
+}
+
+.wallpaper-option__preview span {
+  position: absolute;
+  right: -8%;
+  bottom: -56%;
+  width: 78%;
+  height: 95%;
+  transform: rotate(-7deg);
+  border-radius: 50% 14% 0 0;
+  background: rgba(20, 48, 43, 0.86);
+  box-shadow: -18px -10px 35px rgba(12, 27, 26, 0.25);
+}
+
+.wallpaper-option__preview[data-wallpaper="grove"] span {
+  background: rgba(16, 55, 43, 0.9);
+}
+
+.wallpaper-option__preview[data-wallpaper="ember"] span {
+  background: rgba(67, 53, 41, 0.9);
+}
+
+.wallpaper-option__copy {
+  display: block;
+  padding: 9px 7px 7px;
+}
+
+.wallpaper-option__copy strong,
+.wallpaper-option__copy small {
+  display: block;
+}
+
+.wallpaper-option__copy strong {
+  font-size: 11px;
+}
+
+.wallpaper-option__copy small {
+  margin-top: 2px;
+  overflow: hidden;
+  color: #747b76;
+  font-size: 9px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-list {
+  border: 1px solid #d1d3cc;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #e8e8e2;
+}
+
+.settings-row {
+  display: flex;
+  min-height: 58px;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 11px;
+  color: #313a37;
+}
+
+.settings-row + .settings-row {
+  border-top: 1px solid #d1d3cc;
+}
+
+.settings-row__icon {
+  display: grid;
+  width: 31px;
+  height: 31px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 8px;
+  color: #75571f;
+  background: rgba(183, 128, 40, 0.12);
+}
+
+.settings-row__copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.settings-row__copy strong,
+.settings-row__copy small {
+  display: block;
+}
+
+.settings-row__copy strong {
+  font-size: 11px;
+}
+
+.settings-row__copy small {
+  margin-top: 2px;
+  color: #737a76;
+  font-size: 9px;
+}
+
+.settings-row input[type="checkbox"] {
+  width: 34px;
+  height: 18px;
+  flex: 0 0 auto;
+  margin: 0;
+  accent-color: #9a6b20;
+  cursor: pointer;
+}
+
+.settings-row input[type="checkbox"]:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.settings-row .button,
+.settings-export .button {
+  min-height: 32px;
+  color: #343c39;
+  background: #d7d8d1;
+  font-size: 10px;
+}
+
+.settings-export {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 15px;
+  padding: 11px;
+  border: 1px solid #d1d3cc;
+  border-radius: 10px;
+  background: #e8e8e2;
+}
+
+.settings-export > span {
+  color: #69716d;
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+.settings-window__offline {
+  margin: 2px 0 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  color: #71491d;
+  background: #f0dfc4;
+  font-size: 10px;
+  line-height: 1.45;
 }
 
 .window-header {
@@ -1464,6 +1746,42 @@ textarea:focus-visible {
   .file-window {
     width: calc(100vw - 18px);
     height: calc(100dvh - 62px);
+  }
+
+  .settings-window {
+    width: calc(100vw - 18px);
+    max-height: calc(100dvh - 62px);
+  }
+
+  .settings-window__content {
+    padding: 3px 13px 14px;
+  }
+
+  .settings-section {
+    padding: 16px 0;
+  }
+
+  .wallpaper-options {
+    grid-template-columns: 1fr;
+  }
+
+  .wallpaper-option {
+    display: grid;
+    grid-template-columns: 96px minmax(0, 1fr);
+    align-items: center;
+  }
+
+  .wallpaper-option__preview {
+    height: 57px;
+  }
+
+  .wallpaper-option__copy small {
+    white-space: normal;
+  }
+
+  .settings-export {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .folder-explorer,
