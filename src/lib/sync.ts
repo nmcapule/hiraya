@@ -1,4 +1,4 @@
-import type { PredefinedManifest } from "./predefined-manifest";
+import type { SeededManifest } from "./seeded-manifest";
 import {
   applyRemoteDesktop,
   createFolder as createLocalFolder,
@@ -186,8 +186,8 @@ function startEvents() {
   }, 5_000);
 }
 
-export async function initializeDesktop(viewport: EntryPosition, predefined: PredefinedManifest | null = null) {
-  desktop = await loadDesktop(viewport, predefined);
+export async function initializeDesktop(viewport: EntryPosition, seeded: SeededManifest | null = null) {
+  desktop = await loadDesktop(viewport, seeded);
   if (FRONTEND_ONLY) {
     initialized = true;
     setStatus("local");

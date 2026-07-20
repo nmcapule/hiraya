@@ -20,10 +20,10 @@ go test ./...
 - `src/App.tsx`: application state and orchestration for files, dialogs, uploads, errors, and open-file windows.
 - `src/lib/sync.ts`: browser sync orchestration, server-required mutations, SSE handling, health checks, and remote reconciliation.
 - `src/lib/opfs.ts`: the browser cache persistence boundary. Keep OPFS access out of components and other storage access behind this module.
-- `src/lib/predefined-manifest.ts`: shared predefined manifest types and validation used by build-time loading and browser export.
-- `src/lib/predefined.ts`: browser-side ZIP export for saved desktops.
-- `build/predefined.ts`: Vite virtual-module plugin that validates and bundles an optional predefined desktop.
-- `vite.config.ts`: predefined bundling, PWA generation, and the development `/api` proxy.
+- `src/lib/seeded-manifest.ts`: shared seeded manifest types and validation used by build-time loading and browser export.
+- `src/lib/seeded.ts`: browser-side ZIP export for saved desktops.
+- `build/seeded.ts`: Vite virtual-module plugin that validates and bundles an optional seeded desktop.
+- `vite.config.ts`: seeded desktop bundling, PWA generation, and the development `/api` proxy.
 - `cmd/hiraya-server/main.go`: Go server entry point, environment configuration, and same-origin static serving.
 - `internal/syncapi/model.go`: server workspace schema and structural validation.
 - `internal/syncapi/store.go`: serialized state, durable atomic metadata writes, logical file-tree lifecycle, and SSE subscribers.
@@ -74,21 +74,21 @@ If adding destructive operations, update file content and the manifest carefully
 - Default server paths and limits come from `HIRAYA_ADDR`, `HIRAYA_DATA_DIR`, `HIRAYA_STATIC_DIR`, and `HIRAYA_MAX_UPLOAD_BYTES`.
 - The server is unauthenticated. Bind it to a trusted interface unless authentication is explicitly added.
 
-## Predefined Desktops
+## Seeded Desktops
 
-- `HIRAYA_PREDEFINED_DIR` is an optional compile-time environment variable. It must point to a directory inside the repository containing `manifest.json` and its referenced content.
-- An unset or empty `HIRAYA_PREDEFINED_DIR` disables predefined content. Do not expose the source path to browser code or rename it with a `VITE_` prefix.
-- The predefined manifest has its own version in `src/lib/predefined-manifest.ts`; it is distinct from the persisted OPFS manifest version.
+- `HIRAYA_SEEDED_DIR` is an optional compile-time environment variable. It must point to a directory inside the repository containing `manifest.json` and its referenced content.
+- An unset or empty `HIRAYA_SEEDED_DIR` disables seeded content. Do not expose the source path to browser code or rename it with a `VITE_` prefix.
+- The seeded manifest has its own version in `src/lib/seeded-manifest.ts`; it is distinct from the persisted OPFS manifest version.
 - Keep the build loader and browser exporter on the same manifest schema and validation path. An exported package must be accepted directly by the build loader after extraction.
 - File `contentUrl` values are relative to the configured directory. Reject absolute paths, traversal outside the directory, queries, fragments, missing files, size mismatches, and symbolic links.
-- Predefined content seeds OPFS only when `.hiraya-manifest.json` does not exist. Never merge it into, replace, or restore entries in an existing manifest, including an intentionally empty manifest.
-- Fetch and validate all predefined assets, then write file contents before publishing the complete OPFS manifest. Failed seeding must not expose metadata that points to missing content.
-- If the server is uninitialized, the first browser bootstraps it from the resulting OPFS desktop, including predefined content when it seeded that browser. If the server is initialized, its workspace replaces the local cache.
+- Seeded content populates OPFS only when `.hiraya-manifest.json` does not exist. Never merge it into, replace, or restore entries in an existing manifest, including an intentionally empty manifest.
+- Fetch and validate all seeded assets, then write file contents before publishing the complete OPFS manifest. Failed seeding must not expose metadata that points to missing content.
+- If the server is uninitialized, the first browser bootstraps it from the resulting OPFS desktop, including seeded content when it initialized that browser. If the server is initialized, its workspace replaces the local cache.
 - Seeded entries become ordinary synchronized entries. User edits, moves, renames, and deletions must persist without being reset from the bundled package.
-- The menu-bar Export action packages the entire saved desktop as `hiraya-predefined.zip`, with `hiraya-predefined/manifest.json` and a logical `content` tree.
+- The menu-bar Export action packages the entire saved desktop as `hiraya-seeded.zip`, with `hiraya-seeded/manifest.json` and a logical `content` tree.
 - Export includes persisted files, folders, empty folders, views, positions, layout, metadata, and editor settings. It intentionally excludes unsaved editor changes.
 - Preserve stable entry and view IDs during export. Keep file reads for export inside the OPFS persistence boundary.
-- `examples/predefined` is the canonical checked-in package example. Update it and `README.md` when the predefined format or setup changes.
+- `examples/seeded` is the canonical checked-in package example. Update it and `README.md` when the seeded format or setup changes.
 
 ## Interaction Rules
 
@@ -165,15 +165,15 @@ For synchronization or server changes, also verify:
 6. Restart the Go process with the same data directory and confirm metadata, content, and revisions persist.
 7. Check both clients' consoles for runtime errors.
 
-For predefined desktop or export changes, also verify:
+For seeded desktop or export changes, also verify:
 
-1. `bun run build` succeeds with `HIRAYA_PREDEFINED_DIR` unset.
-2. `HIRAYA_PREDEFINED_DIR=examples/predefined bun run build` succeeds.
+1. `bun run build` succeeds with `HIRAYA_SEEDED_DIR` unset.
+2. `HIRAYA_SEEDED_DIR=examples/seeded bun run build` succeeds.
 3. A fresh browser origin seeds the example, while an existing origin remains unchanged.
 4. Seeded files can be edited and still contain the edit after reload.
 5. Export produces a ZIP whose manifest and file bytes match the saved desktop.
-6. Extracting the ZIP and building from its `hiraya-predefined` directory succeeds.
-7. An uninitialized server is seeded from the browser's resulting desktop, while an initialized server overrides local predefined content.
+6. Extracting the ZIP and building from its `hiraya-seeded` directory succeeds.
+7. An uninitialized server is seeded from the browser's resulting desktop, while an initialized server overrides local seeded content.
 
 Browser automation should use `agent-browser` with `--headed` when a display is available. In displayless environments, explicitly pass `--headed false`; the local agent-browser configuration may otherwise continue requesting a headed session.
 

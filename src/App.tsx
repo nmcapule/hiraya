@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Check, CloudCheck, CloudSlash, FolderPlus, GearSix, HardDrive, Plus, SpinnerGap, Trash, UploadSimple, WarningCircle } from "@phosphor-icons/react";
-import predefinedDesktop from "virtual:hiraya-predefined";
+import seededDesktop from "virtual:hiraya-seeded";
 import { ContextMenu } from "./components/ContextMenu";
 import { FileDialog } from "./components/FileDialog";
 import { FileIcon } from "./components/FileIcon";
@@ -26,7 +26,7 @@ import {
   type SyncStatus,
 } from "./lib/sync";
 import { DEFAULT_EDITOR_SETTINGS } from "./lib/opfs";
-import { exportPredefinedDesktop } from "./lib/predefined";
+import { exportSeededDesktop } from "./lib/seeded";
 import { formatDesktopRoute, normalizeDesktopRoute, parseDesktopRoute, type DesktopRoute } from "./lib/routes";
 import { DEFAULT_WALLPAPER, type ContextMenuState, type DesktopEntry, type DesktopLayout, type DialogState, type EditorSettings, type EntryPosition, type FileEntry, type FolderEntry } from "./types";
 
@@ -203,7 +203,7 @@ function App() {
       });
       applyLocationRouteRef.current(synced.entries, synced.layout);
     }, (nextStatus) => { if (active) setSyncStatus(nextStatus); });
-    void initializeDesktop({ x: window.innerWidth, y: Math.max(1, window.innerHeight - 44) }, predefinedDesktop)
+    void initializeDesktop({ x: window.innerWidth, y: Math.max(1, window.innerHeight - 44) }, seededDesktop)
       .then(({ desktop: loadedDesktop, status: loadedStatus }) => {
         if (!active) return;
         const { entries: loadedEntries, layout: loadedLayout, editorSettings: loadedEditorSettings, sync } = loadedDesktop;
@@ -530,11 +530,11 @@ function App() {
     setError("");
     setExporting(true);
     try {
-      const archive = await exportPredefinedDesktop();
+      const archive = await exportSeededDesktop();
       const url = URL.createObjectURL(archive);
       const anchor = document.createElement("a");
       anchor.href = url;
-      anchor.download = "hiraya-predefined.zip";
+      anchor.download = "hiraya-seeded.zip";
       anchor.click();
       window.setTimeout(() => URL.revokeObjectURL(url), 1000);
       setNotice("Saved desktop exported");

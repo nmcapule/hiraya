@@ -42,7 +42,7 @@ jobs:
         env:
           HIRAYA_BASE_PATH: /${{ github.event.repository.name }}/
           HIRAYA_FRONTEND_ONLY: "true"
-          HIRAYA_PREDEFINED_DIR: examples/predefined
+          HIRAYA_SEEDED_DIR: examples/seeded
         run: bun run build
 
       - name: Upload Pages artifact

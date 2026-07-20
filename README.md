@@ -56,18 +56,18 @@ The production service worker caches Hiraya's app shell, so the installed app ca
 
 Installation and offline caching require HTTPS in production. Browsers treat `localhost` as secure for development.
 
-## Predefined desktop
+## Seeded desktop
 
-Set `HIRAYA_PREDEFINED_DIR` at development or build time to bundle a predefined desktop:
+Set `HIRAYA_SEEDED_DIR` at development or build time to bundle a seeded desktop:
 
 ```sh
-HIRAYA_PREDEFINED_DIR=examples/predefined bun run dev
-HIRAYA_PREDEFINED_DIR=examples/predefined bun run build
+HIRAYA_SEEDED_DIR=examples/seeded bun run dev
+HIRAYA_SEEDED_DIR=examples/seeded bun run build
 ```
 
-The value must be a directory inside the repository. It must contain a `manifest.json`; each file entry's `contentUrl` is resolved relative to that directory. See `examples/predefined` for the version 3 format. Version 1 and 2 packages remain supported; older packages default to the Dusk wallpaper, and version 1 also defaults to snap-to-grid being disabled.
+The value must be a directory inside the repository. It must contain a `manifest.json`; each file entry's `contentUrl` is resolved relative to that directory. See `examples/seeded` for the version 3 format. Version 1 and 2 packages remain supported; older packages default to the Dusk wallpaper, and version 1 also defaults to snap-to-grid being disabled.
 
-The predefined desktop is copied into OPFS only when the browser origin has no Hiraya manifest. Existing desktops, including intentionally empty desktops, are never merged with or replaced. After seeding, predefined files and folders behave like ordinary editable entries. If the shared server is also uninitialized, this seeded desktop becomes its initial workspace; an initialized server remains authoritative. Clearing the origin's site data removes the local cache and allows predefined content to seed it again before synchronization.
+The seeded desktop is copied into OPFS only when the browser origin has no Hiraya manifest. Existing desktops, including intentionally empty desktops, are never merged with or replaced. After seeding, seeded files and folders behave like ordinary editable entries. If the shared server is also uninitialized, this seeded desktop becomes its initial workspace; an initialized server remains authoritative. Clearing the origin's site data removes the local cache and allows seeded content to seed it again before synchronization.
 
 The build rejects malformed manifests, missing or size-mismatched content, paths outside the configured directory, and symbolic links.
 
@@ -77,15 +77,15 @@ Set `HIRAYA_FRONTEND_ONLY=true` to run without the Go sync server. In this mode,
 
 ```sh
 HIRAYA_FRONTEND_ONLY=true \
-HIRAYA_PREDEFINED_DIR=examples/predefined \
+HIRAYA_SEEDED_DIR=examples/seeded \
 HIRAYA_BASE_PATH=/hiraya/ \
 bun run build
 ```
 
-Pushes to `main` deploy this frontend-only build to GitHub Pages using `examples/predefined`. Returning browsers retain their locally edited desktop when a new version deploys; updated predefined content seeds only browsers without an existing Hiraya manifest.
+Pushes to `main` deploy this frontend-only build to GitHub Pages using `examples/seeded`. Returning browsers retain their locally edited desktop when a new version deploys; updated seeded content seeds only browsers without an existing Hiraya manifest.
 
 ## Export
 
-Open **Settings** and use **Export desktop** to download `hiraya-predefined.zip`. The archive contains `hiraya-predefined/manifest.json` and its `content` tree. Extract that directory into the repository and pass it to `HIRAYA_PREDEFINED_DIR` to seed the exported desktop in a fresh browser origin.
+Open **Settings** and use **Export desktop** to download `hiraya-seeded.zip`. The archive contains `hiraya-seeded/manifest.json` and its `content` tree. Extract that directory into the repository and pass it to `HIRAYA_SEEDED_DIR` to seed the exported desktop in a fresh browser origin.
 
 Export includes all saved files, folders, views, icon positions, layout, shared wallpaper, snap-to-grid preference, and editor settings from the synchronized OPFS cache. Unsaved editor changes are not included.

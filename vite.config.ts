@@ -1,7 +1,7 @@
 import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
 import { VitePWA } from "vite-plugin-pwa";
-import { predefinedDesktopPlugin } from "./build/predefined";
+import { seededDesktopPlugin } from "./build/seeded";
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "HIRAYA_");
@@ -11,7 +11,7 @@ export default defineConfig(({ mode }) => {
       "import.meta.env.HIRAYA_FRONTEND_ONLY": JSON.stringify(env.HIRAYA_FRONTEND_ONLY === "true" ? "true" : "false"),
     },
     plugins: [
-      predefinedDesktopPlugin(process.cwd(), env.HIRAYA_PREDEFINED_DIR),
+      seededDesktopPlugin(process.cwd(), env.HIRAYA_SEEDED_DIR),
       react(),
       VitePWA({
         injectRegister: "auto",

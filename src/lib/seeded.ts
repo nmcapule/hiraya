@@ -1,9 +1,9 @@
 import { strToU8, zip, type Zippable } from "fflate";
 import { readDesktopSnapshot } from "./opfs";
-import { parsePredefinedManifest, type PredefinedFileEntry, type PredefinedManifest } from "./predefined-manifest";
+import { parseSeededManifest, type SeededFileEntry, type SeededManifest } from "./seeded-manifest";
 import type { DesktopEntry } from "../types";
 
-const EXPORT_ROOT = "hiraya-predefined";
+const EXPORT_ROOT = "hiraya-seeded";
 
 function logicalPath(entry: DesktopEntry, byId: Map<string, DesktopEntry>) {
   const segments = [entry.name];
@@ -26,7 +26,7 @@ function createZip(files: Zippable) {
   });
 }
 
-export async function exportPredefinedDesktop() {
+export async function exportSeededDesktop() {
   const snapshot = await readDesktopSnapshot();
   const byId = new Map(snapshot.entries.map((entry) => [entry.id, entry]));
   const archive: Zippable = { [`${EXPORT_ROOT}/`]: new Uint8Array() };
@@ -39,14 +39,14 @@ export async function exportPredefinedDesktop() {
     const content = snapshot.contents.get(entry.id);
     if (!content) throw new Error(`The contents of “${entry.name}” could not be read.`);
     archive[`${EXPORT_ROOT}/content/${path}`] = new Uint8Array(await content.arrayBuffer());
-    return { ...entry, contentUrl: `content/${path}` } satisfies PredefinedFileEntry;
+    return { ...entry, contentUrl: `content/${path}` } satisfies SeededFileEntry;
   }));
-  const manifest = parsePredefinedManifest({
+  const manifest = parseSeededManifest({
     version: 3,
     layout: snapshot.layout,
     editorSettings: snapshot.editorSettings,
     entries,
-  }) satisfies PredefinedManifest;
+  }) satisfies SeededManifest;
   archive[`${EXPORT_ROOT}/manifest.json`] = strToU8(`${JSON.stringify(manifest, null, 2)}\n`);
 
   const zipped = await createZip(archive);

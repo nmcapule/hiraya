@@ -4,9 +4,9 @@ interface ImportMetaEnv {
   readonly HIRAYA_FRONTEND_ONLY: string;
 }
 
-declare module "virtual:hiraya-predefined" {
-  import type { PredefinedManifest } from "./lib/predefined-manifest";
+declare module "virtual:hiraya-seeded" {
+  import type { SeededManifest } from "./lib/seeded-manifest";
 
-  const manifest: PredefinedManifest | null;
+  const manifest: SeededManifest | null;
   export default manifest;
 }

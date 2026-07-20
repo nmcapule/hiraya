@@ -1,6 +1,6 @@
 import { DEFAULT_WALLPAPER, WALLPAPERS, type DesktopEntry, type DesktopLayout, type DesktopView, type EditorLanguage, type EditorSettings, type EntryPosition, type FileEntry, type FolderEntry, type Wallpaper } from "../types";
 import { assertUniqueName, namesMatch, validateEntryName } from "./entry-validation";
-import type { PredefinedManifest } from "./predefined-manifest";
+import type { SeededManifest } from "./seeded-manifest";
 
 const MANIFEST_NAME = ".hiraya-manifest.json";
 const FILES_DIRECTORY = "files";
@@ -215,18 +215,18 @@ function migrateEntries(entries: Array<Omit<DesktopEntry, "viewId">>, viewport: 
   };
 }
 
-async function createManifestFromPredefined(predefined: PredefinedManifest): Promise<Manifest> {
-  const files = predefined.entries.filter((entry) => entry.kind === "file");
+async function createManifestFromSeeded(seeded: SeededManifest): Promise<Manifest> {
+  const files = seeded.entries.filter((entry) => entry.kind === "file");
   const contents = await Promise.all(files.map(async (entry) => {
     const response = await fetch(entry.contentUrl);
-    if (!response.ok) throw new Error(`The predefined file “${entry.name}” could not be loaded (${response.status}).`);
+    if (!response.ok) throw new Error(`The seeded file “${entry.name}” could not be loaded (${response.status}).`);
     const blob = await response.blob();
     if (blob.size !== entry.size) {
-      throw new Error(`The predefined file “${entry.name}” has size ${blob.size}, but its manifest declares ${entry.size}.`);
+      throw new Error(`The seeded file “${entry.name}” has size ${blob.size}, but its manifest declares ${entry.size}.`);
     }
     return blob.slice(0, blob.size, entry.mimeType);
   }));
-  const entries: DesktopEntry[] = predefined.entries.map((entry) => {
+  const entries: DesktopEntry[] = seeded.entries.map((entry) => {
     if (entry.kind === "folder") return entry;
     const { contentUrl, ...file } = entry;
     void contentUrl;
@@ -235,11 +235,11 @@ async function createManifestFromPredefined(predefined: PredefinedManifest): Pro
   const created: Manifest = {
     version: 8,
     entries,
-    views: predefined.layout.views,
-    viewColumns: predefined.layout.columns,
-    snapToGrid: predefined.layout.snapToGrid,
-    wallpaper: predefined.layout.wallpaper,
-    editorSettings: predefined.editorSettings,
+    views: seeded.layout.views,
+    viewColumns: seeded.layout.columns,
+    snapToGrid: seeded.layout.snapToGrid,
+    wallpaper: seeded.layout.wallpaper,
+    editorSettings: seeded.editorSettings,
     sync: EMPTY_SYNC_STATE,
   };
   assertValidManifest(created);
@@ -250,7 +250,7 @@ async function createManifestFromPredefined(predefined: PredefinedManifest): Pro
 
 async function readManifest(
   viewport: EntryPosition = { x: window.innerWidth, y: Math.max(1, window.innerHeight - 44) },
-  predefined: PredefinedManifest | null = null,
+  seeded: SeededManifest | null = null,
 ): Promise<Manifest> {
   const root = await getRoot();
 
@@ -312,7 +312,7 @@ async function readManifest(
     return parsed;
   } catch (error) {
     if (error instanceof DOMException && error.name === "NotFoundError") {
-      if (predefined) return createManifestFromPredefined(predefined);
+      if (seeded) return createManifestFromSeeded(seeded);
       const created: Manifest = { version: 8, entries: [], views: [{ id: crypto.randomUUID() }], viewColumns: 1, snapToGrid: false, wallpaper: DEFAULT_WALLPAPER, editorSettings: DEFAULT_EDITOR_SETTINGS, sync: EMPTY_SYNC_STATE };
       await writeManifest(created);
       return created;
@@ -355,8 +355,8 @@ function getFileEntry(entries: DesktopEntry[], id: string): FileEntry {
 
 let desktopLoad: Promise<Manifest> | null = null;
 
-export async function loadDesktop(viewport: EntryPosition, predefined: PredefinedManifest | null = null): Promise<DesktopSnapshot> {
-  desktopLoad ??= readManifest(viewport, predefined).catch((error) => {
+export async function loadDesktop(viewport: EntryPosition, seeded: SeededManifest | null = null): Promise<DesktopSnapshot> {
+  desktopLoad ??= readManifest(viewport, seeded).catch((error) => {
     desktopLoad = null;
     throw error;
   });
