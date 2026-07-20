@@ -168,6 +168,7 @@ function App() {
       setLayout(synced.layout);
       setEntries(synced.entries);
       setEditorSettings(synced.editorSettings);
+      setLoading(false);
       setSelectedId((current) => current && !synced.entries.some((entry) => entry.id === current) ? null : current);
       const syncedIds = new Set(synced.entries.map((entry) => entry.id));
       setContextMenu((current) => current && !syncedIds.has(current.entryId) ? null : current);
@@ -179,6 +180,7 @@ function App() {
         }
         return syncedIds.has(current.entryId) ? current : null;
       });
+      navigationReadyRef.current = true;
       applyLocationRouteRef.current(synced.entries, synced.layout);
     }, (nextStatus) => { if (active) setSyncStatus(nextStatus); });
     void initializeDesktop({ x: window.innerWidth, y: Math.max(1, window.innerHeight - 44) }, seededDesktop)

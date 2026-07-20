@@ -93,6 +93,7 @@ export class SyncEngine {
   private async startInternal(viewport: EntryPosition, seeded: SeededManifest | null, generation: number) {
     this.desktop = await this.storage.loadDesktop(viewport, seeded);
     if (!this.running || this.generation !== generation) throw new DOMException("Desktop synchronization was stopped.", "AbortError");
+    this.publish(this.desktop);
     if (this.frontendOnly) {
       this.initialized = true;
       this.setStatus("local");
@@ -100,7 +101,8 @@ export class SyncEngine {
     }
     this.setStatus("connecting");
     try {
-      await this.ensureServer();
+      await this.ensureServer(generation);
+      this.setStatus("online");
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") throw error;
       this.setStatus("offline");
@@ -169,7 +171,6 @@ export class SyncEngine {
       const body = await response.json().catch(() => null) as { error?: string } | null;
       throw new Error(body?.error || `The sync server rejected the request (${response.status}).`);
     }
-    this.setStatus("online");
     return response.json();
   }
 
@@ -246,8 +247,12 @@ export class SyncEngine {
     this.events = events;
     events.onopen = () => {
       if (!this.running) return;
-      this.setStatus("online");
-      void this.queue(() => this.reconcile()).catch(() => undefined);
+      if (this.status !== "online") this.setStatus("connecting");
+      void this.queue(() => this.reconcile()).then(() => {
+        if (this.running) this.setStatus("online");
+      }).catch(() => {
+        if (this.running) this.setStatus("offline");
+      });
     };
     events.onerror = () => { if (this.running) this.setStatus("offline"); };
     events.addEventListener("workspace", (event) => {
@@ -264,7 +269,9 @@ export class SyncEngine {
         return;
       }
       if (!Number.isSafeInteger(revision) || (workspaceId === this.current().sync.workspaceId && revision <= this.current().sync.revision)) return;
-      void this.queue(() => this.reconcile()).catch(() => undefined);
+      void this.queue(() => this.reconcile()).catch(() => {
+        if (this.running) this.setStatus("offline");
+      });
     });
     if (this.healthTimer !== null) this.clearIntervalImpl(this.healthTimer);
     this.healthTimer = this.setIntervalImpl(() => { void this.checkHealth(); }, 5_000);
@@ -280,8 +287,9 @@ export class SyncEngine {
       const workspaceId = typeof health === "object" && health !== null && "workspaceId" in health && typeof health.workspaceId === "string" ? health.workspaceId : "";
       if (!Number.isSafeInteger(revision) || revision < 0) throw new Error("invalid health response");
       const wasOffline = this.status === "offline";
-      this.setStatus("online");
+      if (wasOffline) this.setStatus("connecting");
       if (wasOffline || workspaceId !== this.current().sync.workspaceId || revision > this.current().sync.revision) await this.queue(() => this.reconcile());
+      if (this.running) this.setStatus("online");
     } catch {
       if (this.running) this.setStatus("offline");
     }

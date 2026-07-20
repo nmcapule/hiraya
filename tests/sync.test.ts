@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { SyncEngine, type SyncEngineOptions } from "../src/lib/sync";
 import type { DesktopSnapshot } from "../src/lib/opfs";
-import { desktopSnapshot } from "./fixtures";
+import { desktopSnapshot, remoteWorkspace } from "./fixtures";
 
 class FakeEventSource {
   onopen: (() => void) | null = null;
@@ -50,8 +50,8 @@ describe("SyncEngine local lifecycle", () => {
     expect(statuses).toEqual(["connecting", "local"]);
 
     await engine.createFolder("Docs", null, { x: 0, y: 0 }, "view-1");
-    expect(published).toHaveLength(1);
-    expect(published[0].entries[0].name).toBe("Docs");
+    expect(published).toHaveLength(2);
+    expect(published[1].entries[0].name).toBe("Docs");
 
     engine.stop();
     await engine.start({ x: 100, y: 100 });
@@ -80,6 +80,78 @@ describe("SyncEngine local lifecycle", () => {
 });
 
 describe("SyncEngine remote reconciliation", () => {
+  test("publishes the cache while initial server reconciliation is pending", async () => {
+    const snapshot = desktopSnapshot();
+    let resolveFetch!: (response: Response) => void;
+    const pending = new Promise<Response>((resolve) => { resolveFetch = resolve; });
+    const engine = new SyncEngine(remoteOptions(snapshot, (() => pending) as typeof fetch));
+    const published: DesktopSnapshot[] = [];
+    const statuses: string[] = [];
+    let startSettled = false;
+    engine.subscribe((next) => published.push(next), (next) => statuses.push(next));
+
+    const starting = engine.start({ x: 100, y: 100 }).finally(() => { startSettled = true; });
+    await new Promise<void>((resolve) => {
+      const check = () => published.length > 0 ? resolve() : queueMicrotask(check);
+      check();
+    });
+
+    expect(published).toEqual([snapshot]);
+    expect(statuses).toEqual(["connecting"]);
+    expect(startSettled).toBe(false);
+
+    resolveFetch(Response.json({ schemaVersion: 1, workspaceId: "workspace-1", initialized: false, revision: 0 }));
+    await starting;
+    engine.stop();
+  });
+
+  test("stays connecting until the remote snapshot is fully applied", async () => {
+    const snapshot = desktopSnapshot();
+    let resolveApply!: (snapshot: DesktopSnapshot) => void;
+    let applyStarted!: () => void;
+    const applying = new Promise<void>((resolve) => { applyStarted = resolve; });
+    const options = remoteOptions(snapshot, (async (input) => {
+      if (String(input) === "/api/workspace") return Response.json(remoteWorkspace());
+      return new Response("note", { headers: { "Content-Type": "text/plain" } });
+    }) as typeof fetch);
+    options.storage = {
+      ...options.storage,
+      applyRemoteDesktop: () => {
+        applyStarted();
+        return new Promise<DesktopSnapshot>((resolve) => { resolveApply = resolve; });
+      },
+    } as NonNullable<SyncEngineOptions["storage"]>;
+    const engine = new SyncEngine(options);
+    const statuses: string[] = [];
+    engine.subscribe(() => undefined, (next) => statuses.push(next));
+
+    const starting = engine.start({ x: 100, y: 100 });
+    await applying;
+    expect(statuses).toEqual(["connecting"]);
+
+    const expected = desktopSnapshot();
+    expected.sync = { ...expected.sync, workspaceId: "workspace-1", revision: 1 };
+    resolveApply(expected);
+    const result = await starting;
+    expect(result.status).toBe("online");
+    expect(statuses).toEqual(["connecting", "online"]);
+    engine.stop();
+  });
+
+  test("keeps the cached desktop available when initial refresh fails", async () => {
+    const snapshot = desktopSnapshot();
+    const engine = new SyncEngine(remoteOptions(snapshot, (async () => { throw new Error("offline"); }) as typeof fetch));
+    const published: DesktopSnapshot[] = [];
+    engine.subscribe((next) => published.push(next), () => undefined);
+
+    const result = await engine.start({ x: 100, y: 100 });
+
+    expect(result.desktop).toBe(snapshot);
+    expect(result.status).toBe("offline");
+    expect(published).toEqual([snapshot]);
+    engine.stop();
+  });
+
   test("bootstraps an uninitialized server", async () => {
     const snapshot = desktopSnapshot();
     const requests: string[] = [];
