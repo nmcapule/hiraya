@@ -273,7 +273,7 @@ function App() {
       return;
     }
     void readFile(file.id).then((blob) => {
-      if (generation !== fileLoadGenerationRef.current || routeRef.current?.fileId !== file.id || contentRevisionsRef.current[file.id] !== expectedRevision) return;
+      if (generation !== fileLoadGenerationRef.current || routeRef.current?.fileId !== file.id || (contentRevisionsRef.current[file.id] ?? 0) !== expectedRevision) return;
       updateOpenFile({ file, blob, editable: isEditable(file), contentRevision: expectedRevision, remoteChanged: false });
     }).catch((openError) => {
       if (generation !== fileLoadGenerationRef.current || routeRef.current?.fileId !== file.id) return;
