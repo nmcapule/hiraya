@@ -2,6 +2,13 @@
 
 Hiraya is a synchronized mock desktop. A Go server stores the authoritative shared workspace, while each browser keeps a local cache in the Origin Private File System (OPFS).
 
+[Open Hiraya on GitHub Pages](https://nmcapule.github.io/hiraya/)
+
+<p align="center">
+  <img src="docs/screenshots/hiraya-desktop.png" alt="Hiraya desktop showing the Welcome folder" width="72%" />
+  <img src="docs/screenshots/hiraya-mobile.png" alt="Hiraya desktop on a mobile viewport" width="24%" />
+</p>
+
 ## Development
 
 Install dependencies, then run the backend and Vite in separate terminals:
