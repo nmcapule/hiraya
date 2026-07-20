@@ -21,6 +21,10 @@ bun run dev
 
 Vite proxies `/api` to `http://127.0.0.1:8080`. The server stores its data in `.hiraya-data` by default. Browser mutations require a server connection; cached files remain available to view while disconnected.
 
+The authoritative file tree is stored under `.hiraya-data/files` using the same names and folder hierarchy shown in Hiraya. Empty Hiraya folders are real directories. Stable internal IDs remain in `.hiraya-data/workspace.json` so renames and moves do not change browser identity. On first startup after upgrading, legacy ID-named blobs are verified and migrated automatically to this logical tree.
+
+Files and folders may also be changed directly in the server's `files` directory. Hiraya watches the tree and performs a fallback scan every second; it also scans at startup for changes made while the server was stopped. Same-path file edits preserve their ID, while external renames and moves are represented as a deletion and a newly created entry. New root entries appear in the first desktop view. Symbolic links, non-regular files, invalid names, and case-insensitive sibling conflicts are ignored and logged. Avoid placing unrelated files in this directory.
+
 The backend accepts these optional environment variables:
 
 - `HIRAYA_ADDR`: listen address, default `127.0.0.1:8080`.
@@ -42,7 +46,7 @@ This initial server exposes one shared workspace without authentication. Keep it
 
 The server orders accepted writes with a monotonic revision. The last accepted write to an entry wins, while writes to different entries are retained independently. Layout and editor settings have their own revisions. Server-Sent Events notify connected browsers of changes; browsers then fetch current metadata and only download file bodies whose content revision changed.
 
-If the server has never been initialized, the first browser uploads its complete saved OPFS desktop. If the server is already initialized, its workspace replaces a first-time browser's local desktop. Metadata is committed only after referenced file contents are durable.
+If the server has never been initialized, the first browser uploads its complete saved OPFS desktop. If the server is already initialized, its workspace replaces a first-time browser's local desktop. Metadata is committed only after referenced file contents are durable. Direct filesystem changes join the same monotonic revision stream and propagate to connected browsers through SSE.
 
 ## Install and offline use
 

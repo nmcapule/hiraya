@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -166,6 +167,39 @@ func (s *Server) bootstrap(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "workspace is already initialized")
 		return
 	}
+	paths, err := entryPaths(input.Entries)
+	if err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	ordered := append([]Entry(nil), input.Entries...)
+	sort.Slice(ordered, func(i, j int) bool {
+		return strings.Count(paths[ordered[i].ID], string(filepath.Separator)) < strings.Count(paths[ordered[j].ID], string(filepath.Separator))
+	})
+	for _, e := range input.Entries {
+		if e.ParentID != nil {
+			continue
+		}
+		target := filepath.Join(s.store.filesDir, paths[e.ID])
+		if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+			writeError(w, http.StatusConflict, "bootstrap path already exists")
+			return
+		}
+	}
+	treeStage, err := os.MkdirTemp(s.store.dir, ".bootstrap-tree-*")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not stage bootstrap tree")
+		return
+	}
+	defer os.RemoveAll(treeStage)
+	for _, e := range ordered {
+		if e.Kind == "folder" {
+			if err := os.MkdirAll(filepath.Join(treeStage, paths[e.ID]), 0o700); err != nil {
+				writeError(w, http.StatusInternalServerError, "could not stage folder")
+				return
+			}
+		}
+	}
 	for i := range input.Entries {
 		e := &input.Entries[i]
 		e.Revision = 1
@@ -179,18 +213,57 @@ func (s *Server) bootstrap(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusInternalServerError, "could not read staged file")
 				return
 			}
-			_, copyErr := atomicCopy(filepath.Join(s.store.filesDir, e.ID), f, s.maxUpload)
+			target := filepath.Join(treeStage, paths[e.ID])
+			if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+				f.Close()
+				writeError(w, http.StatusInternalServerError, "could not stage file directory")
+				return
+			}
+			_, copyErr := atomicCopy(target, f, s.maxUpload)
 			f.Close()
 			if copyErr != nil {
-				writeError(w, http.StatusInternalServerError, "could not persist file")
+				writeError(w, http.StatusInternalServerError, "could not stage file")
 				return
 			}
 		}
 	}
+	promoted := make([]string, 0)
+	for _, entry := range input.Entries {
+		if entry.ParentID != nil {
+			continue
+		}
+		rel := paths[entry.ID]
+		if err := os.Rename(filepath.Join(treeStage, rel), filepath.Join(s.store.filesDir, rel)); err != nil {
+			for i := len(promoted) - 1; i >= 0; i-- {
+				_ = os.Rename(filepath.Join(s.store.filesDir, promoted[i]), filepath.Join(treeStage, promoted[i]))
+			}
+			writeError(w, http.StatusInternalServerError, "could not persist bootstrap tree")
+			return
+		}
+		promoted = append(promoted, rel)
+	}
 	next := Workspace{Initialized: true, Revision: 1, Entries: input.Entries, Layout: input.Layout, LayoutRevision: 1, EditorSettings: input.EditorSettings, SettingsRevision: 1}
 	if err := s.store.persistLocked(next); err != nil {
+		for i := len(promoted) - 1; i >= 0; i-- {
+			_ = os.Rename(filepath.Join(s.store.filesDir, promoted[i]), filepath.Join(treeStage, promoted[i]))
+		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	for _, entry := range input.Entries {
+		target := filepath.Join(s.store.filesDir, paths[entry.ID])
+		var indexErr error
+		if entry.Kind == "file" {
+			indexErr = s.store.trackExpectedFileLocked(target, uploads[entry.ID].path)
+		} else {
+			indexErr = s.store.trackPathLocked(target, "folder")
+		}
+		if indexErr != nil {
+			slog.Warn("could not index bootstrapped entry", "id", entry.ID, "error", indexErr)
+		}
+	}
+	if err := s.store.persistDiskIndexLocked(); err != nil {
+		slog.Warn("could not persist filesystem index", "error", err)
 	}
 	s.store.publishLocked(1)
 	writeJSON(w, http.StatusCreated, cloneWorkspace(next))
@@ -331,23 +404,63 @@ func (s *Server) importEntries(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
+	targets := make(map[string]string, len(entries))
 	for _, entry := range entries {
+		target, pathErr := s.store.entryPathLocked(next.Entries, entry.ID)
+		if pathErr != nil || ensureNoSymlink(s.store.filesDir, filepath.Dir(target)) != nil {
+			writeError(w, http.StatusConflict, "invalid file path")
+			return
+		}
+		if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+			writeError(w, http.StatusConflict, "import path already exists")
+			return
+		}
+		targets[entry.ID] = target
+	}
+	written := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		target := targets[entry.ID]
+		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+			for _, path := range written {
+				_ = os.Remove(path)
+			}
+			writeError(w, http.StatusInternalServerError, "could not persist imported file directory")
+			return
+		}
 		file, openErr := os.Open(uploads[entry.ID].path)
 		if openErr != nil {
+			for _, path := range written {
+				_ = os.Remove(path)
+			}
 			writeError(w, http.StatusInternalServerError, "could not read staged file")
 			return
 		}
-		_, copyErr := atomicCopy(filepath.Join(s.store.filesDir, entry.ID), file, s.maxUpload)
+		_, copyErr := atomicCopy(target, file, s.maxUpload)
 		file.Close()
 		if copyErr != nil {
+			for _, path := range written {
+				_ = os.Remove(path)
+			}
 			writeError(w, http.StatusInternalServerError, "could not persist imported file")
 			return
 		}
+		written = append(written, target)
 	}
 	next.Revision = revision
 	if err := s.store.persistLocked(next); err != nil {
+		for _, path := range written {
+			_ = os.Remove(path)
+		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	for _, entry := range entries {
+		if err := s.store.trackExpectedFileLocked(targets[entry.ID], uploads[entry.ID].path); err != nil {
+			slog.Warn("could not index imported file", "id", entry.ID, "error", err)
+		}
+	}
+	if err := s.store.persistDiskIndexLocked(); err != nil {
+		slog.Warn("could not persist filesystem index", "error", err)
 	}
 	s.store.publishLocked(revision)
 	writeJSON(w, http.StatusOK, importResponse{Revision: revision, Entries: entries})
@@ -431,8 +544,10 @@ func (s *Server) upsertEntry(w http.ResponseWriter, r *http.Request) {
 	next := cloneWorkspace(s.store.workspace)
 	idx := entryIndex(next.Entries, entry.ID)
 	var old Entry
+	var oldPath string
 	if idx >= 0 {
 		old = next.Entries[idx]
+		oldPath, _ = s.store.entryPathLocked(next.Entries, old.ID)
 		if old.Kind != entry.Kind {
 			writeError(w, http.StatusConflict, "entry kind cannot be changed")
 			return
@@ -468,7 +583,35 @@ func (s *Server) upsertEntry(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
+	target, pathErr := s.store.entryPathLocked(next.Entries, entry.ID)
+	if pathErr != nil || ensureNoSymlink(s.store.filesDir, filepath.Dir(target)) != nil {
+		writeError(w, http.StatusConflict, "invalid entry path")
+		return
+	}
+	moved := idx >= 0 && oldPath != target
+	if moved {
+		if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+			writeError(w, http.StatusConflict, "entry path already exists")
+			return
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil || os.Rename(oldPath, target) != nil {
+			writeError(w, http.StatusInternalServerError, "could not move entry")
+			return
+		}
+	}
+	if entry.Kind == "folder" && idx < 0 {
+		if err := os.Mkdir(target, 0o700); err != nil {
+			writeError(w, http.StatusConflict, "could not create folder path")
+			return
+		}
+	}
 	if entry.Kind == "file" && (gotContent || idx < 0) {
+		if idx < 0 {
+			if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+				writeError(w, http.StatusConflict, "entry path already exists")
+				return
+			}
+		}
 		var f *os.File
 		if gotContent {
 			f, err = os.Open(contentPath)
@@ -479,7 +622,11 @@ func (s *Server) upsertEntry(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "could not read staged content")
 			return
 		}
-		_, err = atomicCopy(filepath.Join(s.store.filesDir, entry.ID), f, s.maxUpload)
+		if mkdirErr := os.MkdirAll(filepath.Dir(target), 0o700); mkdirErr != nil {
+			err = mkdirErr
+		} else {
+			_, err = atomicCopy(target, f, s.maxUpload)
+		}
 		f.Close()
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "could not persist content")
@@ -488,8 +635,36 @@ func (s *Server) upsertEntry(w http.ResponseWriter, r *http.Request) {
 	}
 	next.Revision++
 	if err := s.store.persistLocked(next); err != nil {
+		if moved {
+			if rollbackErr := os.Rename(target, oldPath); rollbackErr != nil {
+				slog.Error("could not roll back failed entry move", "from", target, "to", oldPath, "error", rollbackErr)
+			}
+		} else if idx < 0 {
+			_ = os.RemoveAll(target)
+		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	if moved {
+		s.store.moveDiskPathLocked(oldPath, target)
+	}
+	if idx < 0 || gotContent {
+		var indexErr error
+		if entry.Kind == "folder" {
+			indexErr = s.store.trackPathLocked(target, "folder")
+		} else if gotContent {
+			indexErr = s.store.trackExpectedFileLocked(target, contentPath)
+		} else {
+			indexErr = s.store.trackEmptyFileLocked(target)
+		}
+		if indexErr != nil {
+			slog.Warn("could not index entry path", "id", entry.ID, "error", indexErr)
+		}
+	}
+	if moved || idx < 0 || gotContent {
+		if err := s.store.persistDiskIndexLocked(); err != nil {
+			slog.Warn("could not persist filesystem index", "error", err)
+		}
 	}
 	s.store.publishLocked(next.Revision)
 	writeJSON(w, http.StatusOK, entryResponse{Revision: next.Revision, Entry: entry})
@@ -522,6 +697,7 @@ func (s *Server) patchEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	old := next.Entries[idx]
+	oldPath, _ := s.store.entryPathLocked(next.Entries, id)
 	if entry.Kind != old.Kind {
 		writeError(w, http.StatusConflict, "entry kind cannot be changed")
 		return
@@ -540,10 +716,36 @@ func (s *Server) patchEntry(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
+	newPath, pathErr := s.store.entryPathLocked(next.Entries, id)
+	if pathErr != nil || ensureNoSymlink(s.store.filesDir, oldPath) != nil || ensureNoSymlink(s.store.filesDir, filepath.Dir(newPath)) != nil {
+		writeError(w, http.StatusConflict, "invalid entry path")
+		return
+	}
+	if oldPath != newPath {
+		if _, err := os.Lstat(newPath); !errors.Is(err, os.ErrNotExist) {
+			writeError(w, http.StatusConflict, "entry path already exists")
+			return
+		}
+		if err := os.MkdirAll(filepath.Dir(newPath), 0o700); err != nil || os.Rename(oldPath, newPath) != nil {
+			writeError(w, http.StatusInternalServerError, "could not move entry")
+			return
+		}
+	}
 	next.Revision++
 	if err := s.store.persistLocked(next); err != nil {
+		if oldPath != newPath {
+			if rollbackErr := os.Rename(newPath, oldPath); rollbackErr != nil {
+				slog.Error("could not roll back failed entry move", "from", newPath, "to", oldPath, "error", rollbackErr)
+			}
+		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	if oldPath != newPath {
+		s.store.moveDiskPathLocked(oldPath, newPath)
+		if err := s.store.persistDiskIndexLocked(); err != nil {
+			slog.Warn("could not persist filesystem index", "error", err)
+		}
 	}
 	s.store.publishLocked(next.Revision)
 	writeJSON(w, http.StatusOK, entryResponse{Revision: next.Revision, Entry: entry})
@@ -604,7 +806,13 @@ func (s *Server) putContent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not read staged content")
 		return
 	}
-	_, err = atomicCopy(filepath.Join(s.store.filesDir, id), f, s.maxUpload)
+	path, pathErr := s.store.entryPathLocked(next.Entries, id)
+	if pathErr != nil || ensureNoSymlink(s.store.filesDir, path) != nil {
+		f.Close()
+		writeError(w, http.StatusConflict, "invalid file path")
+		return
+	}
+	_, err = atomicCopy(path, f, s.maxUpload)
 	f.Close()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not persist content")
@@ -614,6 +822,12 @@ func (s *Server) putContent(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.persistLocked(next); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	if err := s.store.trackExpectedFileLocked(path, tmpPath); err != nil {
+		slog.Warn("could not index updated file", "id", id, "error", err)
+	}
+	if err := s.store.persistDiskIndexLocked(); err != nil {
+		slog.Warn("could not persist filesystem index", "error", err)
 	}
 	s.store.publishLocked(next.Revision)
 	writeJSON(w, http.StatusOK, entryResponse{Revision: next.Revision, Entry: entry})
@@ -633,16 +847,30 @@ func (s *Server) getContent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	entry := s.store.workspace.Entries[idx]
-	s.store.mu.RUnlock()
-	f, err := os.Open(filepath.Join(s.store.filesDir, id))
+	path, pathErr := s.store.entryPathLocked(s.store.workspace.Entries, id)
+	if pathErr != nil || ensureNoSymlink(s.store.filesDir, path) != nil {
+		s.store.mu.RUnlock()
+		writeError(w, http.StatusNotFound, "file content not found")
+		return
+	}
+	f, err := os.Open(path)
+	if err == nil {
+		if info, statErr := f.Stat(); statErr != nil || !info.Mode().IsRegular() {
+			f.Close()
+			err = os.ErrNotExist
+		}
+	}
 	if errors.Is(err, os.ErrNotExist) {
+		s.store.mu.RUnlock()
 		writeError(w, http.StatusNotFound, "file content not found")
 		return
 	}
 	if err != nil {
+		s.store.mu.RUnlock()
 		writeError(w, http.StatusInternalServerError, "could not read file content")
 		return
 	}
+	s.store.mu.RUnlock()
 	defer f.Close()
 	w.Header().Set("Content-Type", entry.MimeType)
 	w.Header().Set("Content-Length", strconv.FormatInt(entry.Size, 10))
@@ -679,27 +907,64 @@ func (s *Server) deleteEntry(w http.ResponseWriter, r *http.Request) {
 	next := cloneWorkspace(s.store.workspace)
 	kept := make([]Entry, 0, len(next.Entries)-len(deleted))
 	deletedIDs := make([]string, 0, len(deleted))
-	fileIDs := make([]string, 0)
+	deletePath, _ := s.store.entryPathLocked(next.Entries, id)
 	for _, entry := range next.Entries {
 		if deleted[entry.ID] {
 			deletedIDs = append(deletedIDs, entry.ID)
-			if entry.Kind == "file" {
-				fileIDs = append(fileIDs, entry.ID)
-			}
 		} else {
 			kept = append(kept, entry)
 		}
 	}
 	next.Entries = kept
 	next.Revision++
+	trashDir := filepath.Join(s.store.dir, ".trash")
+	var quarantinedPath string
+	if _, err := os.Lstat(deletePath); err == nil {
+		if err := ensureNoSymlink(s.store.filesDir, filepath.Dir(deletePath)); err != nil {
+			writeError(w, http.StatusConflict, "invalid entry path")
+			return
+		}
+		if err := os.MkdirAll(trashDir, 0o700); err != nil {
+			writeError(w, http.StatusInternalServerError, "could not stage deleted entry")
+			return
+		}
+		tmp, err := os.CreateTemp(trashDir, ".deleted-*")
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "could not stage deleted entry")
+			return
+		}
+		quarantinedPath = tmp.Name()
+		if closeErr := tmp.Close(); closeErr != nil {
+			_ = os.Remove(quarantinedPath)
+			writeError(w, http.StatusInternalServerError, "could not stage deleted entry")
+			return
+		}
+		if err := os.Remove(quarantinedPath); err != nil || os.Rename(deletePath, quarantinedPath) != nil {
+			_ = os.Remove(quarantinedPath)
+			writeError(w, http.StatusInternalServerError, "could not quarantine deleted entry")
+			return
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		writeError(w, http.StatusInternalServerError, "could not inspect deleted entry")
+		return
+	}
 	if err := s.store.persistLocked(next); err != nil {
+		if quarantinedPath != "" {
+			if rollbackErr := os.Rename(quarantinedPath, deletePath); rollbackErr != nil {
+				slog.Error("could not roll back failed entry deletion", "from", quarantinedPath, "to", deletePath, "error", rollbackErr)
+			}
+		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.store.removeDiskPathLocked(deletePath)
+	if err := s.store.persistDiskIndexLocked(); err != nil {
+		slog.Warn("could not persist filesystem index", "error", err)
+	}
 	s.store.publishLocked(next.Revision)
-	for _, fileID := range fileIDs {
-		if err := os.Remove(filepath.Join(s.store.filesDir, fileID)); err != nil && !errors.Is(err, os.ErrNotExist) {
-			slog.Warn("could not clean up deleted blob", "id", fileID, "error", err)
+	if quarantinedPath != "" {
+		if err := os.RemoveAll(quarantinedPath); err != nil {
+			slog.Warn("could not clean up quarantined entry", "path", quarantinedPath, "error", err)
 		}
 	}
 	writeJSON(w, http.StatusOK, deleteResponse{Revision: next.Revision, DeletedIDs: deletedIDs})

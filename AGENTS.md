@@ -26,7 +26,8 @@ go test ./...
 - `vite.config.ts`: predefined bundling, PWA generation, and the development `/api` proxy.
 - `cmd/hiraya-server/main.go`: Go server entry point, environment configuration, and same-origin static serving.
 - `internal/syncapi/model.go`: server workspace schema and structural validation.
-- `internal/syncapi/store.go`: serialized state, durable atomic metadata writes, blob storage, and SSE subscribers.
+- `internal/syncapi/store.go`: serialized state, durable atomic metadata writes, logical file-tree lifecycle, and SSE subscribers.
+- `internal/syncapi/filesystem.go`: logical path mapping, legacy migration, filesystem scanning, live watching, and external-change reconciliation.
 - `internal/syncapi/server.go`: HTTP API, atomic uploads, last-write-wins mutations, SSE, and SPA fallback.
 - `internal/syncapi/server_test.go`: backend persistence, validation, revision, upload, SSE, and static-serving tests.
 - `src/components/FileIcon.tsx`: file type icons and pointer-based desktop dragging.
@@ -60,6 +61,9 @@ If adding destructive operations, update file content and the manifest carefully
 - The server assigns monotonic revisions under one serialized mutation lock. Do not use browser clocks to order conflicting writes.
 - Last accepted write wins for the same entry. Independent entry writes are retained. Layout and editor settings are separately revisioned resources.
 - File content has its own revision so metadata-only changes do not trigger blob downloads.
+- Server file bytes live under `HIRAYA_DATA_DIR/files` using the user-visible name and folder hierarchy. Stable entry IDs remain authoritative metadata and API identifiers.
+- Direct regular-file and directory changes under the server tree are reconciled at startup, through filesystem events, and by fallback scans. Same-path content edits retain IDs; external moves and renames are delete/create operations.
+- Never follow or import symbolic links from the server file tree. Ignore and log invalid names, non-regular files, and sibling collisions.
 - Multi-file imports are one server transaction: validate the full resulting workspace and all byte sizes before making any entry visible.
 - Persist file bytes before metadata that references them. Publish SSE only after the metadata commit is durable.
 - Recursive folder deletion commits metadata before best-effort blob cleanup so visible entries never point to deleted content.

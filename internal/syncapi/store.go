@@ -5,12 +5,22 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
+
+	"github.com/fsnotify/fsnotify"
 )
 
-const metadataName = "workspace.json"
+const (
+	metadataName  = "workspace.json"
+	logicalMarker = ".logical-path-storage"
+	diskIndexName = ".filesystem.json"
+	watchDebounce = 75 * time.Millisecond
+	watchFallback = time.Second
+)
 
 type Store struct {
 	dir       string
@@ -18,19 +28,51 @@ type Store struct {
 	mu        sync.RWMutex
 	workspace Workspace
 	subs      map[chan int64]struct{}
+	disk      map[string]diskFingerprint
+	watcher   *fsnotify.Watcher
+	watched   map[string]bool
+	done      chan struct{}
+	closeOnce sync.Once
+	wg        sync.WaitGroup
 }
 
 func OpenStore(dir string) (*Store, error) {
-	if err := os.MkdirAll(filepath.Join(dir, "files"), 0o700); err != nil {
+	filesDir := filepath.Join(dir, "files")
+	backup := filepath.Join(dir, ".id-files-backup")
+	if _, markerErr := os.Stat(filepath.Join(dir, logicalMarker)); errors.Is(markerErr, os.ErrNotExist) {
+		if _, backupErr := os.Stat(backup); backupErr == nil {
+			interrupted := filepath.Join(dir, ".interrupted-logical-files")
+			_ = os.RemoveAll(interrupted)
+			if err := os.Rename(filepath.Join(dir, "files"), interrupted); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return nil, fmt.Errorf("recover interrupted storage migration: %w", err)
+			}
+			if err := os.Rename(backup, filepath.Join(dir, "files")); err != nil {
+				_ = os.Rename(interrupted, filepath.Join(dir, "files"))
+				return nil, fmt.Errorf("recover ID storage backup: %w", err)
+			}
+			_ = os.RemoveAll(interrupted)
+		}
+	}
+	if err := os.MkdirAll(filesDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create data directory: %w", err)
 	}
-	s := &Store{dir: dir, filesDir: filepath.Join(dir, "files"), subs: make(map[chan int64]struct{})}
+	filesInfo, err := os.Lstat(filesDir)
+	if err != nil {
+		return nil, fmt.Errorf("inspect files directory: %w", err)
+	}
+	if !filesInfo.IsDir() || filesInfo.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("files path must be a real directory")
+	}
+	s := &Store{dir: dir, filesDir: filesDir, subs: make(map[chan int64]struct{}), disk: make(map[string]diskFingerprint), done: make(chan struct{}), watched: make(map[string]bool)}
 	s.workspace.Entries = []Entry{}
 	s.workspace.Layout.Views = []View{}
 	s.workspace.Layout.Wallpaper = "dusk"
 	s.workspace.EditorSettings = EditorSettings{AutoSave: true, FontSize: 13, Language: "auto"}
 	b, err := os.ReadFile(filepath.Join(dir, metadataName))
 	if errors.Is(err, os.ErrNotExist) {
+		if err := s.initializeFilesystem(); err != nil {
+			return nil, err
+		}
 		return s, nil
 	}
 	if err != nil {
@@ -56,7 +98,74 @@ func OpenStore(dir string) (*Store, error) {
 			return nil, fmt.Errorf("stored workspace: %w", err)
 		}
 	}
+	if err := s.initializeFilesystem(); err != nil {
+		return nil, err
+	}
 	return s, nil
+}
+
+func (s *Store) initializeFilesystem() error {
+	migrated := false
+	if _, err := os.Stat(filepath.Join(s.dir, logicalMarker)); errors.Is(err, os.ErrNotExist) {
+		if s.workspace.Initialized {
+			if err := s.migrateIDStorage(); err != nil {
+				return fmt.Errorf("migrate file storage: %w", err)
+			}
+			migrated = true
+		}
+		if err := atomicWrite(filepath.Join(s.dir, logicalMarker), []byte("1\n"), 0o600); err != nil {
+			return fmt.Errorf("mark logical file storage: %w", err)
+		}
+	} else if err != nil {
+		return fmt.Errorf("inspect file storage: %w", err)
+	}
+	if b, err := os.ReadFile(filepath.Join(s.dir, diskIndexName)); err == nil {
+		if err := json.Unmarshal(b, &s.disk); err != nil {
+			slog.Warn("ignoring invalid filesystem index", "error", err)
+			s.disk = make(map[string]diskFingerprint)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read filesystem index: %w", err)
+	}
+	if migrated {
+		if err := s.refreshDiskIndexLocked(); err != nil {
+			return err
+		}
+	} else if s.workspace.Initialized {
+		s.mu.Lock()
+		if err := s.reconcileFilesystemLocked(); err != nil {
+			s.mu.Unlock()
+			return fmt.Errorf("reconcile filesystem: %w", err)
+		}
+		s.mu.Unlock()
+	} else if err := s.refreshDiskIndexLocked(); err != nil {
+		return err
+	}
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		return fmt.Errorf("create filesystem watcher: %w", err)
+	}
+	s.watcher = watcher
+	if err := s.addWatchDirs(); err != nil {
+		watcher.Close()
+		return err
+	}
+	s.wg.Add(1)
+	go s.watchFilesystem()
+	return nil
+}
+
+// Close releases filesystem watcher resources. It is safe to call more than once.
+func (s *Store) Close() error {
+	var err error
+	s.closeOnce.Do(func() {
+		close(s.done)
+		if s.watcher != nil {
+			err = s.watcher.Close()
+		}
+		s.wg.Wait()
+	})
+	return err
 }
 
 func (s *Store) snapshot() Workspace {

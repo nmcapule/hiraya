@@ -50,11 +50,12 @@ func TestBootstrapAndPersistenceRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = reopened.Close() })
 	snapshot := reopened.snapshot()
 	if snapshot.Revision != 1 || len(snapshot.Entries) != 2 || !snapshot.Layout.SnapToGrid || snapshot.Layout.Wallpaper != "grove" {
 		t.Fatalf("reopened snapshot = %+v", snapshot)
 	}
-	content, err := os.ReadFile(filepath.Join(store.filesDir, "file"))
+	content, err := os.ReadFile(filepath.Join(store.filesDir, "Docs", "hello.txt"))
 	if err != nil || string(content) != "hello" {
 		t.Fatalf("persisted content = %q, %v", content, err)
 	}
@@ -74,8 +75,303 @@ func TestPersistenceDefaultsLegacyWallpaper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = store.Close() })
 	if wallpaper := store.snapshot().Layout.Wallpaper; wallpaper != "dusk" {
 		t.Fatalf("legacy wallpaper = %q", wallpaper)
+	}
+}
+
+func TestOpenStoreRejectsSymlinkedFilesRoot(t *testing.T) {
+	dir := t.TempDir()
+	target := t.TempDir()
+	if err := os.Symlink(target, filepath.Join(dir, "files")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if store, err := OpenStore(dir); err == nil {
+		_ = store.Close()
+		t.Fatal("OpenStore accepted a symlinked files directory")
+	}
+}
+
+func TestMigratesIDKeyedStorageToLogicalPaths(t *testing.T) {
+	dir := t.TempDir()
+	filesDir := filepath.Join(dir, "files")
+	if err := os.MkdirAll(filesDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	workspace := Workspace{
+		Initialized: true, Revision: 4,
+		Entries: []Entry{
+			folder("folder-id", "Docs", nil, ptr("view-1")),
+			file("file-id", "notes.txt", ptr("folder-id"), nil, "text/plain", 5),
+		},
+		Layout: Layout{Views: []View{{ID: "view-1"}}, Columns: 1, Wallpaper: "dusk"}, LayoutRevision: 1,
+		EditorSettings: EditorSettings{AutoSave: true, FontSize: 13, Language: "auto"}, SettingsRevision: 1,
+	}
+	workspace.Entries[0].Revision = 2
+	workspace.Entries[1].Revision = 4
+	workspace.Entries[1].ContentRevision = 4
+	b, err := json.Marshal(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, metadataName), b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(filesDir, "file-id"), []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	content, err := os.ReadFile(filepath.Join(filesDir, "Docs", "notes.txt"))
+	if err != nil || string(content) != "hello" {
+		t.Fatalf("migrated content = %q, %v", content, err)
+	}
+	if _, err := os.Stat(filepath.Join(filesDir, "file-id")); !os.IsNotExist(err) {
+		t.Fatalf("ID-keyed blob remains after migration: %v", err)
+	}
+	if snapshot := store.snapshot(); snapshot.Revision != 4 || findEntry(t, snapshot.Entries, "file-id").Name != "notes.txt" {
+		t.Fatalf("migration changed API identity or revision: %+v", snapshot)
+	}
+}
+
+func TestMigrationPreservesUnknownLegacyFiles(t *testing.T) {
+	dir := t.TempDir()
+	filesDir := filepath.Join(dir, "files")
+	if err := os.MkdirAll(filesDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	workspace := Workspace{
+		Initialized: true, Revision: 1,
+		Entries:          []Entry{file("known", "known.txt", nil, ptr("view-1"), "text/plain", 5)},
+		Layout:           Layout{Views: []View{{ID: "view-1"}}, Columns: 1, Wallpaper: "dusk"},
+		LayoutRevision:   1,
+		EditorSettings:   EditorSettings{AutoSave: true, FontSize: 13, Language: "auto"},
+		SettingsRevision: 1,
+	}
+	workspace.Entries[0].Revision = 1
+	workspace.Entries[0].ContentRevision = 1
+	b, err := json.Marshal(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, metadataName), b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(filesDir, "known"), []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(filesDir, "orphan"), []byte("recover me"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	recoveryDirs, err := filepath.Glob(filepath.Join(dir, ".legacy-files-recovery-*"))
+	if err != nil || len(recoveryDirs) != 1 {
+		t.Fatalf("legacy recovery directories = %v, %v", recoveryDirs, err)
+	}
+	content, err := os.ReadFile(filepath.Join(recoveryDirs[0], "orphan"))
+	if err != nil || string(content) != "recover me" {
+		t.Fatalf("preserved orphan = %q, %v", content, err)
+	}
+}
+
+func TestLogicalPathsFollowAPIRenameMoveAndDelete(t *testing.T) {
+	store, server := initializedTestServer(t)
+	for _, item := range []struct {
+		entry   Entry
+		content *string
+	}{
+		{folder("a", "A", nil, ptr("view-1")), nil},
+		{folder("b", "B", nil, ptr("view-1")), nil},
+		{file("f", "draft.txt", ptr("a"), nil, "text/plain", 0), ptr("draft")},
+	} {
+		response := multipartEntryRequest(t, server, http.MethodPost, "/api/entries", item.entry, item.content)
+		if response.Code != http.StatusOK {
+			t.Fatalf("create %s: %d %s", item.entry.ID, response.Code, response.Body.String())
+		}
+	}
+	if info, err := os.Stat(filepath.Join(store.filesDir, "A")); err != nil || !info.IsDir() {
+		t.Fatalf("logical folder was not created: %v", err)
+	}
+	entry := findEntry(t, store.snapshot().Entries, "f")
+	entry.Name = "final.txt"
+	entry.ParentID = ptr("b")
+	response := jsonRequest(t, server, http.MethodPatch, "/api/entries/f", entry)
+	if response.Code != http.StatusOK {
+		t.Fatalf("move file: %d %s", response.Code, response.Body.String())
+	}
+	content, err := os.ReadFile(filepath.Join(store.filesDir, "B", "final.txt"))
+	if err != nil || string(content) != "draft" {
+		t.Fatalf("moved logical content = %q, %v", content, err)
+	}
+	if _, err := os.Stat(filepath.Join(store.filesDir, "A", "draft.txt")); !os.IsNotExist(err) {
+		t.Fatalf("old logical path remains: %v", err)
+	}
+	response = httptest.NewRecorder()
+	server.ServeHTTP(response, httptest.NewRequest(http.MethodDelete, "/api/entries/b", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("delete folder: %d %s", response.Code, response.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(store.filesDir, "B")); !os.IsNotExist(err) {
+		t.Fatalf("deleted logical directory remains: %v", err)
+	}
+	before := store.snapshot().Revision
+	time.Sleep(3 * watchDebounce)
+	if got := store.snapshot().Revision; got != before {
+		t.Fatalf("watcher duplicated API mutation revision: got %d, want %d", got, before)
+	}
+}
+
+func TestExternalFilesystemChangesReconcileLive(t *testing.T) {
+	store, _ := initializedTestServer(t)
+	if err := os.Mkdir(filepath.Join(store.filesDir, "External"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(store.filesDir, "External", "note.md"), []byte("one"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	waitForRevision(t, store, 2)
+	first := store.snapshot()
+	folderEntry := findEntryByName(t, first.Entries, "External")
+	fileEntry := findEntryByName(t, first.Entries, "note.md")
+	if folderEntry.ParentID != nil || folderEntry.ViewID == nil || *folderEntry.ViewID != "view-1" || folderEntry.Position != (Position{X: 24, Y: 24}) {
+		t.Fatalf("external root placement = %+v", folderEntry)
+	}
+	if fileEntry.ParentID == nil || *fileEntry.ParentID != folderEntry.ID || fileEntry.ViewID != nil || !strings.HasPrefix(fileEntry.MimeType, "text/markdown") {
+		t.Fatalf("external nested metadata = %+v", fileEntry)
+	}
+
+	if err := os.WriteFile(filepath.Join(store.filesDir, "External", "note.md"), []byte("two"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	waitForRevision(t, store, 3)
+	edited := findEntryByName(t, store.snapshot().Entries, "note.md")
+	if edited.ID != fileEntry.ID || edited.ContentRevision != 3 || edited.Size != 3 {
+		t.Fatalf("same-path external edit did not preserve identity: old=%+v new=%+v", fileEntry, edited)
+	}
+
+	if err := os.Rename(filepath.Join(store.filesDir, "External", "note.md"), filepath.Join(store.filesDir, "External", "renamed.md")); err != nil {
+		t.Fatal(err)
+	}
+	waitForRevision(t, store, 4)
+	renamed := findEntryByName(t, store.snapshot().Entries, "renamed.md")
+	if renamed.ID == fileEntry.ID || entryIndex(store.snapshot().Entries, fileEntry.ID) >= 0 {
+		t.Fatalf("external rename retained old identity: old=%s new=%s", fileEntry.ID, renamed.ID)
+	}
+
+	linkPath := filepath.Join(store.filesDir, "linked.txt")
+	if err := os.Symlink(filepath.Join(store.filesDir, "External", "renamed.md"), linkPath); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	time.Sleep(3 * watchDebounce)
+	if entryWithName(store.snapshot().Entries, "linked.txt") != nil {
+		t.Fatal("watcher imported a symbolic link")
+	}
+}
+
+func TestExternalSameSizeEditDetectedAtStartup(t *testing.T) {
+	dir := t.TempDir()
+	store, server := newTestServer(t, dir)
+	response := bootstrapRequest(t, server, testBootstrap(), nil)
+	if response.Code != http.StatusCreated {
+		t.Fatal(response.Body.String())
+	}
+	response = multipartEntryRequest(t, server, http.MethodPost, "/api/entries", file("stable-id", "same.txt", nil, ptr("view-1"), "text/plain", 0), ptr("one"))
+	if response.Code != http.StatusOK {
+		t.Fatal(response.Body.String())
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "files", "same.txt"), []byte("two"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	entry := findEntry(t, reopened.snapshot().Entries, "stable-id")
+	if reopened.snapshot().Revision != 3 || entry.ContentRevision != 3 || entry.ID != "stable-id" {
+		t.Fatalf("startup reconciliation = %+v workspace=%+v", entry, reopened.snapshot())
+	}
+	if err := reopened.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestExternalAdditionDetectedAtStartupWithEmptyIndex(t *testing.T) {
+	dir := t.TempDir()
+	store, server := newTestServer(t, dir)
+	response := bootstrapRequest(t, server, testBootstrap(), nil)
+	if response.Code != http.StatusCreated {
+		t.Fatal(response.Body.String())
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "files", "outside.txt"), []byte("added while stopped"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	snapshot := reopened.snapshot()
+	entry := findEntryByName(t, snapshot.Entries, "outside.txt")
+	if snapshot.Revision != 2 || entry.ContentRevision != 2 || entry.ViewID == nil || *entry.ViewID != "view-1" {
+		t.Fatalf("startup addition reconciliation = %+v workspace=%+v", entry, snapshot)
+	}
+}
+
+func TestMetadataMutationDoesNotSwallowExternalEdit(t *testing.T) {
+	store, server := initializedTestServer(t)
+	response := multipartEntryRequest(t, server, http.MethodPost, "/api/entries", file("stable", "stable.txt", nil, ptr("view-1"), "text/plain", 0), ptr("before"))
+	if response.Code != http.StatusOK {
+		t.Fatal(response.Body.String())
+	}
+	if err := os.WriteFile(filepath.Join(store.filesDir, "stable.txt"), []byte("after"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	settings := jsonRequest(t, server, http.MethodPut, "/api/editor-settings", EditorSettings{AutoSave: false, FontSize: 13, Language: "auto"})
+	if settings.Code != http.StatusOK {
+		t.Fatal(settings.Body.String())
+	}
+	waitForRevision(t, store, 4)
+	entry := findEntry(t, store.snapshot().Entries, "stable")
+	if entry.ContentRevision <= 2 || entry.Size != 5 {
+		t.Fatalf("external edit was swallowed by metadata mutation: %+v", entry)
+	}
+}
+
+func TestFailedBootstrapRemovesStagedLogicalTree(t *testing.T) {
+	dir := t.TempDir()
+	store, server := newTestServer(t, dir)
+	if err := os.Mkdir(filepath.Join(dir, metadataName), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	workspace := testBootstrap()
+	workspace.Entries = []Entry{file("file", "retry.txt", nil, ptr("view-1"), "text/plain", 5)}
+	response := bootstrapRequest(t, server, workspace, map[string]string{"file": "hello"})
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("failed bootstrap status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(store.filesDir, "retry.txt")); !os.IsNotExist(err) {
+		t.Fatalf("failed bootstrap left logical content: %v", err)
+	}
+	if store.snapshot().Initialized {
+		t.Fatal("failed bootstrap initialized workspace")
 	}
 }
 
@@ -101,7 +397,7 @@ func TestImportMultipleFilesAtomically(t *testing.T) {
 		if entry.Revision != 2 || entry.ContentRevision != 2 || entry.ModifiedAt != 1_700_000_000_000 {
 			t.Errorf("server fields for %s = %+v", entry.ID, entry)
 		}
-		content, err := os.ReadFile(filepath.Join(store.filesDir, entry.ID))
+		content, err := os.ReadFile(filepath.Join(store.filesDir, entry.Name))
 		if err != nil || string(content) != map[string]string{"first": "hello", "second": "{}"}[entry.ID] {
 			t.Errorf("blob %s = %q, %v", entry.ID, content, err)
 		}
@@ -151,7 +447,7 @@ func TestImportInvalidBatchIsAllOrNothing(t *testing.T) {
 				t.Fatalf("rejected import changed workspace: %+v", snapshot)
 			}
 			for _, entry := range test.entries {
-				if _, err := os.Stat(filepath.Join(store.filesDir, entry.ID)); !os.IsNotExist(err) {
+				if _, err := os.Stat(filepath.Join(store.filesDir, entry.Name)); !os.IsNotExist(err) {
 					t.Errorf("rejected import wrote blob %q: %v", entry.ID, err)
 				}
 			}
@@ -174,10 +470,10 @@ func TestImportInvalidBatchIsAllOrNothing(t *testing.T) {
 	if after.Revision != before.Revision || len(after.Entries) != len(before.Entries) {
 		t.Fatalf("existing-ID batch partially committed: before=%+v after=%+v", before, after)
 	}
-	if _, err := os.Stat(filepath.Join(store.filesDir, "new")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(store.filesDir, "new.txt")); !os.IsNotExist(err) {
 		t.Fatalf("existing-ID batch wrote new blob: %v", err)
 	}
-	content, err := os.ReadFile(filepath.Join(store.filesDir, "existing"))
+	content, err := os.ReadFile(filepath.Join(store.filesDir, "existing.txt"))
 	if err != nil || string(content) != "old" {
 		t.Fatalf("existing blob changed to %q: %v", content, err)
 	}
@@ -198,7 +494,7 @@ func TestImportEnforcesCombinedUploadLimit(t *testing.T) {
 		t.Fatalf("oversized import changed workspace: %+v", snapshot)
 	}
 	for _, entry := range entries {
-		if _, err := os.Stat(filepath.Join(store.filesDir, entry.ID)); !os.IsNotExist(err) {
+		if _, err := os.Stat(filepath.Join(store.filesDir, entry.Name)); !os.IsNotExist(err) {
 			t.Errorf("oversized import wrote blob %q: %v", entry.ID, err)
 		}
 	}
@@ -303,10 +599,10 @@ func TestRecursiveDeletionCommitsBeforeBlobCleanup(t *testing.T) {
 	if strings.Join(deleted.DeletedIDs, ",") != "parent,child,nested" {
 		t.Fatalf("deleted IDs = %v", deleted.DeletedIDs)
 	}
-	if _, err := os.Stat(filepath.Join(store.filesDir, "nested")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(store.filesDir, "Parent")); !os.IsNotExist(err) {
 		t.Fatalf("nested blob still exists: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(store.filesDir, "keep")); err != nil {
+	if _, err := os.Stat(filepath.Join(store.filesDir, "keep.txt")); err != nil {
 		t.Fatalf("kept blob missing: %v", err)
 	}
 	if entries := store.snapshot().Entries; len(entries) != 1 || entries[0].ID != "keep" {
@@ -386,6 +682,9 @@ func TestSSENotifiesAfterMutation(t *testing.T) {
 	}
 
 	reopened, err := OpenStore(store.dir)
+	if err == nil {
+		t.Cleanup(func() { _ = reopened.Close() })
+	}
 	if err != nil || reopened.snapshot().Revision != 2 {
 		t.Fatalf("event was published without durable revision: %v %+v", err, reopened)
 	}
@@ -406,6 +705,7 @@ func TestUninitializedSnapshotAndUploadLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = store.Close() })
 	limited := New(store, t.TempDir(), 3)
 	workspace := testBootstrap()
 	workspace.Entries = []Entry{file("file", "large.txt", nil, ptr("view-1"), "text/plain", 4)}
@@ -421,6 +721,7 @@ func newTestServer(t *testing.T, dir string) (*Store, *Server) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = store.Close() })
 	server := New(store, t.TempDir(), 10<<20)
 	server.now = func() time.Time { return time.UnixMilli(1_700_000_000_000) }
 	return store, server
@@ -571,6 +872,39 @@ func findEntry(t *testing.T, entries []Entry, id string) Entry {
 	return Entry{}
 }
 
+func findEntryByName(t *testing.T, entries []Entry, name string) Entry {
+	t.Helper()
+	if entry := entryWithName(entries, name); entry != nil {
+		return *entry
+	}
+	t.Fatalf("entry named %q not found", name)
+	return Entry{}
+}
+
+func entryWithName(entries []Entry, name string) *Entry {
+	for i := range entries {
+		if entries[i].Name == name {
+			return &entries[i]
+		}
+	}
+	return nil
+}
+
+func waitForRevision(t *testing.T, store *Store, revision int64) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if got := store.snapshot().Revision; got >= revision {
+			if got != revision {
+				t.Fatalf("revision advanced more than once: got %d, want %d", got, revision)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for revision %d; workspace=%+v", revision, store.snapshot())
+}
+
 func decodeResponse(t *testing.T, response *httptest.ResponseRecorder, dst any) {
 	t.Helper()
 	if err := json.Unmarshal(response.Body.Bytes(), dst); err != nil {
@@ -605,6 +939,7 @@ func TestStaticSPAFallbackDoesNotInterceptAPI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = store.Close() })
 	server := New(store, dir, 1024)
 	for path, want := range map[string]string{"/route": "index", "/asset.js": "asset"} {
 		response := httptest.NewRecorder()

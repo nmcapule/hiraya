@@ -35,7 +35,13 @@ func main() {
 		IdleTimeout:       2 * time.Minute,
 	}
 	log.Printf("Hiraya server listening on http://%s", addr)
-	log.Fatal(server.ListenAndServe())
+	serveErr := server.ListenAndServe()
+	if err := store.Close(); err != nil {
+		log.Printf("close store: %v", err)
+	}
+	if serveErr != nil && serveErr != http.ErrServerClosed {
+		log.Fatal(serveErr)
+	}
 }
 
 func env(name, fallback string) string {
