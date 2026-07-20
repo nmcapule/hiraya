@@ -1,12 +1,13 @@
 {
-  "version": 1,
+  "version": 2,
   "layout": {
     "views": [
       {
         "id": "example-view"
       }
     ],
-    "columns": 1
+    "columns": 1,
+    "snapToGrid": false
   },
   "editorSettings": {
     "autoSave": true,

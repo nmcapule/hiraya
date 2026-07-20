@@ -19,8 +19,9 @@ type View struct {
 }
 
 type Layout struct {
-	Views   []View `json:"views"`
-	Columns int    `json:"columns"`
+	Views      []View `json:"views"`
+	Columns    int    `json:"columns"`
+	SnapToGrid bool   `json:"snapToGrid"`
 }
 
 type EditorSettings struct {

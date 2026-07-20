@@ -5,6 +5,7 @@ export type DesktopView = { id: string };
 export type DesktopLayout = {
   views: DesktopView[];
   columns: number;
+  snapToGrid: boolean;
 };
 
 export type EditorLanguage = "auto" | "plain" | "markdown" | "json" | "javascript" | "typescript" | "jsx" | "tsx" | "css" | "html" | "xml" | "yaml";

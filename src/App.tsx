@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, CloudCheck, CloudSlash, CornersIn, CornersOut, ExportIcon, FolderPlus, HardDrive, Plus, SpinnerGap, Trash, UploadSimple, WarningCircle } from "@phosphor-icons/react";
+import { Check, CloudCheck, CloudSlash, CornersIn, CornersOut, ExportIcon, FolderPlus, GridFour, HardDrive, Plus, SpinnerGap, Trash, UploadSimple, WarningCircle } from "@phosphor-icons/react";
 import predefinedDesktop from "virtual:hiraya-predefined";
 import { ContextMenu } from "./components/ContextMenu";
 import { FileDialog } from "./components/FileDialog";
@@ -33,6 +33,8 @@ type OpenFile = { file: FileEntry; blob: File; editable: boolean; contentRevisio
 type RouteHistoryState = { hiraya: true; parentHash?: string };
 const FILE_ICON_WIDTH = 98;
 const FILE_ICON_HEIGHT = 102;
+const GRID_ORIGIN = { x: 22, y: 22 };
+const GRID_STEP = { x: 104, y: 112 };
 const MINIMAP_LONG_PRESS_MS = 500;
 const TEXT_EXTENSIONS = new Set(["txt", "md", "markdown", "json", "js", "jsx", "ts", "tsx", "css", "html", "xml", "csv", "yaml", "yml"]);
 
@@ -51,6 +53,12 @@ function nextPosition(index: number, base?: EntryPosition) {
   return { x: 22 + Math.floor(index / rows) * 104, y: 22 + (index % rows) * 112 };
 }
 
+function snapAxis(value: number, origin: number, step: number, max: number) {
+  if (max <= origin) return Math.max(8, max);
+  const index = Math.max(0, Math.min(Math.floor((max - origin) / step), Math.round((value - origin) / step)));
+  return origin + index * step;
+}
+
 function App() {
   const [entries, setEntries] = useState<DesktopEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -64,7 +72,7 @@ function App() {
   const [route, setRoute] = useState<DesktopRoute | null>(null);
   const [clock, setClock] = useState(() => new Date());
   const [desktopSize, setDesktopSize] = useState(() => ({ width: window.innerWidth, height: Math.max(1, window.innerHeight - 44) }));
-  const [layout, setLayout] = useState<DesktopLayout>(() => ({ views: [{ id: crypto.randomUUID() }], columns: 1 }));
+  const [layout, setLayout] = useState<DesktopLayout>(() => ({ views: [{ id: crypto.randomUUID() }], columns: 1, snapToGrid: false }));
   const [editorSettings, setEditorSettings] = useState<EditorSettings>(DEFAULT_EDITOR_SETTINGS);
   const [exporting, setExporting] = useState(false);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("connecting");
@@ -347,7 +355,31 @@ function App() {
   }
 
   function positionFor(parentId: string | null) {
-    return nextPosition(childrenCount(parentId));
+    const position = nextPosition(childrenCount(parentId));
+    return parentId === null && layoutRef.current.snapToGrid ? snapPositionInView(position) : position;
+  }
+
+  function snapPositionInView(position: EntryPosition) {
+    return {
+      x: snapAxis(position.x, GRID_ORIGIN.x, GRID_STEP.x, Math.max(8, desktopSize.width - FILE_ICON_WIDTH)),
+      y: snapAxis(position.y, GRID_ORIGIN.y, GRID_STEP.y, Math.max(8, desktopSize.height - FILE_ICON_HEIGHT)),
+    };
+  }
+
+  function snapDesktopPosition(position: EntryPosition) {
+    const currentLayout = layoutRef.current;
+    const columns = Math.max(1, Math.min(currentLayout.columns, currentLayout.views.length));
+    const rows = Math.ceil(currentLayout.views.length / columns);
+    const column = Math.max(0, Math.min(columns - 1, Math.floor(position.x / desktopSize.width)));
+    const row = Math.max(0, Math.min(rows - 1, Math.floor(position.y / desktopSize.height)));
+    const local = snapPositionInView({
+      x: position.x - column * desktopSize.width,
+      y: position.y - row * desktopSize.height,
+    });
+    return {
+      x: column * desktopSize.width + local.x,
+      y: row * desktopSize.height + local.y,
+    };
   }
 
   function chooseUpload(parentId: string | null) {
@@ -407,7 +439,8 @@ function App() {
     try {
       const offset = childrenCount(parentId);
       const viewId = parentId === null ? activeViewId || layout.views[0].id : null;
-      const imported = await importFiles(sources, parentId, sources.map((_, index) => nextPosition(offset + index, base)), viewId);
+      const positions = sources.map((_, index) => nextPosition(offset + index, base));
+      const imported = await importFiles(sources, parentId, parentId === null && layoutRef.current.snapToGrid ? positions.map(snapPositionInView) : positions, viewId);
       setEntries((current) => {
         const existingIds = new Set(current.map((entry) => entry.id));
         return [...current, ...imported.filter((entry) => !existingIds.has(entry.id))];
@@ -427,12 +460,15 @@ function App() {
       await handleMoveTo(entry, targetParentId);
       return;
     }
-    const column = Math.max(0, Math.min(pageColumns - 1, Math.floor(position.x / desktopSize.width)));
-    const row = Math.max(0, Math.min(pageRows - 1, Math.floor(position.y / desktopSize.height)));
-    const targetView = layoutRef.current.views[Math.min(layoutRef.current.views.length - 1, row * pageColumns + column)];
+    const finalPosition = layoutRef.current.snapToGrid ? snapDesktopPosition(position) : position;
+    const columns = Math.max(1, Math.min(layoutRef.current.columns, layoutRef.current.views.length));
+    const rows = Math.ceil(layoutRef.current.views.length / columns);
+    const column = Math.max(0, Math.min(columns - 1, Math.floor(finalPosition.x / desktopSize.width)));
+    const row = Math.max(0, Math.min(rows - 1, Math.floor(finalPosition.y / desktopSize.height)));
+    const targetView = layoutRef.current.views[Math.min(layoutRef.current.views.length - 1, row * columns + column)];
     const localPosition = {
-      x: Math.max(8, position.x - column * desktopSize.width),
-      y: Math.max(8, position.y - row * desktopSize.height),
+      x: Math.max(8, finalPosition.x - column * desktopSize.width),
+      y: Math.max(8, finalPosition.y - row * desktopSize.height),
     };
     setEntries((current) => current.map((item) => item.id === entry.id ? { ...item, position: localPosition, viewId: targetView.id } : item));
     try {
@@ -577,7 +613,7 @@ function App() {
     const nextColumn = targetIndex % columns;
     const nextRow = Math.floor(targetIndex / columns);
     edgeDragRef.current = { direction: edge.direction, time: now };
-    if (views.length !== layoutRef.current.views.length || columns !== layoutRef.current.columns) applyLayout({ views, columns });
+    if (views.length !== layoutRef.current.views.length || columns !== layoutRef.current.columns) applyLayout({ ...layoutRef.current, views, columns });
     if (!edgeNavigationRef.current && routeRef.current) edgeNavigationRef.current = { route: routeRef.current, historyState: window.history.state };
     goToView(views[targetIndex].id, "replace");
     return {
@@ -666,7 +702,7 @@ function App() {
     }
     const deletedIndex = layout.views.findIndex((view) => view.id === viewId);
     const views = layout.views.filter((view) => view.id !== viewId);
-    const next = { views, columns: Math.max(1, Math.min(layout.columns, views.length)) };
+    const next = { ...layout, views, columns: Math.max(1, Math.min(layout.columns, views.length)) };
     if (activeViewId === viewId && routeRef.current) navigateRoute({ ...routeRef.current, viewId: views[Math.min(deletedIndex, views.length - 1)].id }, "replace");
     applyLayout(next);
     setNotice("Desktop view deleted");
@@ -764,6 +800,14 @@ function App() {
           <button type="button" aria-label="New folder" disabled={!canMutate} onClick={() => setDialog({ type: "create-folder", parentId: null })}><FolderPlus size={16} /> <span>New folder</span></button>
           <button type="button" aria-label="Upload files" disabled={!canMutate} onClick={() => chooseUpload(null)}><UploadSimple size={16} /> <span>Upload</span></button>
           <button type="button" aria-label="Export saved desktop" title="Export the saved desktop as a predefined package" disabled={loading || exporting} onClick={() => void handleExport()}><ExportIcon size={16} /> <span>{exporting ? "Exporting" : "Export"}</span></button>
+          <button
+            type="button"
+            aria-label={`${layout.snapToGrid ? "Disable" : "Enable"} snap to grid`}
+            aria-pressed={layout.snapToGrid}
+            title={`${layout.snapToGrid ? "Disable" : "Enable"} snap to grid`}
+            disabled={!canMutate}
+            onClick={() => applyLayout({ ...layoutRef.current, snapToGrid: !layoutRef.current.snapToGrid })}
+          ><GridFour size={16} weight={layout.snapToGrid ? "fill" : "regular"} /> <span>Snap to grid</span></button>
           {document.fullscreenEnabled && <button type="button" aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"} title={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"} onClick={() => void toggleFullscreen()}>{isFullscreen ? <CornersIn size={16} /> : <CornersOut size={16} />} <span>{isFullscreen ? "Exit fullscreen" : "Fullscreen"}</span></button>}
           <span className="menu-bar__sync" data-status={syncStatus} title={syncStatus === "online" ? "Changes are synced" : syncStatus === "connecting" ? "Connecting to sync server" : "Sync server unavailable; editing is disabled"}>
             {syncStatus === "online" ? <CloudCheck size={15} /> : syncStatus === "connecting" ? <SpinnerGap size={15} /> : <CloudSlash size={15} />}
@@ -825,6 +869,7 @@ function App() {
               onMove={(position, targetParentId) => void handleDesktopMove(entry, position, targetParentId)}
               onDragAtEdge={handleIconDragAtEdge}
               onDragEnd={finishEdgeNavigation}
+              getSnapPreview={layout.snapToGrid ? snapDesktopPosition : undefined}
               onExternalDrop={(sources) => void handleImport(sources, entry.id)}
               onContextMenu={(event) => {
                 event.preventDefault();

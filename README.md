@@ -54,7 +54,7 @@ HIRAYA_PREDEFINED_DIR=examples/predefined bun run dev
 HIRAYA_PREDEFINED_DIR=examples/predefined bun run build
 ```
 
-The value must be a directory inside the repository. It must contain a `manifest.json`; each file entry's `contentUrl` is resolved relative to that directory. See `examples/predefined` for the version 1 format.
+The value must be a directory inside the repository. It must contain a `manifest.json`; each file entry's `contentUrl` is resolved relative to that directory. See `examples/predefined` for the version 2 format. Version 1 packages remain supported and default to snap-to-grid being disabled.
 
 The predefined desktop is copied into OPFS only when the browser origin has no Hiraya manifest. Existing desktops, including intentionally empty desktops, are never merged with or replaced. After seeding, predefined files and folders behave like ordinary editable entries. If the shared server is also uninitialized, this seeded desktop becomes its initial workspace; an initialized server remains authoritative. Clearing the origin's site data removes the local cache and allows predefined content to seed it again before synchronization.
 
@@ -64,4 +64,4 @@ The build rejects malformed manifests, missing or size-mismatched content, paths
 
 Use **Export** in the menu bar to download `hiraya-predefined.zip`. The archive contains `hiraya-predefined/manifest.json` and its `content` tree. Extract that directory into the repository and pass it to `HIRAYA_PREDEFINED_DIR` to seed the exported desktop in a fresh browser origin.
 
-Export includes all saved files, folders, views, icon positions, layout, and editor settings from the synchronized OPFS cache. Unsaved editor changes are not included.
+Export includes all saved files, folders, views, icon positions, layout, snap-to-grid preference, and editor settings from the synchronized OPFS cache. Unsaved editor changes are not included.

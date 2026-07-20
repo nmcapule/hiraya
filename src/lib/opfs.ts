@@ -38,6 +38,15 @@ type ManifestV5 = {
   editorSettings: EditorSettings;
 };
 
+type ManifestV6 = {
+  version: 6;
+  entries: DesktopEntry[];
+  views: DesktopView[];
+  viewColumns: number;
+  editorSettings: EditorSettings;
+  sync: DesktopSyncState;
+};
+
 export type DesktopSyncState = {
   revision: number;
   entryRevisions: Record<string, number>;
@@ -47,10 +56,11 @@ export type DesktopSyncState = {
 };
 
 type Manifest = {
-  version: 6;
+  version: 7;
   entries: DesktopEntry[];
   views: DesktopView[];
   viewColumns: number;
+  snapToGrid: boolean;
   editorSettings: EditorSettings;
   sync: DesktopSyncState;
 };
@@ -106,11 +116,11 @@ async function writeManifest(manifest: Manifest) {
 }
 
 function assertValidManifest(manifest: Manifest) {
-  const { editorSettings, entries, views, viewColumns } = manifest;
+  const { editorSettings, entries, snapToGrid, views, viewColumns } = manifest;
   const byId = new Map<string, DesktopEntry>();
   const viewIds = new Set<string>();
 
-  if (!Number.isInteger(viewColumns) || viewColumns < 1 || !Array.isArray(views) || views.length < 1) {
+  if (typeof snapToGrid !== "boolean" || !Number.isInteger(viewColumns) || viewColumns < 1 || !Array.isArray(views) || views.length < 1) {
     throw new Error("The desktop view layout has an unsupported format.");
   }
   if (
@@ -173,9 +183,10 @@ function migrateEntries(entries: Array<Omit<DesktopEntry, "viewId">>, viewport: 
   const rows = Math.max(1, ...rootEntries.map((entry) => Math.floor(entry.position.y / height) + 1));
   const views = Array.from({ length: columns * rows }, () => ({ id: crypto.randomUUID() }));
   return {
-    version: 6,
+    version: 7,
     viewColumns: columns,
     views,
+    snapToGrid: false,
     editorSettings: DEFAULT_EDITOR_SETTINGS,
     sync: EMPTY_SYNC_STATE,
     entries: entries.map((entry) => {
@@ -209,10 +220,11 @@ async function createManifestFromPredefined(predefined: PredefinedManifest): Pro
     return file;
   });
   const created: Manifest = {
-    version: 6,
+    version: 7,
     entries,
     views: predefined.layout.views,
     viewColumns: predefined.layout.columns,
+    snapToGrid: predefined.layout.snapToGrid,
     editorSettings: predefined.editorSettings,
     sync: EMPTY_SYNC_STATE,
   };
@@ -231,7 +243,7 @@ async function readManifest(
   try {
     const handle = await root.getFileHandle(MANIFEST_NAME);
     const file = await handle.getFile();
-    const parsed = JSON.parse(await file.text()) as Manifest | ManifestV5 | ManifestV4 | ManifestV3 | ManifestV2 | ManifestV1;
+    const parsed = JSON.parse(await file.text()) as Manifest | ManifestV6 | ManifestV5 | ManifestV4 | ManifestV3 | ManifestV2 | ManifestV1;
 
     if (parsed.version === 1 && Array.isArray(parsed.files)) {
       const migrated = migrateEntries(
@@ -249,24 +261,30 @@ async function readManifest(
       return migrated;
     }
     if (parsed.version === 3 && Array.isArray(parsed.entries)) {
-      const migrated: Manifest = { ...parsed, version: 6, editorSettings: DEFAULT_EDITOR_SETTINGS, sync: EMPTY_SYNC_STATE };
+      const migrated: Manifest = { ...parsed, version: 7, snapToGrid: false, editorSettings: DEFAULT_EDITOR_SETTINGS, sync: EMPTY_SYNC_STATE };
       assertValidManifest(migrated);
       await writeManifest(migrated);
       return migrated;
     }
     if (parsed.version === 4 && Array.isArray(parsed.entries)) {
-      const migrated: Manifest = { ...parsed, version: 6, editorSettings: { ...parsed.editorSettings, autoSave: true }, sync: EMPTY_SYNC_STATE };
+      const migrated: Manifest = { ...parsed, version: 7, snapToGrid: false, editorSettings: { ...parsed.editorSettings, autoSave: true }, sync: EMPTY_SYNC_STATE };
       assertValidManifest(migrated);
       await writeManifest(migrated);
       return migrated;
     }
     if (parsed.version === 5 && Array.isArray(parsed.entries)) {
-      const migrated: Manifest = { ...parsed, version: 6, sync: EMPTY_SYNC_STATE };
+      const migrated: Manifest = { ...parsed, version: 7, snapToGrid: false, sync: EMPTY_SYNC_STATE };
       assertValidManifest(migrated);
       await writeManifest(migrated);
       return migrated;
     }
-    if (parsed.version !== 6 || !Array.isArray(parsed.entries)) {
+    if (parsed.version === 6 && Array.isArray(parsed.entries)) {
+      const migrated: Manifest = { ...parsed, version: 7, snapToGrid: false };
+      assertValidManifest(migrated);
+      await writeManifest(migrated);
+      return migrated;
+    }
+    if (parsed.version !== 7 || !Array.isArray(parsed.entries)) {
       throw new Error("The storage index has an unsupported format.");
     }
 
@@ -275,7 +293,7 @@ async function readManifest(
   } catch (error) {
     if (error instanceof DOMException && error.name === "NotFoundError") {
       if (predefined) return createManifestFromPredefined(predefined);
-      const created: Manifest = { version: 6, entries: [], views: [{ id: crypto.randomUUID() }], viewColumns: 1, editorSettings: DEFAULT_EDITOR_SETTINGS, sync: EMPTY_SYNC_STATE };
+      const created: Manifest = { version: 7, entries: [], views: [{ id: crypto.randomUUID() }], viewColumns: 1, snapToGrid: false, editorSettings: DEFAULT_EDITOR_SETTINGS, sync: EMPTY_SYNC_STATE };
       await writeManifest(created);
       return created;
     }
@@ -323,16 +341,17 @@ export async function loadDesktop(viewport: EntryPosition, predefined: Predefine
     throw error;
   });
   const manifest = await desktopLoad;
-  return { entries: manifest.entries, layout: { views: manifest.views, columns: manifest.viewColumns }, editorSettings: manifest.editorSettings, sync: manifest.sync };
+  return { entries: manifest.entries, layout: { views: manifest.views, columns: manifest.viewColumns, snapToGrid: manifest.snapToGrid }, editorSettings: manifest.editorSettings, sync: manifest.sync };
 }
 
 export async function applyRemoteDesktop(snapshot: DesktopSnapshot, contents: Map<string, Blob>) {
   const current = await readManifest();
   const next: Manifest = {
-    version: 6,
+    version: 7,
     entries: snapshot.entries,
     views: snapshot.layout.views,
     viewColumns: snapshot.layout.columns,
+    snapToGrid: snapshot.layout.snapToGrid,
     editorSettings: snapshot.editorSettings,
     sync: snapshot.sync,
   };
@@ -376,7 +395,7 @@ function resolveViewId(manifest: Manifest, parentId: string | null, viewId: stri
 
 export async function saveDesktopLayout(layout: DesktopLayout) {
   const manifest = await readManifest();
-  const next = { ...manifest, views: layout.views, viewColumns: layout.columns };
+  const next = { ...manifest, views: layout.views, viewColumns: layout.columns, snapToGrid: layout.snapToGrid };
   assertValidManifest(next);
   await writeManifest(next);
 }
@@ -564,7 +583,7 @@ export async function readDesktopSnapshot(): Promise<{
   }
   return {
     entries: manifest.entries,
-    layout: { views: manifest.views, columns: manifest.viewColumns },
+    layout: { views: manifest.views, columns: manifest.viewColumns, snapToGrid: manifest.snapToGrid },
     editorSettings: manifest.editorSettings,
     contents,
   };

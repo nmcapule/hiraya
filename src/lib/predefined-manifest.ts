@@ -4,7 +4,7 @@ import type { DesktopEntry, DesktopLayout, DesktopView, EditorLanguage, EditorSe
 export type PredefinedFileEntry = FileEntry & { contentUrl: string };
 
 export type PredefinedManifest = {
-  version: 1;
+  version: 2;
   layout: DesktopLayout;
   editorSettings: EditorSettings;
   entries: Array<FolderEntry | PredefinedFileEntry>;
@@ -30,8 +30,11 @@ function assertValidEditorSettings(value: unknown): asserts value is EditorSetti
   }
 }
 
-function assertValidLayout(value: unknown): asserts value is DesktopLayout {
+function readLayout(value: unknown, legacy: boolean): DesktopLayout {
   if (!isRecord(value) || !Number.isInteger(value.columns) || (value.columns as number) < 1 || !Array.isArray(value.views) || value.views.length < 1) {
+    throw new Error("The predefined desktop layout has an unsupported format.");
+  }
+  if (!legacy && typeof value.snapToGrid !== "boolean") {
     throw new Error("The predefined desktop layout has an unsupported format.");
   }
   const ids = new Set<string>();
@@ -44,6 +47,11 @@ function assertValidLayout(value: unknown): asserts value is DesktopLayout {
   if ((value.columns as number) > value.views.length) {
     throw new Error("The predefined desktop has more columns than views.");
   }
+  return {
+    views: value.views as DesktopView[],
+    columns: value.columns as number,
+    snapToGrid: legacy ? false : value.snapToGrid as boolean,
+  };
 }
 
 function readPosition(value: unknown): EntryPosition {
@@ -62,13 +70,13 @@ function readPosition(value: unknown): EntryPosition {
 }
 
 export function parsePredefinedManifest(value: unknown): PredefinedManifest {
-  if (!isRecord(value) || value.version !== 1 || !Array.isArray(value.entries)) {
+  if (!isRecord(value) || (value.version !== 1 && value.version !== 2) || !Array.isArray(value.entries)) {
     throw new Error("The predefined desktop manifest has an unsupported format.");
   }
-  assertValidLayout(value.layout);
+  const layout = readLayout(value.layout, value.version === 1);
   assertValidEditorSettings(value.editorSettings);
 
-  const viewIds = new Set(value.layout.views.map((view: DesktopView) => view.id));
+  const viewIds = new Set(layout.views.map((view) => view.id));
   const byId = new Map<string, FolderEntry | PredefinedFileEntry>();
 
   for (const candidate of value.entries) {
@@ -169,8 +177,8 @@ export function parsePredefinedManifest(value: unknown): PredefinedManifest {
   }
 
   return {
-    version: 1,
-    layout: value.layout,
+    version: 2,
+    layout,
     editorSettings: value.editorSettings,
     entries: [...byId.values()],
   };

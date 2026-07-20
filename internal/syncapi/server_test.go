@@ -21,6 +21,7 @@ func TestBootstrapAndPersistenceRestart(t *testing.T) {
 	dir := t.TempDir()
 	store, server := newTestServer(t, dir)
 	workspace := testBootstrap()
+	workspace.Layout.SnapToGrid = true
 	workspace.Entries = []Entry{
 		folder("folder", "Docs", nil, ptr("view-1")),
 		file("file", "hello.txt", ptr("folder"), nil, "text/plain", 5),
@@ -32,7 +33,7 @@ func TestBootstrapAndPersistenceRestart(t *testing.T) {
 	}
 	var created Workspace
 	decodeResponse(t, response, &created)
-	if !created.Initialized || created.Revision != 1 || created.LayoutRevision != 1 || created.SettingsRevision != 1 {
+	if !created.Initialized || created.Revision != 1 || created.LayoutRevision != 1 || created.SettingsRevision != 1 || !created.Layout.SnapToGrid {
 		t.Fatalf("unexpected bootstrap revisions: %+v", created)
 	}
 	if created.Entries[0].Revision != 1 || created.Entries[1].ContentRevision != 1 || created.Entries[1].ModifiedAt == 1 {
@@ -49,7 +50,7 @@ func TestBootstrapAndPersistenceRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	snapshot := reopened.snapshot()
-	if snapshot.Revision != 1 || len(snapshot.Entries) != 2 {
+	if snapshot.Revision != 1 || len(snapshot.Entries) != 2 || !snapshot.Layout.SnapToGrid {
 		t.Fatalf("reopened snapshot = %+v", snapshot)
 	}
 	content, err := os.ReadFile(filepath.Join(store.filesDir, "file"))
@@ -241,10 +242,10 @@ func TestMutationsRevisionsAndLastRequestWins(t *testing.T) {
 	if settingsResult.Revision != 8 || settingsResult.SettingsRevision != 8 {
 		t.Fatalf("settings response = %+v", settingsResult)
 	}
-	layout := jsonRequest(t, server, http.MethodPut, "/api/layout", Layout{Views: []View{{ID: "view-1"}, {ID: "view-2"}}, Columns: 2})
+	layout := jsonRequest(t, server, http.MethodPut, "/api/layout", Layout{Views: []View{{ID: "view-1"}, {ID: "view-2"}}, Columns: 2, SnapToGrid: true})
 	var layoutResult layoutResponse
 	decodeResponse(t, layout, &layoutResult)
-	if layoutResult.Revision != 9 || layoutResult.LayoutRevision != 9 {
+	if layoutResult.Revision != 9 || layoutResult.LayoutRevision != 9 || !layoutResult.Layout.SnapToGrid {
 		t.Fatalf("layout response = %+v", layoutResult)
 	}
 

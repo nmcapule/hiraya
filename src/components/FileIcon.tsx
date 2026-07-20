@@ -25,6 +25,7 @@ type Props = {
     maxY: number;
   } | null;
   onDragEnd: (cancelled: boolean) => void;
+  getSnapPreview?: (position: EntryPosition) => EntryPosition;
   onContextMenu: (event: React.MouseEvent) => void;
   onExternalDrop?: (files: File[]) => void;
 };
@@ -48,8 +49,9 @@ function FileTypeIcon({ entry }: { entry: DesktopEntry }) {
   return <FileGlyph {...props} />;
 }
 
-export function FileIcon({ entry, selected, onSelect, onOpen, onMove, onDragAtEdge, onDragEnd, onContextMenu, onExternalDrop }: Props) {
+export function FileIcon({ entry, selected, onSelect, onOpen, onMove, onDragAtEdge, onDragEnd, getSnapPreview, onContextMenu, onExternalDrop }: Props) {
   const iconRef = useRef<HTMLButtonElement>(null);
+  const snapPreviewRef = useRef<HTMLSpanElement>(null);
   const drag = useRef<{
     pointerX: number;
     pointerY: number;
@@ -83,6 +85,18 @@ export function FileIcon({ entry, selected, onSelect, onOpen, onMove, onDragAtEd
       }
     }
     return null;
+  }
+
+  function updateSnapPreview(position: EntryPosition | null) {
+    const preview = snapPreviewRef.current;
+    if (!preview) return;
+    if (!position) {
+      delete preview.dataset.visible;
+      return;
+    }
+    preview.style.left = `${position.x}px`;
+    preview.style.top = `${position.y}px`;
+    preview.dataset.visible = "true";
   }
 
   function handlePointerDown(event: React.PointerEvent<HTMLButtonElement>) {
@@ -133,6 +147,7 @@ export function FileIcon({ entry, selected, onSelect, onOpen, onMove, onDragAtEd
     drag.current.y = y;
     drag.current.targetFolderId = findDropTarget(event.clientX, event.clientY);
     setDropTarget(drag.current.targetFolderId);
+    updateSnapPreview(getSnapPreview && !drag.current.targetFolderId ? getSnapPreview({ x, y }) : null);
     iconRef.current.style.transform = `translate3d(${x - drag.current.baseX}px, ${y - drag.current.baseY}px, 0)`;
     iconRef.current.dataset.dragging = "true";
   }
@@ -143,56 +158,61 @@ export function FileIcon({ entry, selected, onSelect, onOpen, onMove, onDragAtEd
 
     if (drag.current.moved && !cancelled) {
       const targetFolderId = findDropTarget(event.clientX, event.clientY);
-      onMove({ x: Math.round(drag.current.x), y: Math.round(drag.current.y) }, targetFolderId);
+      const position = { x: Math.round(drag.current.x), y: Math.round(drag.current.y) };
+      onMove(getSnapPreview && !targetFolderId ? getSnapPreview(position) : position, targetFolderId);
     }
     onDragEnd(cancelled);
     iconRef.current?.style.removeProperty("transform");
     if (iconRef.current) delete iconRef.current.dataset.dragging;
     setDropTarget(null);
+    updateSnapPreview(null);
     drag.current = null;
   }
 
   return (
-    <button
-      ref={iconRef}
-      className="file-icon"
-      style={{
-        "--file-x": `${entry.position.x}px`,
-        "--file-y": `${entry.position.y}px`,
-      } as React.CSSProperties}
-      data-selected={selected || undefined}
-      data-folder-id={entry.kind === "folder" ? entry.id : undefined}
-      type="button"
-      aria-label={`${entry.name}, ${entry.kind === "folder" ? "folder" : entry.mimeType || "file"}`}
-      onClick={onSelect}
-      onDoubleClick={onOpen}
-      onContextMenu={onContextMenu}
-      onDragOver={entry.kind === "folder" ? (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        event.currentTarget.dataset.dropTarget = "true";
-      } : undefined}
-      onDragLeave={entry.kind === "folder" ? (event) => {
-        if (!event.currentTarget.contains(event.relatedTarget as Node)) delete event.currentTarget.dataset.dropTarget;
-      } : undefined}
-      onDrop={entry.kind === "folder" ? (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        delete event.currentTarget.dataset.dropTarget;
-        onExternalDrop?.(Array.from(event.dataTransfer.files));
-      } : undefined}
-      onKeyDown={(event) => {
-        if (event.key === "Enter") onOpen();
-      }}
-      onPointerDown={handlePointerDown}
-      onPointerMove={handlePointerMove}
-      onPointerUp={finishDrag}
-      onPointerCancel={(event) => finishDrag(event, true)}
-    >
-      <span className="file-icon__art">
-        <FileTypeIcon entry={entry} />
-      </span>
-      <span className="file-icon__name">{entry.name}</span>
-    </button>
+    <>
+      <span ref={snapPreviewRef} className="file-icon-snap-preview" aria-hidden="true" />
+      <button
+        ref={iconRef}
+        className="file-icon"
+        style={{
+          "--file-x": `${entry.position.x}px`,
+          "--file-y": `${entry.position.y}px`,
+        } as React.CSSProperties}
+        data-selected={selected || undefined}
+        data-folder-id={entry.kind === "folder" ? entry.id : undefined}
+        type="button"
+        aria-label={`${entry.name}, ${entry.kind === "folder" ? "folder" : entry.mimeType || "file"}`}
+        onClick={onSelect}
+        onDoubleClick={onOpen}
+        onContextMenu={onContextMenu}
+        onDragOver={entry.kind === "folder" ? (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          event.currentTarget.dataset.dropTarget = "true";
+        } : undefined}
+        onDragLeave={entry.kind === "folder" ? (event) => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node)) delete event.currentTarget.dataset.dropTarget;
+        } : undefined}
+        onDrop={entry.kind === "folder" ? (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          delete event.currentTarget.dataset.dropTarget;
+          onExternalDrop?.(Array.from(event.dataTransfer.files));
+        } : undefined}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") onOpen();
+        }}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={finishDrag}
+        onPointerCancel={(event) => finishDrag(event, true)}
+      >
+        <span className="file-icon__art">
+          <FileTypeIcon entry={entry} />
+        </span>
+        <span className="file-icon__name">{entry.name}</span>
+      </button>
+    </>
   );
 }
