@@ -514,7 +514,7 @@ function App() {
 
   async function download(file: FileEntry) {
     try {
-      const blob = openFile?.file.id === file.id ? openFile.blob : await readFile(file.id);
+      const blob = await readFile(file.id);
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = url;
@@ -548,11 +548,13 @@ function App() {
 
   async function save(content: string) {
     const fileId = routeRef.current?.fileId;
-    if (!openFile || openFile.file.id !== fileId) return;
+    if (!openFileRef.current || openFileRef.current.file.id !== fileId) return;
     const saved = await saveTextFile(fileId, content);
-    const blob = await readFile(saved.id);
     setEntries((current) => current.map((entry) => entry.id === saved.id ? saved : entry));
-    if (routeRef.current?.fileId === saved.id) updateOpenFile({ file: saved, blob, editable: true, contentRevision: contentRevisionsRef.current[saved.id] ?? 0, remoteChanged: false });
+    const current = openFileRef.current;
+    if (routeRef.current?.fileId === saved.id && current?.file.id === saved.id) {
+      updateOpenFile({ ...current, file: saved, contentRevision: contentRevisionsRef.current[saved.id] ?? 0, remoteChanged: false });
+    }
     setNotice(syncStatus === "local" ? "Changes saved locally" : "Changes synced");
   }
 
