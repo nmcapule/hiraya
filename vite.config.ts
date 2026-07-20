@@ -11,6 +11,7 @@ export default defineConfig(({ mode }) => {
       react(),
       VitePWA({
         injectRegister: "auto",
+        registerType: "autoUpdate",
         includeAssets: ["favicon.svg", "apple-touch-icon.png"],
         manifest: {
           name: "Hiraya Desktop",
@@ -28,12 +29,18 @@ export default defineConfig(({ mode }) => {
           ],
         },
         workbox: {
+          cleanupOutdatedCaches: true,
+          clientsClaim: true,
           globPatterns: ["**/*.{js,css,html,ico,png,svg,webmanifest}"],
+          skipWaiting: true,
         },
       }),
     ],
     server: {
       allowedHosts: [".exe.xyz"],
+      headers: {
+        "Cache-Control": "no-store",
+      },
       proxy: {
         "/api": "http://127.0.0.1:8080",
       },
