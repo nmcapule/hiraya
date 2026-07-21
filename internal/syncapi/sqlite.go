@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,13 +19,7 @@ const (
 
 func (s *Store) openDatabase() error {
 	path := filepath.Join(s.dir, databaseName)
-	query := url.Values{}
-	query.Add("_pragma", "journal_mode(WAL)")
-	query.Add("_pragma", "synchronous(FULL)")
-	query.Add("_pragma", "foreign_keys(ON)")
-	query.Add("_pragma", "busy_timeout(5000)")
-	dsn := (&url.URL{Scheme: "file", Path: path, RawQuery: query.Encode()}).String()
-	db, err := sql.Open("sqlite", dsn)
+	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return fmt.Errorf("open workspace database: %w", err)
 	}
