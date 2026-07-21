@@ -1,6 +1,7 @@
 import type { DesktopEntry, DesktopLayout, DesktopPositionUpdate, EditorSettings, FileEntry } from "../types";
 import { parseEditorSettings, parseEntries, parseLayout, parseRootDesktopPositions } from "./contracts";
-import type { PersistedManifestV12 } from "./manifest-codec";
+import type { PersistedManifestV13 } from "./manifest-codec";
+import { DEFAULT_THEME_ID, parseCustomTheme, parseThemeState, type CustomTheme } from "./themes";
 
 export type OutboxOperation =
   | { kind: "create"; entries: DesktopEntry[] }
@@ -9,7 +10,10 @@ export type OutboxOperation =
   | { kind: "save-content"; entry: FileEntry }
   | { kind: "desktop-positions"; positions: DesktopPositionUpdate[] }
   | { kind: "layout"; layout: DesktopLayout }
-  | { kind: "editor-settings"; settings: EditorSettings };
+  | { kind: "editor-settings"; settings: EditorSettings }
+  | { kind: "select-theme"; themeId: string }
+  | { kind: "upsert-theme"; theme: CustomTheme }
+  | { kind: "delete-theme"; themeId: string };
 
 export type OutboxRecord = {
   operationId: string;
@@ -21,7 +25,7 @@ export type OutboxRecord = {
   error: string | null;
 };
 
-export function applyOutboxOperation(manifest: PersistedManifestV12, operation: OutboxOperation): PersistedManifestV12 {
+export function applyOutboxOperation(manifest: PersistedManifestV13, operation: OutboxOperation): PersistedManifestV13 {
   let entries = manifest.entries;
   switch (operation.kind) {
     case "create":
@@ -61,6 +65,22 @@ export function applyOutboxOperation(manifest: PersistedManifestV12, operation: 
     }
     case "editor-settings":
       return { ...manifest, editorSettings: parseEditorSettings(operation.settings) };
+    case "select-theme":
+      return { ...manifest, appearance: parseThemeState({ ...manifest.appearance, selectedThemeId: operation.themeId }) };
+    case "upsert-theme": {
+      const theme = parseCustomTheme(operation.theme);
+      const exists = manifest.appearance.customThemes.some((item) => item.id === theme.id);
+      const customThemes = exists
+        ? manifest.appearance.customThemes.map((item) => item.id === theme.id ? theme : item)
+        : [...manifest.appearance.customThemes, theme];
+      return { ...manifest, appearance: parseThemeState({ ...manifest.appearance, customThemes }) };
+    }
+    case "delete-theme": {
+      if (!manifest.appearance.customThemes.some((theme) => theme.id === operation.themeId)) return manifest;
+      const customThemes = manifest.appearance.customThemes.filter((theme) => theme.id !== operation.themeId);
+      const selectedThemeId = manifest.appearance.selectedThemeId === operation.themeId ? DEFAULT_THEME_ID : manifest.appearance.selectedThemeId;
+      return { ...manifest, appearance: parseThemeState({ selectedThemeId, customThemes }) };
+    }
   }
   return { ...manifest, entries };
 }

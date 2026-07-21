@@ -44,6 +44,9 @@ func New(store *Store, staticDir string, maxUpload int64) *Server {
 	mux.HandleFunc("PUT /api/layout", s.putLayout)
 	mux.HandleFunc("PUT /api/desktop-positions", s.putDesktopPositions)
 	mux.HandleFunc("PUT /api/editor-settings", s.putSettings)
+	mux.HandleFunc("PUT /api/theme-selection", s.putThemeSelection)
+	mux.HandleFunc("PUT /api/themes/{id}", s.putTheme)
+	mux.HandleFunc("DELETE /api/themes/{id}", s.deleteTheme)
 	mux.HandleFunc("GET /api/events", s.events)
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusNotFound, "API endpoint not found")
@@ -143,7 +146,16 @@ func (s *Server) bootstrap(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := validateWorkspace(input.Entries, input.Layout); err != nil {
+	appearance := defaultAppearance()
+	if input.Appearance.SelectedThemeID != "" {
+		appearance.SelectedThemeID = input.Appearance.SelectedThemeID
+	}
+	appearance.CustomThemes = make([]CustomTheme, len(input.Appearance.CustomThemes))
+	for i, theme := range input.Appearance.CustomThemes {
+		appearance.CustomThemes[i] = CustomTheme{ID: theme.ID, Name: theme.Name, Definition: theme.Definition, Revision: 1}
+	}
+	appearance.SelectionRevision = 1
+	if err := validateWorkspace(input.Entries, input.Layout, appearance); err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
@@ -251,7 +263,7 @@ func (s *Server) bootstrap(w http.ResponseWriter, r *http.Request) {
 		}
 		promoted = append(promoted, rel)
 	}
-	next := Workspace{SchemaVersion: workspaceSchemaVersion, WorkspaceID: s.store.workspace.WorkspaceID, Initialized: true, Revision: 1, Entries: input.Entries, Layout: input.Layout, LayoutRevision: 1, EditorSettings: input.EditorSettings, SettingsRevision: 1}
+	next := Workspace{SchemaVersion: workspaceSchemaVersion, WorkspaceID: s.store.workspace.WorkspaceID, Initialized: true, Revision: 1, Entries: input.Entries, Layout: input.Layout, LayoutRevision: 1, EditorSettings: input.EditorSettings, SettingsRevision: 1, Appearance: appearance}
 	responseBody, err := s.persistMutationLocked(next, r, http.StatusCreated, cloneWorkspace(next))
 	if err != nil {
 		for i := len(promoted) - 1; i >= 0; i-- {
@@ -416,7 +428,7 @@ func (s *Server) importEntries(w http.ResponseWriter, r *http.Request) {
 		entries[i].ModifiedAt = modifiedAt
 	}
 	next.Entries = append(next.Entries, entries...)
-	if err := validateWorkspace(next.Entries, next.Layout); err != nil {
+	if err := validateWorkspace(next.Entries, next.Layout, next.Appearance); err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
@@ -604,7 +616,7 @@ func (s *Server) upsertEntry(w http.ResponseWriter, r *http.Request) {
 	} else {
 		next.Entries[idx] = entry
 	}
-	if err := validateWorkspace(next.Entries, next.Layout); err != nil {
+	if err := validateWorkspace(next.Entries, next.Layout, next.Appearance); err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
@@ -754,7 +766,7 @@ func (s *Server) patchEntry(w http.ResponseWriter, r *http.Request) {
 	entry.ModifiedAt = s.now().UnixMilli()
 	entry.Revision = next.Revision + 1
 	next.Entries[idx] = entry
-	if err := validateWorkspace(next.Entries, next.Layout); err != nil {
+	if err := validateWorkspace(next.Entries, next.Layout, next.Appearance); err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
@@ -846,7 +858,7 @@ func (s *Server) putContent(w http.ResponseWriter, r *http.Request) {
 	entry.Revision = next.Revision + 1
 	entry.ContentRevision = next.Revision + 1
 	next.Entries[idx] = entry
-	if err := validateWorkspace(next.Entries, next.Layout); err != nil {
+	if err := validateWorkspace(next.Entries, next.Layout, next.Appearance); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -1049,7 +1061,7 @@ func (s *Server) putLayout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	next := cloneWorkspace(s.store.workspace)
-	if err := validateWorkspace(next.Entries, layout); err != nil {
+	if err := validateWorkspace(next.Entries, layout, next.Appearance); err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
@@ -1120,7 +1132,7 @@ func (s *Server) putDesktopPositions(w http.ResponseWriter, r *http.Request) {
 		next.Entries[indexes[i]].Revision = revision
 		entries[i] = next.Entries[indexes[i]]
 	}
-	if err := validateWorkspace(next.Entries, next.Layout); err != nil {
+	if err := validateWorkspace(next.Entries, next.Layout, next.Appearance); err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
@@ -1166,6 +1178,154 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	s.store.publishLocked(next.Revision)
 	writeJSONBody(w, http.StatusOK, responseBody)
+}
+
+func (s *Server) putThemeSelection(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		ThemeID string `json:"themeId"`
+	}
+	if err := decodeJSON(w, r, &input, 1<<20); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if !validID(input.ThemeID) {
+		writeError(w, http.StatusBadRequest, "invalid theme ID")
+		return
+	}
+	s.store.mu.Lock()
+	w, unlock := unlockBeforeResponse(w, s.store.mu.Unlock)
+	defer unlock()
+	if s.replayMutationLocked(w, r) {
+		return
+	}
+	s.store.beginMutationLocked()
+	if !s.requireInitializedLocked(w) {
+		return
+	}
+	next := cloneWorkspace(s.store.workspace)
+	if !builtInThemeIDs[input.ThemeID] && themeIndex(next.Appearance.CustomThemes, input.ThemeID) < 0 {
+		writeError(w, http.StatusNotFound, "theme not found")
+		return
+	}
+	next.Revision++
+	next.Appearance.SelectedThemeID = input.ThemeID
+	next.Appearance.SelectionRevision = next.Revision
+	result := map[string]any{"revision": next.Revision, "appearance": next.Appearance}
+	responseBody, err := s.persistMutationLocked(next, r, http.StatusOK, result)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.store.publishLocked(next.Revision)
+	writeJSONBody(w, http.StatusOK, responseBody)
+}
+
+func (s *Server) putTheme(w http.ResponseWriter, r *http.Request) {
+	var input BootstrapCustomTheme
+	if err := decodeJSON(w, r, &input, 1<<20); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if input.ID != r.PathValue("id") {
+		writeError(w, http.StatusBadRequest, "path and body theme IDs must match")
+		return
+	}
+	if err := validateTheme(CustomTheme{ID: input.ID, Name: input.Name, Definition: input.Definition}); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	s.store.mu.Lock()
+	w, unlock := unlockBeforeResponse(w, s.store.mu.Unlock)
+	defer unlock()
+	if s.replayMutationLocked(w, r) {
+		return
+	}
+	s.store.beginMutationLocked()
+	if !s.requireInitializedLocked(w) {
+		return
+	}
+	next := cloneWorkspace(s.store.workspace)
+	index := themeIndex(next.Appearance.CustomThemes, input.ID)
+	if index < 0 && len(next.Appearance.CustomThemes) >= 24 {
+		writeError(w, http.StatusConflict, "custom theme limit reached")
+		return
+	}
+	next.Revision++
+	theme := CustomTheme{ID: input.ID, Name: input.Name, Definition: input.Definition, Revision: next.Revision}
+	if index < 0 {
+		next.Appearance.CustomThemes = append(next.Appearance.CustomThemes, theme)
+	} else {
+		next.Appearance.CustomThemes[index] = theme
+	}
+	if err := validateAppearance(next.Appearance); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	result := map[string]any{"revision": next.Revision, "theme": theme}
+	responseBody, err := s.persistMutationLocked(next, r, http.StatusOK, result)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.store.publishLocked(next.Revision)
+	writeJSONBody(w, http.StatusOK, responseBody)
+}
+
+func (s *Server) deleteTheme(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !validID(id) {
+		writeError(w, http.StatusBadRequest, "invalid theme ID")
+		return
+	}
+	if builtInThemeIDs[id] {
+		writeError(w, http.StatusBadRequest, "built-in themes cannot be deleted")
+		return
+	}
+	s.store.mu.Lock()
+	w, unlock := unlockBeforeResponse(w, s.store.mu.Unlock)
+	defer unlock()
+	if s.replayMutationLocked(w, r) {
+		return
+	}
+	s.store.beginMutationLocked()
+	if !s.requireInitializedLocked(w) {
+		return
+	}
+	next := cloneWorkspace(s.store.workspace)
+	index := themeIndex(next.Appearance.CustomThemes, id)
+	if index < 0 {
+		result := map[string]any{"revision": next.Revision, "deletedId": id, "appearance": next.Appearance}
+		responseBody, err := s.persistMutationLocked(next, r, http.StatusOK, result)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSONBody(w, http.StatusOK, responseBody)
+		return
+	}
+	next.Revision++
+	next.Appearance.CustomThemes = append(next.Appearance.CustomThemes[:index], next.Appearance.CustomThemes[index+1:]...)
+	if next.Appearance.SelectedThemeID == id {
+		next.Appearance.SelectedThemeID = defaultThemeID
+		next.Appearance.SelectionRevision = next.Revision
+	}
+	result := map[string]any{"revision": next.Revision, "deletedId": id, "appearance": next.Appearance}
+	responseBody, err := s.persistMutationLocked(next, r, http.StatusOK, result)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.store.publishLocked(next.Revision)
+	writeJSONBody(w, http.StatusOK, responseBody)
+}
+
+func themeIndex(themes []CustomTheme, id string) int {
+	for i := range themes {
+		if themes[i].ID == id {
+			return i
+		}
+	}
+	return -1
 }
 
 func (s *Server) events(w http.ResponseWriter, r *http.Request) {

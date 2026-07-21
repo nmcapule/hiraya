@@ -1,5 +1,5 @@
 {
-  "version": 6,
+  "version": 7,
   "layout": {
     "snapToGrid": false,
     "wallpaper": "dusk"
@@ -8,6 +8,10 @@
     "autoSave": true,
     "fontSize": 13,
     "language": "auto"
+  },
+  "appearance": {
+    "selectedThemeId": "hiraya-dusk",
+    "customThemes": []
   },
   "entries": [
     {

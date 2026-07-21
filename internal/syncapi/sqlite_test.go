@@ -45,6 +45,15 @@ func TestSQLiteMigratesMutationReceiptsSchema(t *testing.T) {
 	if _, err := store.db.Exec(`DROP TABLE mutation_receipts`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.db.Exec(`DROP TABLE custom_themes`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`ALTER TABLE workspace DROP COLUMN theme_selection_revision`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`ALTER TABLE workspace DROP COLUMN selected_theme_id`); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := store.db.Exec(`PRAGMA user_version=1`); err != nil {
 		t.Fatal(err)
 	}
@@ -102,6 +111,41 @@ func TestWorkspaceJSONImportMarkerIsRestartSafe(t *testing.T) {
 	t.Cleanup(func() { _ = reopened.Close() })
 	if got := reopened.snapshot(); got.WorkspaceID != "original" || got.Revision != 7 {
 		t.Fatalf("restart re-imported workspace.json: %+v", got)
+	}
+}
+
+func TestSQLiteMigratesAppearanceSchema(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`UPDATE workspace SET wire_schema_version = 4, layout_revision = 7`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`DROP TABLE custom_themes`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`ALTER TABLE workspace DROP COLUMN theme_selection_revision`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`ALTER TABLE workspace DROP COLUMN selected_theme_id`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`PRAGMA user_version=2`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	got := reopened.snapshot()
+	if got.SchemaVersion != workspaceSchemaVersion || got.Appearance.SelectedThemeID != defaultThemeID || got.Appearance.SelectionRevision != 0 || len(got.Appearance.CustomThemes) != 0 {
+		t.Fatalf("migrated appearance = %+v", got)
 	}
 }
 

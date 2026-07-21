@@ -636,7 +636,7 @@ func (s *Store) reconcileFilesystemLocked(nodes map[string]diskNode) error {
 	}
 	if changed {
 		next.Revision = revision
-		if err := validateWorkspace(next.Entries, next.Layout); err != nil {
+		if err := validateWorkspace(next.Entries, next.Layout, next.Appearance); err != nil {
 			return fmt.Errorf("external filesystem state is invalid: %w", err)
 		}
 		if err := s.persistLocked(next); err != nil {

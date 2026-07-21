@@ -13,6 +13,7 @@ import { UpdateToast } from "./components/UpdateToast";
 import {
   createFolder,
   createTextFile,
+  deleteCustomTheme,
   deleteEntry,
   getOutboxStatus,
   importFiles,
@@ -21,9 +22,11 @@ import {
   readFile,
   readFileByRelativePath,
   renameEntry,
+  saveCustomTheme,
   saveDesktopLayout,
   saveEditorSettings,
   saveTextFile,
+  selectTheme,
   updateDesktopPositions,
   updateEntryPosition,
   subscribeToSync,
@@ -34,8 +37,9 @@ import { DEFAULT_EDITOR_SETTINGS, readLocalPreferences, saveLocalPreferences } f
 import { createPwaUpdater, type PwaUpdater } from "./lib/pwa-update";
 import { exportSeededDesktop } from "./lib/seeded";
 import { formatDesktopRoute, normalizeDesktopRoute, parseDesktopRoute, type DesktopRoute } from "./lib/routes";
+import { DEFAULT_THEME_STATE, isBuiltinThemeId, resolveTheme, themeIconMetrics, themeStyle, type CustomTheme, type ThemeDefinition, type ThemeState } from "./lib/themes";
 import { DEFAULT_WALLPAPER, type ContextMenuState, type DesktopEntry, type DesktopLayout, type DialogState, type EditorSettings, type EntryPosition, type FileEntry } from "./types";
-import { FILE_ICON_SIZE, GRID_ORIGIN, GRID_STEP, nextAvailableDesktopSlot, nextDesktopPosition, projectLogicalPosition, reorderDesktopPages, responsiveDesktop, restoreLogicalPosition, segmentKey, snapAxis } from "./ui/desktop-geometry";
+import { GRID_ORIGIN, nextAvailableDesktopSlot, nextDesktopPosition, projectLogicalPosition, reorderDesktopPages, responsiveDesktop, restoreLogicalPosition, segmentKey, snapAxis } from "./ui/desktop-geometry";
 import { fileCapabilities } from "./ui/file-capabilities";
 import { topOverlay } from "./ui/overlay";
 import { createWorkspaceIndex } from "./ui/workspace-index";
@@ -71,6 +75,8 @@ function App() {
   const [desktopSize, setDesktopSize] = useState(() => ({ width: window.innerWidth, height: Math.max(1, window.innerHeight - 44) }));
   const [layout, setLayout] = useState<DesktopLayout>(() => ({ snapToGrid: false, wallpaper: DEFAULT_WALLPAPER }));
   const [editorSettings, setEditorSettings] = useState<EditorSettings>(DEFAULT_EDITOR_SETTINGS);
+  const [appearance, setAppearance] = useState<ThemeState>(DEFAULT_THEME_STATE);
+  const [themePreview, setThemePreview] = useState<ThemeDefinition | null>(null);
   const [exporting, setExporting] = useState(false);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("connecting");
   const [isSyncing, setIsSyncing] = useState(false);
@@ -141,8 +147,10 @@ function App() {
   const canMutate = syncStatus !== "connecting";
   const syncIndicatorStatus = syncStatus === "online" && isSyncing ? "syncing" : syncStatus;
   const workspace = useMemo(() => createWorkspaceIndex(entries), [entries]);
+  const activeTheme = useMemo(() => themePreview ?? resolveTheme(appearance), [appearance, themePreview]);
+  const iconMetrics = useMemo(() => themeIconMetrics(activeTheme), [activeTheme]);
   const rootEntries = workspace.roots;
-  const responsive = useMemo(() => responsiveDesktop(entries, desktopSize), [desktopSize, entries]);
+  const responsive = useMemo(() => responsiveDesktop(entries, desktopSize, iconMetrics), [desktopSize, entries, iconMetrics]);
   const activePageKey = segmentKey(activeSegment);
   const actualActivePage = responsive.pages.find((candidate) => candidate.key === activePageKey);
   const pages = actualActivePage
@@ -161,8 +169,8 @@ function App() {
   const minimapHeight = Math.min(84, Math.max(30, pageRows * 20)) + 27;
   const minimapObscured = !editingViews && activeDesktopPage.entries.some((entry) => {
     const position = responsive.positions.get(entry.id) ?? entry.position;
-    return position.x + FILE_ICON_SIZE.width > desktopSize.width - minimapWidth
-      && position.y + FILE_ICON_SIZE.height > desktopSize.height - minimapHeight;
+    return position.x + iconMetrics.width > desktopSize.width - minimapWidth
+      && position.y + iconMetrics.height > desktopSize.height - minimapHeight;
   });
   const folders = workspace.folders;
   const dialogEntry = dialog && (dialog.type === "rename" || dialog.type === "delete") ? workspace.byId.get(dialog.entryId) ?? null : null;
@@ -287,6 +295,7 @@ function App() {
       setLayout(synced.layout);
       setEntries(synced.entries);
       setEditorSettings(synced.editorSettings);
+      setAppearance(synced.appearance);
       setLoading(false);
       setSelectedId((current) => current && !synced.entries.some((entry) => entry.id === current) ? null : current);
       const syncedIds = new Set(synced.entries.map((entry) => entry.id));
@@ -311,13 +320,14 @@ function App() {
     void initializeDesktop({ x: window.innerWidth, y: Math.max(1, window.innerHeight - 44) }, seededDesktop)
       .then(({ desktop: loadedDesktop, status: loadedStatus }) => {
         if (!active) return;
-        const { entries: loadedEntries, layout: loadedLayout, editorSettings: loadedEditorSettings, sync } = loadedDesktop;
+        const { entries: loadedEntries, layout: loadedLayout, editorSettings: loadedEditorSettings, appearance: loadedAppearance, sync } = loadedDesktop;
         contentRevisionsRef.current = sync.contentRevisions;
         layoutRef.current = loadedLayout;
         entriesRef.current = loadedEntries;
         setLayout(loadedLayout);
         setEntries(loadedEntries);
         setEditorSettings(loadedEditorSettings);
+        setAppearance(loadedAppearance);
         setSyncStatus(loadedStatus);
         navigationReadyRef.current = true;
         applyLocationRouteRef.current(loadedEntries, loadedLayout);
@@ -587,17 +597,17 @@ function App() {
     if (parentId === null) {
       const pageCount = childrenCount(null);
       const occupied = activeDesktopPage.entries.map((entry) => responsive.positions.get(entry.id) ?? projectLogicalPosition(entry.position, desktopSize).local);
-      const localPosition = nextAvailableDesktopSlot(desktopSize, occupied, responsive.pages.length > 1, pageCount);
+      const localPosition = nextAvailableDesktopSlot(desktopSize, occupied, responsive.pages.length > 1, pageCount, iconMetrics);
       return restoreLogicalPosition(localPosition, activeSegment, desktopSize);
     }
-    const position = nextDesktopPosition(childrenCount(parentId), window.innerHeight);
+    const position = nextDesktopPosition(childrenCount(parentId), window.innerHeight, undefined, iconMetrics);
     return position;
   }
 
   function snapPositionInView(position: EntryPosition) {
     return {
-      x: snapAxis(position.x, GRID_ORIGIN.x, GRID_STEP.x, Math.max(8, desktopSize.width - FILE_ICON_SIZE.width)),
-      y: snapAxis(position.y, GRID_ORIGIN.y, GRID_STEP.y, Math.max(8, desktopSize.height - FILE_ICON_SIZE.height)),
+      x: snapAxis(position.x, GRID_ORIGIN.x, iconMetrics.stepX, Math.max(8, desktopSize.width - iconMetrics.width)),
+      y: snapAxis(position.y, GRID_ORIGIN.y, iconMetrics.stepY, Math.max(8, desktopSize.height - iconMetrics.height)),
     };
   }
 
@@ -612,8 +622,8 @@ function App() {
     const bounds = desktopRef.current?.getBoundingClientRect();
     if (!bounds) return { x: 8, y: 8 };
     const position = {
-      x: Math.min(Math.max(8, desktopSize.width - FILE_ICON_SIZE.width), Math.max(8, clientX - bounds.left - FILE_ICON_SIZE.width / 2)),
-      y: Math.min(Math.max(8, desktopSize.height - FILE_ICON_SIZE.height), Math.max(8, clientY - bounds.top - FILE_ICON_SIZE.height / 2)),
+      x: Math.min(Math.max(8, desktopSize.width - iconMetrics.width), Math.max(8, clientX - bounds.left - iconMetrics.width / 2)),
+      y: Math.min(Math.max(8, desktopSize.height - iconMetrics.height), Math.max(8, clientY - bounds.top - iconMetrics.height / 2)),
     };
     return layoutRef.current.snapToGrid ? snapPositionInView(position) : position;
   }
@@ -646,6 +656,42 @@ function App() {
     editorSettingsSaveRef.current = editorSettingsSaveRef.current
       .then(() => saveEditorSettings(next))
       .catch(() => { setError("The editor settings could not be saved."); });
+  }
+
+  async function changeTheme(themeId: string) {
+    if (!canMutate) return;
+    setThemePreview(null);
+    try {
+      setAppearance(await selectTheme(themeId));
+    } catch (themeError) {
+      setError(themeError instanceof Error ? themeError.message : "The selected theme could not be saved.");
+      throw themeError;
+    }
+  }
+
+  async function persistCustomTheme(theme: CustomTheme) {
+    if (!canMutate) return;
+    try {
+      const saved = await saveCustomTheme(theme);
+      setAppearance(await selectTheme(saved.id));
+      setThemePreview(null);
+      setNotice(`${saved.name} saved`);
+    } catch (themeError) {
+      setError(themeError instanceof Error ? themeError.message : "The custom theme could not be saved.");
+      throw themeError;
+    }
+  }
+
+  async function removeCustomTheme(themeId: string) {
+    if (!canMutate) return;
+    try {
+      setAppearance(await deleteCustomTheme(themeId));
+      setThemePreview(null);
+      setNotice("Custom theme deleted");
+    } catch (themeError) {
+      setError(themeError instanceof Error ? themeError.message : "The custom theme could not be deleted.");
+      throw themeError;
+    }
   }
 
   async function checkForUpdate() {
@@ -740,10 +786,10 @@ function App() {
         ? activeDesktopPage.entries.map((entry) => responsive.positions.get(entry.id) ?? projectLogicalPosition(entry.position, desktopSize).local)
         : [];
       const positions = sources.map((_, index) => {
-        if (parentId !== null) return nextDesktopPosition(offset + index, window.innerHeight, base);
+        if (parentId !== null) return nextDesktopPosition(offset + index, window.innerHeight, base, iconMetrics);
         const localPosition = base && index === 0
           ? layoutRef.current.snapToGrid ? snapPositionInView(base) : base
-          : nextAvailableDesktopSlot(desktopSize, occupied, responsive.pages.length > 1, offset + index);
+          : nextAvailableDesktopSlot(desktopSize, occupied, responsive.pages.length > 1, offset + index, iconMetrics);
         occupied.push(localPosition);
         return restoreLogicalPosition(localPosition, activeSegment, desktopSize);
       });
@@ -772,8 +818,8 @@ function App() {
     const projected = projectLogicalPosition(logicalCanvasPosition, desktopSize);
     const targetSegment = edgeNavigationRef.current?.targetSegment ?? projected.segment;
     const localPosition = {
-      x: Math.min(Math.max(8, desktopSize.width - FILE_ICON_SIZE.width), Math.max(8, logicalCanvasPosition.x - targetSegment.column * desktopSize.width)),
-      y: Math.min(Math.max(8, desktopSize.height - FILE_ICON_SIZE.height), Math.max(8, logicalCanvasPosition.y - targetSegment.row * desktopSize.height)),
+      x: Math.min(Math.max(8, desktopSize.width - iconMetrics.width), Math.max(8, logicalCanvasPosition.x - targetSegment.column * desktopSize.width)),
+      y: Math.min(Math.max(8, desktopSize.height - iconMetrics.height), Math.max(8, logicalCanvasPosition.y - targetSegment.row * desktopSize.height)),
     };
     const logicalPosition = restoreLogicalPosition(localPosition, targetSegment, desktopSize);
     setEntries((current) => current.map((item) => item.id === entry.id ? { ...item, position: logicalPosition } : item));
@@ -1014,8 +1060,8 @@ function App() {
     return {
       deltaX: (targetViewColumn - previousViewColumn) * desktopSize.width,
       deltaY: (targetViewRow - previousViewRow) * desktopSize.height,
-      maxX: Math.max(8, (targetMaxColumn - targetMinColumn + 1) * desktopSize.width - FILE_ICON_SIZE.width),
-      maxY: Math.max(8, (targetMaxRow - targetMinRow + 1) * desktopSize.height - FILE_ICON_SIZE.height),
+      maxX: Math.max(8, (targetMaxColumn - targetMinColumn + 1) * desktopSize.width - iconMetrics.width),
+      maxY: Math.max(8, (targetMaxRow - targetMinRow + 1) * desktopSize.height - iconMetrics.height),
     };
   }
 
@@ -1094,7 +1140,7 @@ function App() {
   }
 
   function previewPageMove(pageKey: string, targetIndex: number) {
-    const currentPages = responsiveDesktop(entriesRef.current, desktopSize).pages;
+    const currentPages = responsiveDesktop(entriesRef.current, desktopSize, iconMetrics).pages;
     const updates = reorderDesktopPages(currentPages, pageKey, targetIndex, desktopSize);
     if (!updates.length) return null;
     const positions = new Map(updates.map((update) => [update.entryId, update.position]));
@@ -1159,7 +1205,7 @@ function App() {
       .map((element) => element.closest<HTMLElement>("[data-page-key]"))
       .find(Boolean);
     if (!target?.dataset.pageKey) return;
-    const currentPages = responsiveDesktop(entriesRef.current, desktopSize).pages;
+    const currentPages = responsiveDesktop(entriesRef.current, desktopSize, iconMetrics).pages;
     const targetIndex = currentPages.findIndex((candidate) => candidate.key === target.dataset.pageKey);
     const targetKey = previewPageMove(press.pageKey, targetIndex);
     if (targetKey) {
@@ -1183,7 +1229,7 @@ function App() {
       window.setTimeout(() => { suppressClickRef.current = false; }, 0);
       persistArrangement(press.initialPositions);
     } else if (!cancelled) {
-      const selectedPage = responsiveDesktop(entriesRef.current, desktopSize).pages.find((candidate) => candidate.key === press.pageKey);
+      const selectedPage = responsiveDesktop(entriesRef.current, desktopSize, iconMetrics).pages.find((candidate) => candidate.key === press.pageKey);
       if (selectedPage) goToSegment(selectedPage.segment);
     }
   }
@@ -1203,7 +1249,7 @@ function App() {
   }
 
   return (
-    <main className="desktop-shell">
+    <main className="desktop-shell" data-theme={isBuiltinThemeId(appearance.selectedThemeId) ? appearance.selectedThemeId : "custom"} style={themeStyle(activeTheme)}>
       <header className="menu-bar">
         <div className="brand-mark" aria-label="Hiraya Desktop"><span className="brand-mark__shape"><span /></span><strong>Hiraya</strong></div>
         <nav className="taskbar" aria-label="Running apps">
@@ -1272,8 +1318,8 @@ function App() {
           delete event.currentTarget.dataset.dropActive;
           const bounds = event.currentTarget.getBoundingClientRect();
           void handleImport(Array.from(event.dataTransfer.files), null, {
-            x: event.clientX - bounds.left - 42,
-            y: event.clientY - bounds.top - 42,
+            x: event.clientX - bounds.left - iconMetrics.width / 2,
+            y: event.clientY - bounds.top - iconMetrics.height / 2,
           });
         }}
         onPointerDown={handleDesktopPointerDown}
@@ -1364,6 +1410,7 @@ function App() {
                     readOnly={!canMutate}
                     remoteChanged={app.remoteChanged}
                     editorSettings={editorSettings}
+                    theme={activeTheme}
                     onSave={(content) => save(app.id, file.id, content)}
                     onDownload={() => void download(file)}
                     onEditorSettingsChange={applyEditorSettings}
@@ -1390,6 +1437,8 @@ function App() {
                 {app.kind === "settings" && (
                   <SettingsWindow
                     layout={layout}
+                    appearance={appearance}
+                    activeTheme={activeTheme}
                     canMutate={canMutate}
                     exportDisabled={loading}
                     exporting={exporting}
@@ -1400,6 +1449,10 @@ function App() {
                     updateChecking={updateChecking}
                     autoUpdate={autoUpdate}
                     onLayoutChange={applyLayout}
+                    onThemeSelect={changeTheme}
+                    onThemePreview={setThemePreview}
+                    onThemeSave={persistCustomTheme}
+                    onThemeDelete={removeCustomTheme}
                     onExport={() => void handleExport()}
                     onToggleFullscreen={() => void toggleFullscreen()}
                     onCheckForUpdate={() => void checkForUpdate()}

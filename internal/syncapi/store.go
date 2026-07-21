@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	workspaceSchemaVersion = 4
+	workspaceSchemaVersion = 5
 	metadataName           = "workspace.json"
 	logicalMarker          = ".logical-path-storage"
 	diskIndexName          = ".filesystem.json"
@@ -81,6 +81,7 @@ func OpenStore(dir string) (*Store, error) {
 	s.workspace.Entries = []Entry{}
 	s.workspace.Layout.Wallpaper = "dusk"
 	s.workspace.EditorSettings = EditorSettings{AutoSave: true, FontSize: 13, Language: "auto"}
+	s.workspace.Appearance = defaultAppearance()
 	if err := s.openDatabase(); err != nil {
 		return nil, err
 	}
@@ -152,11 +153,18 @@ func decodeWorkspaceMetadata(b []byte, workspace *Workspace) error {
 	if workspace.Entries == nil {
 		workspace.Entries = []Entry{}
 	}
+	if header.SchemaVersion < 5 {
+		workspace.Appearance = defaultAppearance()
+	}
+	workspace.Appearance.CustomThemes = nonNilThemes(workspace.Appearance.CustomThemes)
+	if err := validateAppearance(workspace.Appearance); err != nil {
+		return fmt.Errorf("stored workspace: %w", err)
+	}
 	if workspace.Initialized {
 		if err := validateSettings(workspace.EditorSettings); err != nil {
 			return fmt.Errorf("stored workspace: %w", err)
 		}
-		if err := validateWorkspace(workspace.Entries, workspace.Layout); err != nil {
+		if err := validateWorkspace(workspace.Entries, workspace.Layout, workspace.Appearance); err != nil {
 			return fmt.Errorf("stored workspace: %w", err)
 		}
 	}
@@ -236,11 +244,14 @@ func (s *Store) snapshot() Workspace {
 func cloneWorkspace(workspace Workspace) Workspace {
 	workspace.Entries = append([]Entry(nil), workspace.Entries...)
 	workspace.Entries = nonNilEntries(workspace.Entries)
+	workspace.Appearance.CustomThemes = append([]CustomTheme(nil), workspace.Appearance.CustomThemes...)
+	workspace.Appearance.CustomThemes = nonNilThemes(workspace.Appearance.CustomThemes)
 	return workspace
 }
 
 func (s *Store) persistLocked(next Workspace) error {
 	next.Entries = nonNilEntries(next.Entries)
+	next.Appearance.CustomThemes = nonNilThemes(next.Appearance.CustomThemes)
 	if err := s.persistWorkspace(next, false); err != nil {
 		return fmt.Errorf("persist workspace: %w", err)
 	}
@@ -250,6 +261,7 @@ func (s *Store) persistLocked(next Workspace) error {
 
 func (s *Store) persistMutationLocked(next Workspace, receipt *mutationReceipt) error {
 	next.Entries = nonNilEntries(next.Entries)
+	next.Appearance.CustomThemes = nonNilThemes(next.Appearance.CustomThemes)
 	if err := s.persistDatabaseWithReceipt(next, false, receipt); err != nil {
 		return fmt.Errorf("persist workspace: %w", err)
 	}
@@ -264,6 +276,13 @@ func (s *Store) beginMutationLocked() {
 func nonNilEntries(v []Entry) []Entry {
 	if v == nil {
 		return []Entry{}
+	}
+	return v
+}
+
+func nonNilThemes(v []CustomTheme) []CustomTheme {
+	if v == nil {
+		return []CustomTheme{}
 	}
 	return v
 }
@@ -335,7 +354,7 @@ func migrateWorkspaceV1(data []byte, workspace *Workspace) error {
 	if err := validateEntries(entries); err != nil {
 		return err
 	}
-	*workspace = Workspace{SchemaVersion: workspaceSchemaVersion, WorkspaceID: legacy.WorkspaceID, Initialized: legacy.Initialized, Revision: legacy.Revision, Entries: entries, Layout: Layout{SnapToGrid: legacy.Layout.SnapToGrid, Wallpaper: legacy.Layout.Wallpaper}, LayoutRevision: legacy.LayoutRevision, EditorSettings: legacy.EditorSettings, SettingsRevision: legacy.SettingsRevision}
+	*workspace = Workspace{SchemaVersion: workspaceSchemaVersion, WorkspaceID: legacy.WorkspaceID, Initialized: legacy.Initialized, Revision: legacy.Revision, Entries: entries, Layout: Layout{SnapToGrid: legacy.Layout.SnapToGrid, Wallpaper: legacy.Layout.Wallpaper}, LayoutRevision: legacy.LayoutRevision, EditorSettings: legacy.EditorSettings, SettingsRevision: legacy.SettingsRevision, Appearance: defaultAppearance()}
 	return nil
 }
 

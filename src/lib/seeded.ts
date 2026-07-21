@@ -48,6 +48,7 @@ export async function exportSeededDesktop() {
   const manifest = toPortableSeededManifest({
     layout: snapshot.layout,
     editorSettings: snapshot.editorSettings,
+    appearance: snapshot.appearance,
     entries: snapshot.entries,
   }, (entry) => `content/${portablePath(entry, byId)}`);
   archive[`${EXPORT_ROOT}/manifest.json`] = strToU8(`${JSON.stringify(manifest, null, 2)}\n`);

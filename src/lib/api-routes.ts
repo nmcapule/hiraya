@@ -6,8 +6,10 @@ export const API_ROUTES = {
   layout: "/api/layout",
   desktopPositions: "/api/desktop-positions",
   editorSettings: "/api/editor-settings",
+  themeSelection: "/api/theme-selection",
   events: "/api/events",
   health: "/api/health",
   entry: (id: string) => `/api/entries/${encodeURIComponent(id)}`,
   content: (id: string) => `/api/files/${encodeURIComponent(id)}/content`,
+  theme: (id: string) => `/api/themes/${encodeURIComponent(id)}`,
 } as const;

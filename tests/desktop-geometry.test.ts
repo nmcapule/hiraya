@@ -28,6 +28,15 @@ describe("responsive desktop geometry", () => {
     expect(nextAvailableDesktopSlot(size, slots)).toEqual(slots[0]);
   });
 
+  test("uses themed icon metrics without changing coordinate-based membership", () => {
+    const size = { width: 390, height: 600 };
+    const entries = [file("origin", 22, 22), file("next", 412, 22)];
+    const large = { width: 110, height: 114, stepX: 116, stepY: 124 };
+    expect(desktopSlots(size, false, large).length).toBeLessThan(desktopSlots(size).length);
+    expect(responsiveDesktop(entries, size, large).pages.map((page) => page.key)).toEqual(["0:0", "0:1"]);
+    expect(entries.map((entry) => entry.position)).toEqual([{ x: 22, y: 22 }, { x: 412, y: 22 }]);
+  });
+
   test("projects signed viewport boundaries reversibly", () => {
     expect(projectLogicalAxis(0, 390)).toEqual({ segment: 0, local: 0 });
     expect(projectLogicalAxis(389, 390)).toEqual({ segment: 0, local: 389 });

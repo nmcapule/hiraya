@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -119,7 +120,7 @@ func TestWorkspaceSchemaV1MigrationPreservesCoordinatesAndPersistsV4(t *testing.
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	workspace := store.snapshot()
-	if workspace.SchemaVersion != 4 || workspace.Revision != 12 || workspace.LayoutRevision != 7 || workspace.SettingsRevision != 8 {
+	if workspace.SchemaVersion != workspaceSchemaVersion || workspace.Revision != 12 || workspace.LayoutRevision != 7 || workspace.SettingsRevision != 8 {
 		t.Fatalf("migration changed revisions: %+v", workspace)
 	}
 	if findEntry(t, workspace.Entries, "tie-2").Position != (Position{X: 8, Y: 4}) || findEntry(t, workspace.Entries, "later").Position != (Position{X: 20, Y: 1}) {
@@ -157,7 +158,7 @@ func TestWorkspaceSchemaV3MigrationDropsTopologyAndPreservesSignedCoordinates(t 
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	workspace := store.snapshot()
-	if workspace.SchemaVersion != 4 || workspace.Revision != 4 || workspace.LayoutRevision != 3 || findEntry(t, workspace.Entries, "root").Position != (Position{X: -120.5, Y: 44}) {
+	if workspace.SchemaVersion != workspaceSchemaVersion || workspace.Revision != 4 || workspace.LayoutRevision != 3 || findEntry(t, workspace.Entries, "root").Position != (Position{X: -120.5, Y: 44}) {
 		t.Fatalf("v3 migration = %+v", workspace)
 	}
 	persisted, err := os.ReadFile(filepath.Join(dir, metadataName))
@@ -949,7 +950,7 @@ func TestSSENotifiesAfterMutation(t *testing.T) {
 	defer response.Body.Close()
 	reader := bufio.NewReader(response.Body)
 	identity := store.snapshot()
-	if event := readSSEEvent(t, reader); event != fmt.Sprintf("id: 1\nevent: workspace\ndata: {\"revision\":1,\"schemaVersion\":4,\"workspaceId\":%q}\n", identity.WorkspaceID) {
+	if event := readSSEEvent(t, reader); event != fmt.Sprintf("id: 1\nevent: workspace\ndata: {\"revision\":1,\"schemaVersion\":%d,\"workspaceId\":%q}\n", workspaceSchemaVersion, identity.WorkspaceID) {
 		t.Fatalf("initial SSE event = %q", event)
 	}
 
@@ -957,7 +958,7 @@ func TestSSENotifiesAfterMutation(t *testing.T) {
 	if mutation.Code != http.StatusOK || store.snapshot().Revision != 2 {
 		t.Fatalf("mutation failed: %d %s", mutation.Code, mutation.Body.String())
 	}
-	if event := readSSEEvent(t, reader); event != fmt.Sprintf("id: 2\nevent: workspace\ndata: {\"revision\":2,\"schemaVersion\":4,\"workspaceId\":%q}\n", identity.WorkspaceID) {
+	if event := readSSEEvent(t, reader); event != fmt.Sprintf("id: 2\nevent: workspace\ndata: {\"revision\":2,\"schemaVersion\":%d,\"workspaceId\":%q}\n", workspaceSchemaVersion, identity.WorkspaceID) {
 		t.Fatalf("mutation SSE event = %q", event)
 	}
 
@@ -1082,6 +1083,130 @@ func TestIdempotencyReceiptSurvivesRestart(t *testing.T) {
 	retry := idempotentRequest(New(reopened, t.TempDir(), 10<<20), http.MethodPut, "/api/layout", "application/json", body, "browser-restart", "layout-1")
 	if retry.Code != http.StatusOK || retry.Body.String() != first.Body.String() || retry.Header().Get(replayHeader) != "true" || reopened.snapshot().Revision != 2 {
 		t.Fatalf("restart retry = %d %q revision=%d", retry.Code, retry.Body.String(), reopened.snapshot().Revision)
+	}
+}
+
+func TestBootstrapAppearanceDefaultsAndAssignsInitialRevisions(t *testing.T) {
+	_, server := newTestServer(t, t.TempDir())
+	input := testBootstrap()
+	input.Appearance = BootstrapAppearance{
+		SelectedThemeID: "custom-one",
+		CustomThemes:    []BootstrapCustomTheme{{ID: "custom-one", Name: "Custom One", Definition: testThemeDefinition()}},
+	}
+	response := bootstrapRequest(t, server, input, nil)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("bootstrap = %d %s", response.Code, response.Body.String())
+	}
+	workspace := getWorkspace(t, server)
+	if workspace.Appearance.SelectedThemeID != "custom-one" || workspace.Appearance.SelectionRevision != 1 || len(workspace.Appearance.CustomThemes) != 1 || workspace.Appearance.CustomThemes[0].Revision != 1 {
+		t.Fatalf("bootstrap appearance = %+v", workspace.Appearance)
+	}
+
+	_, defaultServer := initializedTestServer(t)
+	if got := getWorkspace(t, defaultServer).Appearance; got.SelectedThemeID != defaultThemeID || got.SelectionRevision != 1 || len(got.CustomThemes) != 0 {
+		t.Fatalf("default bootstrap appearance = %+v", got)
+	}
+}
+
+func TestThemeMutationsAreIndependentDurableAndIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	store, server := newTestServer(t, dir)
+	if response := bootstrapRequest(t, server, testBootstrap(), nil); response.Code != http.StatusCreated {
+		t.Fatal(response.Body.String())
+	}
+	one := BootstrapCustomTheme{ID: "theme-one", Name: "Theme One", Definition: testThemeDefinition()}
+	body, err := json.Marshal(one)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := idempotentRequest(server, http.MethodPut, "/api/themes/theme-one", "application/json", body, "themes-client", "upsert-one")
+	retry := idempotentRequest(server, http.MethodPut, "/api/themes/theme-one", "application/json", body, "themes-client", "upsert-one")
+	if first.Code != http.StatusOK || retry.Body.String() != first.Body.String() || retry.Header().Get(replayHeader) != "true" || store.snapshot().Revision != 2 {
+		t.Fatalf("idempotent upsert: first=%d retry=%d revision=%d", first.Code, retry.Code, store.snapshot().Revision)
+	}
+	two := BootstrapCustomTheme{ID: "theme-two", Name: "Theme Two", Definition: testThemeDefinition()}
+	if response := jsonRequest(t, server, http.MethodPut, "/api/themes/theme-two", two); response.Code != http.StatusOK {
+		t.Fatal(response.Body.String())
+	}
+	one.Name = "Theme One Edited"
+	if response := jsonRequest(t, server, http.MethodPut, "/api/themes/theme-one", one); response.Code != http.StatusOK {
+		t.Fatal(response.Body.String())
+	}
+	selected := jsonRequest(t, server, http.MethodPut, "/api/theme-selection", map[string]string{"themeId": "theme-one"})
+	if selected.Code != http.StatusOK {
+		t.Fatal(selected.Body.String())
+	}
+	beforeDelete := store.snapshot()
+	if len(beforeDelete.Appearance.CustomThemes) != 2 || beforeDelete.Appearance.CustomThemes[0].Name != "Theme One Edited" || beforeDelete.Appearance.CustomThemes[1].ID != "theme-two" || beforeDelete.Appearance.SelectionRevision != beforeDelete.Revision {
+		t.Fatalf("independent themes = %+v", beforeDelete.Appearance)
+	}
+	deleted := httptest.NewRecorder()
+	server.ServeHTTP(deleted, httptest.NewRequest(http.MethodDelete, "/api/themes/theme-one", nil))
+	if deleted.Code != http.StatusOK {
+		t.Fatal(deleted.Body.String())
+	}
+	afterDelete := store.snapshot()
+	if afterDelete.Revision != beforeDelete.Revision+1 || afterDelete.Appearance.SelectedThemeID != defaultThemeID || afterDelete.Appearance.SelectionRevision != afterDelete.Revision || len(afterDelete.Appearance.CustomThemes) != 1 || afterDelete.Appearance.CustomThemes[0].ID != "theme-two" {
+		t.Fatalf("deleted active theme = %+v", afterDelete)
+	}
+	repeatedDelete := httptest.NewRecorder()
+	server.ServeHTTP(repeatedDelete, httptest.NewRequest(http.MethodDelete, "/api/themes/theme-one", nil))
+	if repeatedDelete.Code != http.StatusOK || store.snapshot().Revision != afterDelete.Revision {
+		t.Fatalf("repeated delete = %d revision=%d", repeatedDelete.Code, store.snapshot().Revision)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	if got := reopened.snapshot(); got.Revision != afterDelete.Revision || !reflect.DeepEqual(got.Appearance, afterDelete.Appearance) {
+		t.Fatalf("restarted appearance = %+v, want %+v", got.Appearance, afterDelete.Appearance)
+	}
+}
+
+func TestThemeValidationAndMutationFailures(t *testing.T) {
+	_, server := initializedTestServer(t)
+	definition := testThemeDefinition()
+	definition.Colors.Accent = "#12345g"
+	invalid := jsonRequest(t, server, http.MethodPut, "/api/themes/invalid", BootstrapCustomTheme{ID: "invalid", Name: "Invalid", Definition: definition})
+	if invalid.Code != http.StatusBadRequest {
+		t.Fatalf("invalid color = %d %s", invalid.Code, invalid.Body.String())
+	}
+	builtIn := jsonRequest(t, server, http.MethodPut, "/api/themes/hiraya-dusk", BootstrapCustomTheme{ID: defaultThemeID, Name: "Built in", Definition: testThemeDefinition()})
+	if builtIn.Code != http.StatusBadRequest {
+		t.Fatalf("built-in upsert = %d", builtIn.Code)
+	}
+	mismatch := jsonRequest(t, server, http.MethodPut, "/api/themes/path-id", BootstrapCustomTheme{ID: "body-id", Name: "Mismatch", Definition: testThemeDefinition()})
+	if mismatch.Code != http.StatusBadRequest {
+		t.Fatalf("mismatched IDs = %d", mismatch.Code)
+	}
+	missingSelection := jsonRequest(t, server, http.MethodPut, "/api/theme-selection", map[string]string{"themeId": "missing"})
+	if missingSelection.Code != http.StatusNotFound {
+		t.Fatalf("missing selection = %d", missingSelection.Code)
+	}
+	deleted := httptest.NewRecorder()
+	server.ServeHTTP(deleted, httptest.NewRequest(http.MethodDelete, "/api/themes/high-contrast", nil))
+	if deleted.Code != http.StatusBadRequest {
+		t.Fatalf("built-in delete = %d", deleted.Code)
+	}
+}
+
+func testThemeDefinition() ThemeDefinition {
+	colors := ThemeColors{
+		Shell: "#112233", Chrome: "#112233", ChromeText: "#ffffff", Window: "#ffffff",
+		WindowMuted: "#eeeeee", Text: "#112233", TextMuted: "#445566", Accent: "#f0c060",
+		AccentText: "#112233", Border: "#778899", Danger: "#881111", DangerSurface: "#ffeeee",
+		DesktopText: "#ffffff", Selection: "#2255aa", EditorBackground: "#ffffff", EditorText: "#112233",
+		EditorGutter: "#112233", EditorKeyword: "#112233", EditorString: "#112233", EditorComment: "#112233",
+	}
+	return ThemeDefinition{
+		Colors: colors, Shape: ThemeShape{Radius: 12, BorderWidth: 1},
+		Effects:    ThemeEffects{Blur: 10, Opacity: .9, Shadow: .5},
+		Typography: ThemeTypography{Family: "humanist", Scale: 1, Weight: 500},
+		Density:    1, Motion: 1, IconSize: 60,
 	}
 }
 

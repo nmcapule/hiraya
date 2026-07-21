@@ -2,7 +2,8 @@
 
 import sqlite3InitModule, { type Database, type SqlValue } from "@sqlite.org/sqlite-wasm";
 import type { DesktopEntry, EditorSettings, Wallpaper } from "../types";
-import type { DesktopSyncState, PersistedManifestV12 } from "./manifest-codec";
+import type { DesktopSyncState, PersistedManifestV13 } from "./manifest-codec";
+import { DEFAULT_THEME_ID, parseCustomTheme, parseThemeState, type CustomTheme } from "./themes";
 import type {
   StorageDbMethod,
   StorageDbRequest,
@@ -11,10 +12,10 @@ import type {
   StoredPreferences,
 } from "./opfs-db-protocol";
 import { applyOutboxOperation, type OutboxOperation, type OutboxRecord } from "./outbox";
-import { parseManifestV12 } from "./manifest-codec";
+import { parseManifestV13 } from "./manifest-codec";
 
 const DATABASE_NAME = "/hiraya.sqlite3";
-const DATABASE_SCHEMA_VERSION = 1;
+const DATABASE_SCHEMA_VERSION = 2;
 const DEFAULT_PREFERENCES: StoredPreferences = { autoUpdate: true };
 
 type Row = Record<string, SqlValue>;
@@ -51,14 +52,43 @@ function createSchema(db: Database) {
   if (version < 0 || version > DATABASE_SCHEMA_VERSION) {
     throw new Error(`The desktop database uses unsupported schema version ${version}.`);
   }
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS workspace (
+  if (version === 1) db.exec(`
+    BEGIN IMMEDIATE;
+    ALTER TABLE workspace RENAME TO workspace_v1;
+    CREATE TABLE workspace (
       singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-      schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+      schema_version INTEGER NOT NULL CHECK (schema_version = 2),
       workspace_id TEXT,
       revision INTEGER NOT NULL CHECK (revision >= 0),
       layout_revision INTEGER NOT NULL CHECK (layout_revision >= 0),
-      settings_revision INTEGER NOT NULL CHECK (settings_revision >= 0)
+      settings_revision INTEGER NOT NULL CHECK (settings_revision >= 0),
+      theme_selection_revision INTEGER NOT NULL CHECK (theme_selection_revision >= 0)
+    );
+    INSERT INTO workspace
+      SELECT singleton, 2, workspace_id, revision, layout_revision, settings_revision, 0 FROM workspace_v1;
+    DROP TABLE workspace_v1;
+    CREATE TABLE appearance (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+      selected_theme_id TEXT NOT NULL
+    );
+    CREATE TABLE custom_themes (
+      id TEXT PRIMARY KEY,
+      ordinal INTEGER NOT NULL UNIQUE CHECK (ordinal >= 0),
+      theme_json TEXT NOT NULL,
+      revision INTEGER NOT NULL CHECK (revision >= 0)
+    );
+    INSERT INTO appearance VALUES (1, '${DEFAULT_THEME_ID}');
+    COMMIT;
+  `);
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS workspace (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+      schema_version INTEGER NOT NULL CHECK (schema_version = 2),
+      workspace_id TEXT,
+      revision INTEGER NOT NULL CHECK (revision >= 0),
+      layout_revision INTEGER NOT NULL CHECK (layout_revision >= 0),
+      settings_revision INTEGER NOT NULL CHECK (settings_revision >= 0),
+      theme_selection_revision INTEGER NOT NULL CHECK (theme_selection_revision >= 0)
     );
     CREATE TABLE IF NOT EXISTS layout (
       singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -70,6 +100,16 @@ function createSchema(db: Database) {
       auto_save INTEGER NOT NULL CHECK (auto_save IN (0, 1)),
       font_size INTEGER NOT NULL,
       language TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS appearance (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+      selected_theme_id TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS custom_themes (
+      id TEXT PRIMARY KEY,
+      ordinal INTEGER NOT NULL UNIQUE CHECK (ordinal >= 0),
+      theme_json TEXT NOT NULL,
+      revision INTEGER NOT NULL CHECK (revision >= 0)
     );
     CREATE TABLE IF NOT EXISTS preferences (
       singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -133,18 +173,33 @@ function reserveOperation(db: Database) {
   return { clientId, sequence, operationId: `${sequence.toString().padStart(16, "0")}` };
 }
 
-function replaceManifestRows(db: Database, manifest: PersistedManifestV12) {
+function replaceManifestRows(db: Database, manifest: PersistedManifestV13) {
     db.exec({
-      sql: `INSERT INTO workspace VALUES (1, 1, ?, ?, ?, ?)
+      sql: `INSERT INTO workspace VALUES (1, 2, ?, ?, ?, ?, ?)
         ON CONFLICT(singleton) DO UPDATE SET workspace_id=excluded.workspace_id, revision=excluded.revision,
-        layout_revision=excluded.layout_revision, settings_revision=excluded.settings_revision`,
-      bind: [manifest.sync.workspaceId, manifest.sync.revision, manifest.sync.layoutRevision, manifest.sync.settingsRevision],
+        layout_revision=excluded.layout_revision, settings_revision=excluded.settings_revision,
+        theme_selection_revision=excluded.theme_selection_revision`,
+      bind: [manifest.sync.workspaceId, manifest.sync.revision, manifest.sync.layoutRevision, manifest.sync.settingsRevision, manifest.sync.themeSelectionRevision],
     });
     db.exec({
       sql: `INSERT INTO layout VALUES (1, ?, ?)
         ON CONFLICT(singleton) DO UPDATE SET snap_to_grid=excluded.snap_to_grid, wallpaper=excluded.wallpaper`,
       bind: [manifest.snapToGrid, manifest.wallpaper],
     });
+    db.exec({
+      sql: `INSERT INTO appearance VALUES (1, ?)
+        ON CONFLICT(singleton) DO UPDATE SET selected_theme_id=excluded.selected_theme_id`,
+      bind: [manifest.appearance.selectedThemeId],
+    });
+    db.exec("DELETE FROM custom_themes");
+    const themeStatement = db.prepare("INSERT INTO custom_themes (id, ordinal, theme_json, revision) VALUES (?, ?, ?, ?)");
+    try {
+      manifest.appearance.customThemes.forEach((theme, ordinal) => {
+        themeStatement.bind([theme.id, ordinal, JSON.stringify(theme), manifest.sync.themeRevisions[theme.id] ?? 0]).stepReset().clearBindings();
+      });
+    } finally {
+      themeStatement.finalize();
+    }
     db.exec({
       sql: `INSERT INTO editor_settings VALUES (1, ?, ?, ?)
         ON CONFLICT(singleton) DO UPDATE SET auto_save=excluded.auto_save, font_size=excluded.font_size, language=excluded.language`,
@@ -176,7 +231,7 @@ function replaceManifestRows(db: Database, manifest: PersistedManifestV12) {
     }
 }
 
-function replaceManifest(db: Database, manifest: PersistedManifestV12) {
+function replaceManifest(db: Database, manifest: PersistedManifestV13) {
   db.transaction("IMMEDIATE", () => {
     replaceManifestRows(db, manifest);
   });
@@ -190,14 +245,23 @@ function writePreferences(db: Database, preferences: StoredPreferences) {
   });
 }
 
-function readManifest(db: Database): PersistedManifestV12 {
+function readManifest(db: Database): PersistedManifestV13 {
   const workspace = rows(db, "SELECT * FROM workspace WHERE singleton=1")[0];
   const layout = rows(db, "SELECT * FROM layout WHERE singleton=1")[0];
   const settings = rows(db, "SELECT * FROM editor_settings WHERE singleton=1")[0];
-  if (!workspace || !layout || !settings) throw new Error("The desktop database is not initialized.");
+  const appearanceRow = rows(db, "SELECT * FROM appearance WHERE singleton=1")[0];
+  if (!workspace || !layout || !settings || !appearanceRow) throw new Error("The desktop database is not initialized.");
 
   const entryRevisions: Record<string, number> = {};
   const contentRevisions: Record<string, number> = {};
+  const themeRevisions: Record<string, number> = {};
+  const customThemes: CustomTheme[] = rows(db, "SELECT * FROM custom_themes ORDER BY ordinal").map((row) => {
+    const theme = parseCustomTheme(JSON.parse(stringValue(row.theme_json)));
+    if (theme.id !== stringValue(row.id)) throw new Error("The desktop database contains inconsistent theme metadata.");
+    themeRevisions[theme.id] = numberValue(row.revision);
+    return theme;
+  });
+  const appearance = parseThemeState({ selectedThemeId: stringValue(appearanceRow.selected_theme_id), customThemes });
   const entries: DesktopEntry[] = rows(db, "SELECT * FROM entries ORDER BY ordinal").map((row) => {
     const id = stringValue(row.id);
     if (row.entry_revision !== null) entryRevisions[id] = numberValue(row.entry_revision);
@@ -220,6 +284,8 @@ function readManifest(db: Database): PersistedManifestV12 {
     contentRevisions,
     layoutRevision: numberValue(workspace.layout_revision),
     settingsRevision: numberValue(workspace.settings_revision),
+    themeSelectionRevision: numberValue(workspace.theme_selection_revision),
+    themeRevisions,
   };
   const editorSettings: EditorSettings = {
     autoSave: numberValue(settings.auto_save) === 1,
@@ -227,11 +293,12 @@ function readManifest(db: Database): PersistedManifestV12 {
     language: stringValue(settings.language) as EditorSettings["language"],
   };
   return {
-    version: 12,
+    version: 13,
     entries,
     snapToGrid: numberValue(layout.snap_to_grid) === 1,
     wallpaper: stringValue(layout.wallpaper) as Wallpaper,
     editorSettings,
+    appearance,
     sync,
   };
 }
@@ -292,7 +359,7 @@ async function dispatch<M extends StorageDbMethod>(method: M, params: StorageDbR
         const sequence = Number.parseInt(input.operationId, 10);
         if (!Number.isSafeInteger(sequence) || sequence <= 0 || sequence >= numberValue(identity.next_sequence)) throw new Error("The operation identity is invalid.");
         const current = readManifest(db);
-        const manifest = parseManifestV12(applyOutboxOperation(current, input.operation));
+        const manifest = parseManifestV13(applyOutboxOperation(current, input.operation));
         const clientId = stringValue(identity.client_id);
         db.exec({
           sql: "INSERT INTO outbox (sequence, operation_id, client_id, workspace_id, operation_json, status, error) VALUES (?, ?, ?, ?, ?, 'pending', NULL)",
@@ -319,7 +386,7 @@ async function dispatch<M extends StorageDbMethod>(method: M, params: StorageDbR
     }
     case "applyRemoteWithOutbox": {
       const input = params as StorageDbRequests["applyRemoteWithOutbox"];
-      const remote = parseManifestV12(input.manifest);
+      const remote = parseManifestV13(input.manifest);
       return db.transaction("IMMEDIATE", () => {
         let manifest = remote;
         const blocked: OutboxRecord[] = [];
@@ -332,7 +399,7 @@ async function dispatch<M extends StorageDbMethod>(method: M, params: StorageDbR
             continue;
           }
           try {
-            manifest = parseManifestV12(applyOutboxOperation(manifest, record.operation));
+            manifest = parseManifestV13(applyOutboxOperation(manifest, record.operation));
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             db.exec({ sql: "UPDATE outbox SET status='blocked', error=? WHERE operation_id=?", bind: [message, record.operationId] });

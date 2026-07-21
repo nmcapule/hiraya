@@ -6,26 +6,28 @@ import {
   decodeManifest,
   emptySyncState,
   manifestLayout,
-  parseManifestV12,
+  parseManifestV13,
   type DesktopSyncState,
-  type PersistedManifestV12,
+  type PersistedManifestV13,
 } from "./manifest-codec";
 import { parseLayout, parsePosition, parseRootDesktopPositions } from "./contracts";
 import type { StorageDbMethod, StorageDbRequests, StorageDbResponse, StorageDbResponses } from "./opfs-db-protocol";
 import type { OutboxOperation, OutboxRecord } from "./outbox";
+import { DEFAULT_THEME_STATE, parseCustomTheme, parseThemeState, type CustomTheme, type ThemeState } from "./themes";
 
 const MANIFEST_NAME = ".hiraya-manifest.json";
 const PREFERENCES_NAME = ".hiraya-preferences.json";
 const FILES_DIRECTORY = "files";
 const PENDING_DIRECTORY = "pending";
 
-type Manifest = PersistedManifestV12;
+type Manifest = PersistedManifestV13;
 export type { DesktopSyncState } from "./manifest-codec";
 
 export type DesktopSnapshot = {
   entries: DesktopEntry[];
   layout: DesktopLayout;
   editorSettings: EditorSettings;
+  appearance: ThemeState;
   sync: DesktopSyncState;
 };
 
@@ -64,7 +66,7 @@ async function writeManifest(manifest: Manifest) {
 }
 
 function assertValidManifest(manifest: Manifest) {
-  parseManifestV12(manifest);
+  parseManifestV13(manifest);
 }
 
 async function createManifestFromSeeded(seeded: SeededManifest): Promise<Manifest> {
@@ -86,11 +88,12 @@ async function createManifestFromSeeded(seeded: SeededManifest): Promise<Manifes
     return file;
   });
   const created: Manifest = {
-    version: 12,
+    version: 13,
     entries,
     snapToGrid: parsedSeeded.layout.snapToGrid,
     wallpaper: parsedSeeded.layout.wallpaper,
     editorSettings: parsedSeeded.editorSettings,
+    appearance: parsedSeeded.appearance,
     sync: emptySyncState(),
   };
   assertValidManifest(created);
@@ -142,7 +145,7 @@ async function removeLegacyFile(root: FileSystemDirectoryHandle, name: string) {
 async function initializeDatabase(seeded: SeededManifest | null): Promise<Manifest> {
   const root = await getRoot();
   const status = await callDatabase("status", undefined);
-  if (!status.needsBootstrap) return parseManifestV12(await callDatabase("readManifest", undefined));
+  if (!status.needsBootstrap) return parseManifestV13(await callDatabase("readManifest", undefined));
 
   let legacyManifest: Manifest | null = null;
   let hasLegacyManifest = false;
@@ -158,7 +161,7 @@ async function initializeDatabase(seeded: SeededManifest | null): Promise<Manife
 
   const manifest = legacyManifest ?? (seeded && !status.existedBeforeOpen
     ? await createManifestFromSeeded(seeded)
-    : { version: 12, entries: [], snapToGrid: false, wallpaper: DEFAULT_WALLPAPER, editorSettings: DEFAULT_EDITOR_SETTINGS, sync: emptySyncState() });
+    : { version: 13, entries: [], snapToGrid: false, wallpaper: DEFAULT_WALLPAPER, editorSettings: DEFAULT_EDITOR_SETTINGS, appearance: DEFAULT_THEME_STATE, sync: emptySyncState() });
   const preferences = hasLegacyManifest ? await readLegacyPreferences(root) : await callDatabase("readPreferences", undefined);
   const bootstrapped = await callDatabase("bootstrap", { manifest, preferences });
   if (hasLegacyManifest) {
@@ -174,7 +177,7 @@ async function readManifest(seeded: SeededManifest | null = null): Promise<Manif
     throw error;
   });
   await databaseInitialization;
-  return parseManifestV12(await callDatabase("readManifest", undefined));
+  return parseManifestV13(await callDatabase("readManifest", undefined));
 }
 
 async function writeContent(id: string, content: Blob | string) {
@@ -378,20 +381,21 @@ async function loadDesktopUnsafe(_viewport: EntryPosition, seeded: SeededManifes
   });
   const manifest = await desktopLoad;
   await materializeOutbox(await callDatabase("readOutbox", undefined));
-  return { entries: manifest.entries, layout: manifestLayout(manifest), editorSettings: manifest.editorSettings, sync: manifest.sync };
+  return { entries: manifest.entries, layout: manifestLayout(manifest), editorSettings: manifest.editorSettings, appearance: manifest.appearance, sync: manifest.sync };
 }
 
 async function applyRemoteDesktopUnsafe(snapshot: DesktopSnapshot, contents: Map<string, Blob>, acknowledgedOperationId?: string) {
   const current = await readManifest();
   if (current.sync.workspaceId === snapshot.sync.workspaceId && current.sync.revision >= snapshot.sync.revision) {
-    return { entries: current.entries, layout: manifestLayout(current), editorSettings: current.editorSettings, sync: current.sync };
+    return { entries: current.entries, layout: manifestLayout(current), editorSettings: current.editorSettings, appearance: current.appearance, sync: current.sync };
   }
   const next: Manifest = {
-    version: 12,
+    version: 13,
     entries: snapshot.entries,
     snapToGrid: snapshot.layout.snapToGrid,
     wallpaper: snapshot.layout.wallpaper,
     editorSettings: snapshot.editorSettings,
+    appearance: snapshot.appearance,
     sync: snapshot.sync,
   };
   assertValidManifest(next);
@@ -405,7 +409,7 @@ async function applyRemoteDesktopUnsafe(snapshot: DesktopSnapshot, contents: Map
     await writeContent(entry.id, content.slice(0, content.size, entry.mimeType));
   }
   const reconciled = await callDatabase("applyRemoteWithOutbox", { manifest: next, acknowledgedOperationId });
-  const projected = parseManifestV12(reconciled.manifest);
+  const projected = parseManifestV13(reconciled.manifest);
   desktopLoad = Promise.resolve(projected);
   await materializeOutbox(await callDatabase("readOutbox", undefined));
 
@@ -419,7 +423,7 @@ async function applyRemoteDesktopUnsafe(snapshot: DesktopSnapshot, contents: Map
       if (!(error instanceof DOMException && error.name === "NotFoundError")) console.warn("Hiraya could not clean up stale file content.", error);
     }
   }
-  return { entries: projected.entries, layout: manifestLayout(projected), editorSettings: projected.editorSettings, sync: projected.sync };
+  return { entries: projected.entries, layout: manifestLayout(projected), editorSettings: projected.editorSettings, appearance: projected.appearance, sync: projected.sync };
 }
 
 async function enqueueMutationUnsafe(operation: OutboxOperation, contents: Map<string, Blob> = new Map()) {
@@ -433,11 +437,11 @@ async function enqueueMutationUnsafe(operation: OutboxOperation, contents: Map<s
       workspaceId: (await readManifest()).sync.workspaceId,
       operation,
     });
-    const manifest = parseManifestV12(result.manifest);
+    const manifest = parseManifestV13(result.manifest);
     desktopLoad = Promise.resolve(manifest);
     await materializeOutbox([result.record]);
     return {
-      desktop: { entries: manifest.entries, layout: manifestLayout(manifest), editorSettings: manifest.editorSettings, sync: manifest.sync },
+      desktop: { entries: manifest.entries, layout: manifestLayout(manifest), editorSettings: manifest.editorSettings, appearance: manifest.appearance, sync: manifest.sync },
       record: result.record,
     };
   } catch (error) {
@@ -463,6 +467,41 @@ async function saveDesktopLayoutUnsafe(layout: DesktopLayout) {
   const next = { ...manifest, snapToGrid: parsed.snapToGrid, wallpaper: parsed.wallpaper };
   assertValidManifest(next);
   await writeManifest(next);
+}
+
+async function selectThemeUnsafe(themeId: string) {
+  const manifest = await readManifest();
+  const appearance = parseThemeState({ ...manifest.appearance, selectedThemeId: themeId });
+  await writeManifest({ ...manifest, appearance });
+  return appearance;
+}
+
+async function saveCustomThemeUnsafe(value: CustomTheme) {
+  const manifest = await readManifest();
+  const theme = parseCustomTheme(value);
+  const exists = manifest.appearance.customThemes.some((item) => item.id === theme.id);
+  const customThemes = exists
+    ? manifest.appearance.customThemes.map((item) => item.id === theme.id ? theme : item)
+    : [...manifest.appearance.customThemes, theme];
+  const appearance = parseThemeState({ ...manifest.appearance, customThemes });
+  await writeManifest({ ...manifest, appearance });
+  return theme;
+}
+
+async function deleteCustomThemeUnsafe(themeId: string) {
+  const next = applyThemeDelete(await readManifest(), themeId);
+  await writeManifest(next);
+  return next.appearance;
+}
+
+function applyThemeDelete(manifest: Manifest, themeId: string) {
+  // Keep local and queued mutation semantics identical.
+  return parseManifestV13((() => {
+    if (!manifest.appearance.customThemes.some((theme) => theme.id === themeId)) throw new Error("That custom theme no longer exists.");
+    const customThemes = manifest.appearance.customThemes.filter((theme) => theme.id !== themeId);
+    const selectedThemeId = manifest.appearance.selectedThemeId === themeId ? DEFAULT_THEME_STATE.selectedThemeId : manifest.appearance.selectedThemeId;
+    return { ...manifest, appearance: parseThemeState({ selectedThemeId, customThemes }) };
+  })());
 }
 
 async function createTextFileUnsafe(nameValue: string, parentId: string | null, position: EntryPosition) {
@@ -649,6 +688,7 @@ async function readDesktopSnapshotUnsafe(): Promise<{
   entries: DesktopEntry[];
   layout: DesktopLayout;
   editorSettings: EditorSettings;
+  appearance: ThemeState;
   contents: Map<string, Blob>;
 }> {
   const manifest = await readManifest();
@@ -665,6 +705,7 @@ async function readDesktopSnapshotUnsafe(): Promise<{
     entries: manifest.entries,
     layout: manifestLayout(manifest),
     editorSettings: manifest.editorSettings,
+    appearance: manifest.appearance,
     contents,
   };
 }
@@ -741,7 +782,7 @@ export function loadDesktop(viewport: EntryPosition, seeded: SeededManifest | nu
 export function readCurrentDesktop(): Promise<DesktopSnapshot> {
   return serializeStorage(async () => {
     const manifest = await readManifest();
-    return { entries: manifest.entries, layout: manifestLayout(manifest), editorSettings: manifest.editorSettings, sync: manifest.sync };
+    return { entries: manifest.entries, layout: manifestLayout(manifest), editorSettings: manifest.editorSettings, appearance: manifest.appearance, sync: manifest.sync };
   });
 }
 
@@ -751,6 +792,9 @@ export function applyRemoteDesktop(snapshot: DesktopSnapshot, contents: Map<stri
 
 export function saveEditorSettings(settings: EditorSettings) { return serializeStorage(() => saveEditorSettingsUnsafe(settings)); }
 export function saveDesktopLayout(layout: DesktopLayout) { return serializeStorage(() => saveDesktopLayoutUnsafe(layout)); }
+export function selectTheme(themeId: string) { return serializeStorage(() => selectThemeUnsafe(themeId)); }
+export function saveCustomTheme(theme: CustomTheme) { return serializeStorage(() => saveCustomThemeUnsafe(theme)); }
+export function deleteCustomTheme(themeId: string) { return serializeStorage(() => deleteCustomThemeUnsafe(themeId)); }
 export function createTextFile(name: string, parentId: string | null, position: EntryPosition) { return serializeStorage(() => createTextFileUnsafe(name, parentId, position)); }
 export function createFolder(name: string, parentId: string | null, position: EntryPosition) { return serializeStorage(() => createFolderUnsafe(name, parentId, position)); }
 export function importFiles(files: File[], parentId: string | null, positions: EntryPosition[]) { return serializeStorage(() => importFilesUnsafe(files, parentId, positions)); }

@@ -113,7 +113,7 @@ HIRAYA_SEEDED_DIR=examples/seeded bun run dev
 HIRAYA_SEEDED_DIR=examples/seeded bun run build
 ```
 
-The value must be a directory inside the repository. It must contain a `manifest.json`; each file entry's `contentUrl` is resolved relative to that directory. See `examples/seeded` for the version 6 format. Version 1 through 5 packages remain accepted and are normalized to the current coordinate-only format. Older packages default to the Dusk wallpaper, and version 1 also defaults to snap-to-grid being disabled.
+The value must be a directory inside the repository. It must contain a `manifest.json`; each file entry's `contentUrl` is resolved relative to that directory. See `examples/seeded` for the version 7 format. Version 1 through 6 packages remain accepted and are normalized to the current format. Older packages default to the Hiraya Dusk theme and Dusk wallpaper, and version 1 also defaults to snap-to-grid being disabled.
 
 The seeded desktop is copied into OPFS only when the browser origin has neither a Hiraya SQLite database nor a legacy manifest. Existing desktops, including intentionally empty desktops, are never merged with or replaced. After seeding, seeded files and folders behave like ordinary editable entries. If the shared server is also uninitialized, this seeded desktop becomes its initial workspace; an initialized server remains authoritative. Clearing the origin's site data removes the local cache and allows seeded content to seed it again before synchronization.
 
@@ -132,8 +132,14 @@ bun run build
 
 Pushes to `main` deploy this frontend-only build to GitHub Pages using `examples/seeded`. Returning browsers retain their locally edited desktop when a new version deploys; updated seeded content seeds only browsers without an existing Hiraya manifest.
 
+## Themes
+
+Open **Settings → Appearance** to choose Hiraya Dusk, Warm Paper, Midnight Glass, or High Contrast. Themes are separate from wallpapers and change the application palette, window shape and effects, typography, density, motion, desktop icon sizing, and editor syntax colors.
+
+Built-in themes are immutable. Use **Duplicate / edit** to preview changes live, then save a named custom theme. The selected theme and custom-theme library are shared workspace resources: they synchronize between connected clients, queue while offline, persist across server restarts, and are included in seeded exports. The operating system's reduced-motion preference always overrides a theme's motion setting.
+
 ## Export
 
 Open **Settings** and use **Export desktop** to download `hiraya-seeded.zip`. The archive contains `hiraya-seeded/manifest.json` and its `content` tree. Extract that directory into the repository and pass it to `HIRAYA_SEEDED_DIR` to seed the exported desktop in a fresh browser origin.
 
-Export includes all saved files, folders, signed finite icon coordinates, layout, shared wallpaper, snap-to-grid preference, and editor settings from the synchronized OPFS cache. Unsaved editor changes are not included.
+Export includes all saved files, folders, signed finite icon coordinates, layout, shared wallpaper, snap-to-grid preference, editor settings, the selected theme ID, and custom theme definitions from the synchronized OPFS cache. Built-in theme definitions and unsaved editor changes are not included.

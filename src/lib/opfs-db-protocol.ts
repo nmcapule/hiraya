@@ -1,4 +1,4 @@
-import type { PersistedManifestV12 } from "./manifest-codec";
+import type { PersistedManifestV13 } from "./manifest-codec";
 import type { OutboxOperation, OutboxRecord } from "./outbox";
 
 export type StoredPreferences = { autoUpdate: boolean };
@@ -6,16 +6,16 @@ export type StoredPreferences = { autoUpdate: boolean };
 export type StorageDbRequests = {
   ping: undefined;
   status: undefined;
-  bootstrap: { manifest: PersistedManifestV12; preferences: StoredPreferences };
+  bootstrap: { manifest: PersistedManifestV13; preferences: StoredPreferences };
   readManifest: undefined;
-  replaceManifest: { manifest: PersistedManifestV12 };
+  replaceManifest: { manifest: PersistedManifestV13 };
   readPreferences: undefined;
   writePreferences: { preferences: StoredPreferences };
   reserveOperation: undefined;
   enqueueMutation: { operationId: string; workspaceId: string | null; operation: OutboxOperation };
   readOutbox: undefined;
   bindOutboxWorkspace: { workspaceId: string };
-  applyRemoteWithOutbox: { manifest: PersistedManifestV12; acknowledgedOperationId?: string };
+  applyRemoteWithOutbox: { manifest: PersistedManifestV13; acknowledgedOperationId?: string };
   acknowledgeMutation: { operationId: string };
   blockMutation: { operationId: string; error: string };
 };
@@ -23,16 +23,16 @@ export type StorageDbRequests = {
 export type StorageDbResponses = {
   ping: undefined;
   status: { existedBeforeOpen: boolean; needsBootstrap: boolean };
-  bootstrap: { manifest: PersistedManifestV12; preferences: StoredPreferences };
-  readManifest: PersistedManifestV12;
+  bootstrap: { manifest: PersistedManifestV13; preferences: StoredPreferences };
+  readManifest: PersistedManifestV13;
   replaceManifest: undefined;
   readPreferences: StoredPreferences;
   writePreferences: undefined;
   reserveOperation: { clientId: string; operationId: string; sequence: number };
-  enqueueMutation: { manifest: PersistedManifestV12; record: OutboxRecord };
+  enqueueMutation: { manifest: PersistedManifestV13; record: OutboxRecord };
   readOutbox: OutboxRecord[];
   bindOutboxWorkspace: undefined;
-  applyRemoteWithOutbox: { manifest: PersistedManifestV12; blocked: OutboxRecord[] };
+  applyRemoteWithOutbox: { manifest: PersistedManifestV13; blocked: OutboxRecord[] };
   acknowledgeMutation: undefined;
   blockMutation: undefined;
 };

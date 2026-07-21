@@ -1,5 +1,6 @@
 import { DEFAULT_WALLPAPER, type DesktopEntry, type DesktopLayout, type EditorSettings, type FileEntry, type FolderEntry } from "../types";
 import { isRecord, parseEditorSettings, parseEntries, parseLayout } from "./contracts";
+import { DEFAULT_THEME_STATE, parseThemeState, type ThemeState } from "./themes";
 
 declare const portableContentUrl: unique symbol;
 declare const bundledContentUrl: unique symbol;
@@ -8,9 +9,10 @@ export type BundledContentUrl = string & { readonly [bundledContentUrl]: true };
 
 export type PortableSeededFileEntry = FileEntry & { contentUrl: PortableContentUrl };
 export type PortableSeededManifest = {
-  version: 6;
+  version: 7;
   layout: DesktopLayout;
   editorSettings: EditorSettings;
+  appearance: ThemeState;
   entries: Array<FolderEntry | PortableSeededFileEntry>;
 };
 
@@ -25,11 +27,12 @@ export type SeededFileEntry = BundledSeededFileEntry;
 export type SeededManifest = BundledSeededManifest;
 
 function readSeeded(value: unknown, portable: boolean): PortableSeededManifest {
-  if (!isRecord(value) || !Number.isInteger(value.version) || (value.version as number) < 1 || (value.version as number) > 6 || !Array.isArray(value.entries)) {
+  if (!isRecord(value) || !Number.isInteger(value.version) || (value.version as number) < 1 || (value.version as number) > 7 || !Array.isArray(value.entries)) {
     throw new Error("The seeded desktop manifest has an unsupported format.");
   }
   if (!isRecord(value.layout)) throw new Error("The seeded desktop layout has an unsupported format.");
   const editorSettings = parseEditorSettings(value.editorSettings);
+  const appearance = (value.version as number) < 7 ? DEFAULT_THEME_STATE : parseThemeState(value.appearance);
   const contentUrls = new Map<string, PortableContentUrl>();
   const plainEntries = value.entries.map((candidate) => {
     if (!isRecord(candidate)) throw new Error("A seeded entry has an unsupported format.");
@@ -50,7 +53,7 @@ function readSeeded(value: unknown, portable: boolean): PortableSeededManifest {
   const entries = parsedEntries.map((entry) => entry.kind === "file"
     ? { ...entry, contentUrl: contentUrls.get(entry.id) as string }
     : entry) as Array<FolderEntry | PortableSeededFileEntry>;
-  return { version: 6, layout, editorSettings, entries };
+  return { version: 7, layout, editorSettings, appearance, entries };
 }
 
 export function assertPortableContentUrl(contentUrl: string) {
@@ -76,13 +79,14 @@ export function parseSeededManifest(value: unknown): SeededManifest {
 }
 
 export function toPortableSeededManifest(
-  desktop: { layout: DesktopLayout; editorSettings: EditorSettings; entries: DesktopEntry[] },
+  desktop: { layout: DesktopLayout; editorSettings: EditorSettings; appearance: ThemeState; entries: DesktopEntry[] },
   contentUrlFor: (file: FileEntry) => string,
 ): PortableSeededManifest {
   return parsePortableSeededManifest({
-    version: 6,
+    version: 7,
     layout: desktop.layout,
     editorSettings: desktop.editorSettings,
+    appearance: desktop.appearance,
     entries: desktop.entries.map((entry) => entry.kind === "file" ? { ...entry, contentUrl: contentUrlFor(entry) } : entry),
   });
 }

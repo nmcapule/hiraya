@@ -34,7 +34,8 @@ describe("seeded manifests", () => {
         { kind: "folder", id: "b", name: "B", parentId: null, viewId: "second", modifiedAt: 1, position: { x: 300, y: 1 } },
       ],
     });
-    expect(parsed.version).toBe(6);
+    expect(parsed.version).toBe(7);
+    expect(parsed.appearance).toEqual({ selectedThemeId: "hiraya-dusk", customThemes: [] });
     expect(parsed.entries.map((entry) => entry.position)).toEqual([{ x: -40, y: 1 }, { x: 300, y: 1 }]);
     expect(parsed.entries.some((entry) => "viewId" in entry)).toBe(false);
   });
@@ -48,7 +49,7 @@ describe("seeded manifests", () => {
       editorSettings: snapshot.editorSettings,
       entries: snapshot.entries,
     });
-    expect(parsed.version).toBe(6);
+    expect(parsed.version).toBe(7);
     expect(parsed.layout).toEqual({ snapToGrid: true, wallpaper: "grove" });
   });
 });

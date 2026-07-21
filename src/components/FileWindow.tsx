@@ -5,6 +5,7 @@ import { fileCapabilities } from "../ui/file-capabilities";
 import { TextEditor } from "./TextEditor";
 import { UrlEditor } from "./UrlEditor";
 import { parseInternetShortcut } from "../lib/internet-shortcut";
+import type { ThemeDefinition } from "../lib/themes";
 
 const LANGUAGE_OPTIONS: Array<{ value: EditorLanguage; label: string }> = [
   { value: "auto", label: "Auto" },
@@ -28,6 +29,7 @@ type Props = {
   readOnly?: boolean;
   remoteChanged?: boolean;
   editorSettings: EditorSettings;
+  theme: ThemeDefinition;
   onSave: (content: string) => Promise<void>;
   onDownload: () => void;
   onEditorSettingsChange: (settings: EditorSettings) => void;
@@ -36,7 +38,7 @@ type Props = {
   onDirtyChange?: (dirty: boolean) => void;
 };
 
-export function FileWindow({ file, blob, editable, readOnly = false, remoteChanged = false, editorSettings, onSave, onDownload, onEditorSettingsChange, onResolveLink, onOpenLinkedFile, onDirtyChange }: Props) {
+export function FileWindow({ file, blob, editable, readOnly = false, remoteChanged = false, editorSettings, theme, onSave, onDownload, onEditorSettingsChange, onResolveLink, onOpenLinkedFile, onDirtyChange }: Props) {
   const [content, setContent] = useState("");
   const [savedContent, setSavedContent] = useState("");
   const [contentLoaded, setContentLoaded] = useState(false);
@@ -158,6 +160,7 @@ export function FileWindow({ file, blob, editable, readOnly = false, remoteChang
               file={file}
               value={content}
               settings={editorSettings}
+              theme={theme}
               readOnly={readOnly}
               onChange={setContent}
               onSave={() => void save(content)}

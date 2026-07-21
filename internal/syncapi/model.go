@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"math"
 	"mime"
+	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -23,6 +25,80 @@ type EditorSettings struct {
 	AutoSave bool   `json:"autoSave"`
 	FontSize int    `json:"fontSize"`
 	Language string `json:"language"`
+}
+
+type ThemeColors struct {
+	Shell            string `json:"shell"`
+	Chrome           string `json:"chrome"`
+	ChromeText       string `json:"chromeText"`
+	Window           string `json:"window"`
+	WindowMuted      string `json:"windowMuted"`
+	Text             string `json:"text"`
+	TextMuted        string `json:"textMuted"`
+	Accent           string `json:"accent"`
+	AccentText       string `json:"accentText"`
+	Border           string `json:"border"`
+	Danger           string `json:"danger"`
+	DangerSurface    string `json:"dangerSurface"`
+	DesktopText      string `json:"desktopText"`
+	Selection        string `json:"selection"`
+	EditorBackground string `json:"editorBackground"`
+	EditorText       string `json:"editorText"`
+	EditorGutter     string `json:"editorGutter"`
+	EditorKeyword    string `json:"editorKeyword"`
+	EditorString     string `json:"editorString"`
+	EditorComment    string `json:"editorComment"`
+}
+
+type ThemeShape struct {
+	Radius      float64 `json:"radius"`
+	BorderWidth float64 `json:"borderWidth"`
+}
+
+type ThemeEffects struct {
+	Blur    float64 `json:"blur"`
+	Opacity float64 `json:"opacity"`
+	Shadow  float64 `json:"shadow"`
+}
+
+type ThemeTypography struct {
+	Family string  `json:"family"`
+	Scale  float64 `json:"scale"`
+	Weight int     `json:"weight"`
+}
+
+type ThemeDefinition struct {
+	Colors     ThemeColors     `json:"colors"`
+	Shape      ThemeShape      `json:"shape"`
+	Effects    ThemeEffects    `json:"effects"`
+	Typography ThemeTypography `json:"typography"`
+	Density    float64         `json:"density"`
+	Motion     float64         `json:"motion"`
+	IconSize   int             `json:"iconSize"`
+}
+
+type CustomTheme struct {
+	ID         string          `json:"id"`
+	Name       string          `json:"name"`
+	Definition ThemeDefinition `json:"definition"`
+	Revision   int64           `json:"revision"`
+}
+
+type Appearance struct {
+	SelectedThemeID   string        `json:"selectedThemeId"`
+	SelectionRevision int64         `json:"selectionRevision"`
+	CustomThemes      []CustomTheme `json:"customThemes"`
+}
+
+type BootstrapCustomTheme struct {
+	ID         string          `json:"id"`
+	Name       string          `json:"name"`
+	Definition ThemeDefinition `json:"definition"`
+}
+
+type BootstrapAppearance struct {
+	SelectedThemeID string                 `json:"selectedThemeId"`
+	CustomThemes    []BootstrapCustomTheme `json:"customThemes"`
 }
 
 type Entry struct {
@@ -70,12 +146,14 @@ type Workspace struct {
 	LayoutRevision   int64          `json:"layoutRevision"`
 	EditorSettings   EditorSettings `json:"editorSettings"`
 	SettingsRevision int64          `json:"settingsRevision"`
+	Appearance       Appearance     `json:"appearance"`
 }
 
 type bootstrapWorkspace struct {
-	Entries        []Entry        `json:"entries"`
-	Layout         Layout         `json:"layout"`
-	EditorSettings EditorSettings `json:"editorSettings"`
+	Entries        []Entry             `json:"entries"`
+	Layout         Layout              `json:"layout"`
+	EditorSettings EditorSettings      `json:"editorSettings"`
+	Appearance     BootstrapAppearance `json:"appearance"`
 }
 
 var editorLanguages = map[string]bool{
@@ -85,6 +163,12 @@ var editorLanguages = map[string]bool{
 }
 
 var wallpapers = map[string]bool{"dusk": true, "grove": true, "ember": true}
+
+const defaultThemeID = "hiraya-dusk"
+
+var builtInThemeIDs = map[string]bool{
+	defaultThemeID: true, "warm-paper": true, "midnight-glass": true, "high-contrast": true,
+}
 
 func validID(id string) bool {
 	if id == "" || len(id) > 180 || id == "." || id == ".." || strings.ContainsAny(id, `/\\`) || !utf8.ValidString(id) {
@@ -130,6 +214,104 @@ func validatePosition(position Position) error {
 func validateSettings(settings EditorSettings) error {
 	if settings.FontSize < 11 || settings.FontSize > 22 || !editorLanguages[settings.Language] {
 		return fmt.Errorf("invalid editor settings")
+	}
+	return nil
+}
+
+func defaultAppearance() Appearance {
+	return Appearance{SelectedThemeID: defaultThemeID, CustomThemes: []CustomTheme{}}
+}
+
+func validHexColor(value string) bool {
+	if len(value) != 7 || value[0] != '#' {
+		return false
+	}
+	for _, c := range value[1:] {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
+}
+
+func finiteRange(value, min, max float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0) && value >= min && value <= max
+}
+
+func relativeLuminance(value string) float64 {
+	parsed, _ := strconv.ParseUint(value[1:], 16, 32)
+	channels := []float64{float64(parsed>>16) / 255, float64((parsed>>8)&0xff) / 255, float64(parsed&0xff) / 255}
+	for i, channel := range channels {
+		if channel <= 0.04045 {
+			channels[i] = channel / 12.92
+		} else {
+			channels[i] = math.Pow((channel+0.055)/1.055, 2.4)
+		}
+	}
+	return 0.2126*channels[0] + 0.7152*channels[1] + 0.0722*channels[2]
+}
+
+func contrastRatio(foreground, background string) float64 {
+	first, second := relativeLuminance(foreground), relativeLuminance(background)
+	return (math.Max(first, second) + 0.05) / (math.Min(first, second) + 0.05)
+}
+
+func validateTheme(theme CustomTheme) error {
+	if !validID(theme.ID) || builtInThemeIDs[theme.ID] {
+		return fmt.Errorf("invalid custom theme ID")
+	}
+	if theme.Name == "" || strings.TrimSpace(theme.Name) != theme.Name || utf8.RuneCountInString(theme.Name) > 60 || !utf8.ValidString(theme.Name) {
+		return fmt.Errorf("invalid custom theme name")
+	}
+	for _, r := range theme.Name {
+		if unicode.IsControl(r) {
+			return fmt.Errorf("invalid custom theme name")
+		}
+	}
+	colors := theme.Definition.Colors
+	for _, color := range []string{colors.Shell, colors.Chrome, colors.ChromeText, colors.Window, colors.WindowMuted,
+		colors.Text, colors.TextMuted, colors.Accent, colors.AccentText, colors.Border, colors.Danger,
+		colors.DangerSurface, colors.DesktopText, colors.Selection, colors.EditorBackground, colors.EditorText,
+		colors.EditorGutter, colors.EditorKeyword, colors.EditorString, colors.EditorComment} {
+		if !validHexColor(color) {
+			return fmt.Errorf("invalid custom theme color")
+		}
+	}
+	for _, pair := range [][2]string{{colors.Text, colors.Window}, {colors.ChromeText, colors.Chrome}, {colors.AccentText, colors.Accent}, {colors.EditorText, colors.EditorBackground}} {
+		if contrastRatio(pair[0], pair[1]) < 4.5 {
+			return fmt.Errorf("custom theme text contrast is too low")
+		}
+	}
+	d := theme.Definition
+	if !finiteRange(d.Shape.Radius, 0, 24) || !finiteRange(d.Shape.BorderWidth, 0, 2) ||
+		!finiteRange(d.Effects.Blur, 0, 30) || !finiteRange(d.Effects.Opacity, .65, 1) || !finiteRange(d.Effects.Shadow, 0, 1) ||
+		!map[string]bool{"humanist": true, "system": true, "mono": true}[d.Typography.Family] ||
+		!finiteRange(d.Typography.Scale, .85, 1.2) || d.Typography.Weight < 400 || d.Typography.Weight > 700 ||
+		!finiteRange(d.Density, .8, 1.2) || !finiteRange(d.Motion, 0, 1.5) || d.IconSize < 48 || d.IconSize > 72 {
+		return fmt.Errorf("invalid custom theme definition")
+	}
+	return nil
+}
+
+func validateAppearance(appearance Appearance) error {
+	if len(appearance.CustomThemes) > 24 || appearance.SelectionRevision < 0 {
+		return fmt.Errorf("invalid workspace appearance")
+	}
+	ids := make(map[string]bool, len(appearance.CustomThemes))
+	for _, theme := range appearance.CustomThemes {
+		if theme.Revision < 0 {
+			return fmt.Errorf("invalid custom theme revision")
+		}
+		if err := validateTheme(theme); err != nil {
+			return err
+		}
+		if ids[theme.ID] {
+			return fmt.Errorf("duplicate custom theme ID")
+		}
+		ids[theme.ID] = true
+	}
+	if !builtInThemeIDs[appearance.SelectedThemeID] && !ids[appearance.SelectedThemeID] {
+		return fmt.Errorf("selected theme does not exist")
 	}
 	return nil
 }
@@ -194,11 +376,14 @@ func validateEntries(entries []Entry) error {
 	return nil
 }
 
-func validateWorkspace(entries []Entry, layout Layout) error {
+func validateWorkspace(entries []Entry, layout Layout, appearance Appearance) error {
 	if err := validateLayout(layout); err != nil {
 		return err
 	}
 	if err := validateEntries(entries); err != nil {
+		return err
+	}
+	if err := validateAppearance(appearance); err != nil {
 		return err
 	}
 	return nil

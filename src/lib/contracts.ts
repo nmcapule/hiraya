@@ -7,6 +7,7 @@ import {
   type EditorSettings,
   type EntryPosition,
 } from "../types";
+import { isBuiltinThemeId, parseCustomTheme, parseThemeState, type CustomTheme, type ThemeState } from "./themes";
 
 const EDITOR_LANGUAGES = new Set<EditorLanguage>(["auto", "plain", "markdown", "json", "javascript", "typescript", "jsx", "tsx", "css", "html", "xml", "yaml"]);
 const WALLPAPER_IDS = new Set<string>(WALLPAPERS);
@@ -14,6 +15,8 @@ const MIME_TOKEN = "[!#$%&'*+.^_`|~\\w-]+";
 const MIME_TYPE = new RegExp(`^${MIME_TOKEN}/${MIME_TOKEN}(?:\\s*;\\s*${MIME_TOKEN}\\s*=\\s*(?:${MIME_TOKEN}|"(?:[^"\\\\]|\\\\.)*"))*\\s*$`);
 
 export type RemoteEntry = DesktopEntry & { revision: number; contentRevision: number };
+export type RemoteCustomTheme = CustomTheme & { revision: number };
+export type RemoteAppearance = Omit<ThemeState, "customThemes"> & { selectionRevision: number; customThemes: RemoteCustomTheme[] };
 type RemoteWorkspaceIdentity = {
   schemaVersion: number;
   workspaceId: string;
@@ -29,6 +32,7 @@ export type RemoteWorkspace = RemoteWorkspaceIdentity & ({
   layoutRevision: number;
   editorSettings: EditorSettings;
   settingsRevision: number;
+  appearance: RemoteAppearance;
 });
 export type InitializedRemoteWorkspace = Extract<RemoteWorkspace, { initialized: true }>;
 
@@ -198,7 +202,7 @@ export function parseEntries(value: unknown, remote = false): ParsedEntry[] {
 export function parseRemoteWorkspace(value: unknown): RemoteWorkspace {
   if (!isRecord(value) || typeof value.initialized !== "boolean") throw new Error("The server workspace has an unsupported format.");
   const schemaVersion = readRevision(value.schemaVersion, "The server workspace has an unsupported schema version.");
-  if (schemaVersion !== 4) throw new Error("The server workspace uses an unsupported schema version.");
+  if (schemaVersion !== 5) throw new Error("The server workspace uses an unsupported schema version.");
   assertValidId(value.workspaceId, "The server workspace has an invalid identity.");
   const identity = {
     schemaVersion,
@@ -207,6 +211,16 @@ export function parseRemoteWorkspace(value: unknown): RemoteWorkspace {
   };
   if (!value.initialized) return { ...identity, initialized: false };
   const layout = parseLayout(value.layout);
+  if (!isRecord(value.appearance) || !Array.isArray(value.appearance.customThemes)) throw new Error("The server appearance has an unsupported format.");
+  const customThemes = value.appearance.customThemes.map((candidate) => {
+    const theme = parseCustomTheme(candidate);
+    if (!isRecord(candidate)) throw new Error("The server appearance has an unsupported format.");
+    return { ...theme, revision: readRevision(candidate.revision, "A theme has an invalid revision.") };
+  });
+  const appearance = parseThemeState({ selectedThemeId: value.appearance.selectedThemeId, customThemes });
+  if (!isBuiltinThemeId(appearance.selectedThemeId) && !customThemes.some((theme) => theme.id === appearance.selectedThemeId)) {
+    throw new Error("The selected custom theme does not exist.");
+  }
   return {
     ...identity,
     initialized: value.initialized,
@@ -215,5 +229,6 @@ export function parseRemoteWorkspace(value: unknown): RemoteWorkspace {
     layoutRevision: readRevision(value.layoutRevision),
     editorSettings: parseEditorSettings(value.editorSettings),
     settingsRevision: readRevision(value.settingsRevision),
+    appearance: { ...appearance, customThemes, selectionRevision: readRevision(value.appearance.selectionRevision, "The theme selection has an invalid revision.") },
   };
 }

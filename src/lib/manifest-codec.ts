@@ -1,5 +1,6 @@
 import { DEFAULT_WALLPAPER, type DesktopEntry, type DesktopLayout, type EditorSettings, type FileEntry, type Wallpaper } from "../types";
 import { isRecord, parseEditorSettings, parseEntries, parseLayout, readRevision } from "./contracts";
+import { DEFAULT_THEME_STATE, parseThemeState, type ThemeState } from "./themes";
 
 export type DesktopSyncState = {
   workspaceId: string | null;
@@ -8,21 +9,24 @@ export type DesktopSyncState = {
   contentRevisions: Record<string, number>;
   layoutRevision: number;
   settingsRevision: number;
+  themeSelectionRevision: number;
+  themeRevisions: Record<string, number>;
 };
 
-export type PersistedManifestV12 = {
-  version: 12;
+export type PersistedManifestV13 = {
+  version: 13;
   entries: DesktopEntry[];
   snapToGrid: boolean;
   wallpaper: Wallpaper;
   editorSettings: EditorSettings;
+  appearance: ThemeState;
   sync: DesktopSyncState;
 };
 
 export const DEFAULT_EDITOR_SETTINGS: EditorSettings = { autoSave: true, fontSize: 13, language: "auto" };
 
 export function emptySyncState(): DesktopSyncState {
-  return { workspaceId: null, revision: 0, entryRevisions: {}, contentRevisions: {}, layoutRevision: 0, settingsRevision: 0 };
+  return { workspaceId: null, revision: 0, entryRevisions: {}, contentRevisions: {}, layoutRevision: 0, settingsRevision: 0, themeSelectionRevision: 0, themeRevisions: {} };
 }
 
 function parseRevisionMap(value: unknown) {
@@ -42,18 +46,21 @@ function parseSyncState(value: unknown): DesktopSyncState {
     contentRevisions: parseRevisionMap(value.contentRevisions),
     layoutRevision: readRevision(value.layoutRevision),
     settingsRevision: readRevision(value.settingsRevision),
+    themeSelectionRevision: readRevision(value.themeSelectionRevision),
+    themeRevisions: parseRevisionMap(value.themeRevisions),
   };
 }
 
-export function parseManifestV12(value: unknown): PersistedManifestV12 {
-  if (!isRecord(value) || value.version !== 12) throw new Error("The storage index has an unsupported format.");
+export function parseManifestV13(value: unknown): PersistedManifestV13 {
+  if (!isRecord(value) || value.version !== 13) throw new Error("The storage index has an unsupported format.");
   const layout = parseLayout(value);
   return {
-    version: 12,
+    version: 13,
     entries: parseEntries(value.entries),
     snapToGrid: layout.snapToGrid,
     wallpaper: layout.wallpaper,
     editorSettings: parseEditorSettings(value.editorSettings),
+    appearance: parseThemeState(value.appearance),
     sync: parseSyncState(value.sync),
   };
 }
@@ -67,11 +74,11 @@ function stripLegacyFields(entries: unknown[]): unknown[] {
   });
 }
 
-export function decodeManifest(value: unknown): { manifest: PersistedManifestV12; migrated: boolean } {
+export function decodeManifest(value: unknown): { manifest: PersistedManifestV13; migrated: boolean } {
   if (!isRecord(value) || !Number.isInteger(value.version)) throw new Error("The storage index has an unsupported format.");
   const version = value.version as number;
-  if (version === 12) return { manifest: parseManifestV12(value), migrated: false };
-  if (version < 1 || version > 11) throw new Error("The storage index has an unsupported format.");
+  if (version === 13) return { manifest: parseManifestV13(value), migrated: false };
+  if (version < 1 || version > 12) throw new Error("The storage index has an unsupported format.");
 
   let entries: unknown[];
   if (version === 1 && Array.isArray(value.files)) {
@@ -89,18 +96,19 @@ export function decodeManifest(value: unknown): { manifest: PersistedManifestV12
     ? { ...(isRecord(value.sync) ? value.sync : {}), workspaceId: null }
     : value.sync;
   return {
-    manifest: parseManifestV12({
-      version: 12,
+    manifest: parseManifestV13({
+      version: 13,
       entries: stripLegacyFields(entries),
       snapToGrid: version < 7 ? false : value.snapToGrid,
       wallpaper: version < 8 ? DEFAULT_WALLPAPER : value.wallpaper,
       editorSettings,
-      sync,
+      appearance: DEFAULT_THEME_STATE,
+      sync: { ...(isRecord(sync) ? sync : {}), themeSelectionRevision: 0, themeRevisions: {} },
     }),
     migrated: true,
   };
 }
 
-export function manifestLayout(manifest: PersistedManifestV12): DesktopLayout {
+export function manifestLayout(manifest: PersistedManifestV13): DesktopLayout {
   return { snapToGrid: manifest.snapToGrid, wallpaper: manifest.wallpaper };
 }

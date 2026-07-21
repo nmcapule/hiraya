@@ -1,17 +1,19 @@
 import type { DesktopSnapshot } from "../src/lib/opfs";
+import { DEFAULT_THEME_STATE } from "../src/lib/themes";
 
 export function desktopSnapshot(): DesktopSnapshot {
   return {
     entries: [],
     layout: { snapToGrid: false, wallpaper: "dusk" },
     editorSettings: { autoSave: true, fontSize: 13, language: "auto" },
-    sync: { workspaceId: null, revision: 0, entryRevisions: {}, contentRevisions: {}, layoutRevision: 0, settingsRevision: 0 },
+    appearance: DEFAULT_THEME_STATE,
+    sync: { workspaceId: null, revision: 0, entryRevisions: {}, contentRevisions: {}, layoutRevision: 0, settingsRevision: 0, themeSelectionRevision: 0, themeRevisions: {} },
   };
 }
 
 export function remoteWorkspace() {
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     workspaceId: "workspace-1",
     initialized: true,
     revision: 1,
@@ -31,5 +33,6 @@ export function remoteWorkspace() {
     layoutRevision: 1,
     editorSettings: { autoSave: true, fontSize: 13, language: "auto" },
     settingsRevision: 1,
+    appearance: { selectedThemeId: "hiraya-dusk", selectionRevision: 1, customThemes: [] },
   };
 }

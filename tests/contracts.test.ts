@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { isValidId, parseLayout, parsePosition, parseRemoteWorkspace, parseRootDesktopPositions } from "../src/lib/contracts";
 import { namesMatch, validateEntryName } from "../src/lib/entry-validation";
 import { remoteWorkspace } from "./fixtures";
+import { BUILTIN_THEMES } from "../src/lib/themes";
 
 describe("workspace contracts", () => {
   test("parses a complete server workspace without retaining unknown fields", () => {
@@ -18,9 +19,24 @@ describe("workspace contracts", () => {
     expect(() => parseRemoteWorkspace(input)).toThrow("missing parent");
   });
 
+  test("validates revisioned remote appearance", () => {
+    const input = remoteWorkspace();
+    input.appearance.selectionRevision = -1;
+    expect(() => parseRemoteWorkspace(input)).toThrow("selection");
+
+    const duplicate = remoteWorkspace();
+    const definition = structuredClone(BUILTIN_THEMES["hiraya-dusk"].definition);
+    duplicate.appearance.customThemes = [
+      { id: "custom", name: "Custom", definition, revision: 1 },
+      { id: "custom", name: "Copy", definition, revision: 2 },
+    ];
+    duplicate.appearance.selectedThemeId = "custom";
+    expect(() => parseRemoteWorkspace(duplicate)).toThrow("duplicate");
+  });
+
   test("accepts the intentionally empty shape of an uninitialized server", () => {
     expect(parseRemoteWorkspace({
-      schemaVersion: 4,
+      schemaVersion: 5,
       workspaceId: "workspace-1",
       initialized: false,
       revision: 0,
@@ -29,8 +45,8 @@ describe("workspace contracts", () => {
       layoutRevision: 0,
       editorSettings: { autoSave: true, fontSize: 13, language: "auto" },
       settingsRevision: 0,
-    })).toEqual({ schemaVersion: 4, workspaceId: "workspace-1", initialized: false, revision: 0 });
-    expect(() => parseRemoteWorkspace({ schemaVersion: 3, workspaceId: "workspace-1", initialized: false, revision: 0 })).toThrow("schema version");
+    })).toEqual({ schemaVersion: 5, workspaceId: "workspace-1", initialized: false, revision: 0 });
+    expect(() => parseRemoteWorkspace({ schemaVersion: 4, workspaceId: "workspace-1", initialized: false, revision: 0 })).toThrow("schema version");
   });
 
   test("parses only coordinate-independent layout preferences", () => {

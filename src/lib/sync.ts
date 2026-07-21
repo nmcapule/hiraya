@@ -5,6 +5,7 @@ import { API_ROUTES } from "./api-routes";
 import { parseLayout, parsePosition, parseRemoteWorkspace, parseRootDesktopPositions, type InitializedRemoteWorkspace, type RemoteEntry, type RemoteWorkspace } from "./contracts";
 import type { DesktopEntry, DesktopLayout, DesktopPositionUpdate, EditorSettings, EntryPosition, FileEntry, FolderEntry } from "../types";
 import type { OutboxOperation, OutboxRecord } from "./outbox";
+import { parseCustomTheme, parseThemeState, type CustomTheme } from "./themes";
 
 export type SyncStatus = "connecting" | "online" | "offline" | "blocked" | "local";
 
@@ -13,7 +14,8 @@ type StorageBoundary = Pick<typeof storage,
   "moveEntry" | "readCurrentDesktop" | "readDesktopSnapshot" | "readFile" | "readFileByRelativePath" |
   "renameEntry" | "saveDesktopLayout" | "saveEditorSettings" | "saveTextFile" | "updateEntryPosition"
   | "updateDesktopPositions" | "enqueueMutation" | "readOutbox" | "bindOutboxWorkspace" |
-  "acknowledgeMutation" | "blockMutation" | "readPendingContent"
+  "acknowledgeMutation" | "blockMutation" | "readPendingContent" |
+  "selectTheme" | "saveCustomTheme" | "deleteCustomTheme"
 >;
 
 export type SyncEngineOptions = {
@@ -41,14 +43,20 @@ function localEntry(entry: RemoteEntry): DesktopEntry {
 function toSnapshot(workspace: InitializedRemoteWorkspace): storage.DesktopSnapshot {
   const entryRevisions: Record<string, number> = {};
   const contentRevisions: Record<string, number> = {};
+  const themeRevisions: Record<string, number> = {};
   for (const entry of workspace.entries) {
     entryRevisions[entry.id] = entry.revision;
     if (entry.kind === "file") contentRevisions[entry.id] = entry.contentRevision;
   }
+  for (const theme of workspace.appearance.customThemes) themeRevisions[theme.id] = theme.revision;
   return {
     entries: workspace.entries.map(localEntry),
     layout: workspace.layout,
     editorSettings: workspace.editorSettings,
+    appearance: {
+      selectedThemeId: workspace.appearance.selectedThemeId,
+      customThemes: workspace.appearance.customThemes.map(({ id, name, definition }) => ({ id, name, definition })),
+    },
     sync: {
       workspaceId: workspace.workspaceId,
       revision: workspace.revision,
@@ -56,6 +64,8 @@ function toSnapshot(workspace: InitializedRemoteWorkspace): storage.DesktopSnaps
       contentRevisions,
       layoutRevision: workspace.layoutRevision,
       settingsRevision: workspace.settingsRevision,
+      themeSelectionRevision: workspace.appearance.selectionRevision,
+      themeRevisions,
     },
   };
 }
@@ -239,7 +249,7 @@ export class SyncEngine {
     const snapshot = await this.storage.readDesktopSnapshot();
     const pending = await this.storage.readOutbox();
     const form = new FormData();
-    form.append("workspace", JSON.stringify({ entries: snapshot.entries, layout: snapshot.layout, editorSettings: snapshot.editorSettings }));
+    form.append("workspace", JSON.stringify({ entries: snapshot.entries, layout: snapshot.layout, editorSettings: snapshot.editorSettings, appearance: snapshot.appearance }));
     for (const entry of snapshot.entries) {
       if (entry.kind !== "file") continue;
       const content = snapshot.contents.get(entry.id);
@@ -318,6 +328,15 @@ export class SyncEngine {
         return;
       case "editor-settings":
         await this.requestJson(API_ROUTES.editorSettings, { method: "PUT", headers: headers({ "Content-Type": "application/json" }), body: JSON.stringify(operation.settings) });
+        return;
+      case "select-theme":
+        await this.requestJson(API_ROUTES.themeSelection, { method: "PUT", headers: headers({ "Content-Type": "application/json" }), body: JSON.stringify({ themeId: operation.themeId }) });
+        return;
+      case "upsert-theme":
+        await this.requestJson(API_ROUTES.theme(operation.theme.id), { method: "PUT", headers: headers({ "Content-Type": "application/json" }), body: JSON.stringify(operation.theme) });
+        return;
+      case "delete-theme":
+        await this.requestJson(API_ROUTES.theme(operation.themeId), { method: "DELETE", headers: headers() });
     }
   }
 
@@ -526,6 +545,31 @@ export class SyncEngine {
     return this.mutate({ kind: "editor-settings", settings }, () => undefined);
   }
 
+  selectTheme(themeId: string) {
+    parseThemeState({ ...this.current().appearance, selectedThemeId: themeId });
+    if (this.frontendOnly) return this.localMutation(() => this.storage.selectTheme(themeId));
+    return this.mutate({ kind: "select-theme", themeId }, (next) => next.appearance);
+  }
+
+  saveCustomTheme(value: CustomTheme) {
+    const theme = parseCustomTheme(value);
+    const exists = this.current().appearance.customThemes.some((item) => item.id === theme.id);
+    parseThemeState({
+      ...this.current().appearance,
+      customThemes: exists
+        ? this.current().appearance.customThemes.map((item) => item.id === theme.id ? theme : item)
+        : [...this.current().appearance.customThemes, theme],
+    });
+    if (this.frontendOnly) return this.localMutation(() => this.storage.saveCustomTheme(theme));
+    return this.mutate({ kind: "upsert-theme", theme }, (next) => next.appearance.customThemes.find((item) => item.id === theme.id)!);
+  }
+
+  deleteCustomTheme(themeId: string) {
+    if (!this.current().appearance.customThemes.some((theme) => theme.id === themeId)) throw new Error("That custom theme no longer exists.");
+    if (this.frontendOnly) return this.localMutation(() => this.storage.deleteCustomTheme(themeId));
+    return this.mutate({ kind: "delete-theme", themeId }, (next) => next.appearance);
+  }
+
   readFile(id: FileEntry["id"]) { return this.storage.readFile(id); }
   readFileByRelativePath(fromFileId: FileEntry["id"], relativePath: string) { return this.storage.readFileByRelativePath(fromFileId, relativePath); }
   async getOutboxStatus() {
@@ -554,6 +598,9 @@ export const updateEntryPosition = defaultEngine.updateEntryPosition.bind(defaul
 export const saveTextFile = defaultEngine.saveTextFile.bind(defaultEngine);
 export const saveDesktopLayout = defaultEngine.saveDesktopLayout.bind(defaultEngine);
 export const saveEditorSettings = defaultEngine.saveEditorSettings.bind(defaultEngine);
+export const selectTheme = defaultEngine.selectTheme.bind(defaultEngine);
+export const saveCustomTheme = defaultEngine.saveCustomTheme.bind(defaultEngine);
+export const deleteCustomTheme = defaultEngine.deleteCustomTheme.bind(defaultEngine);
 export const readFile = defaultEngine.readFile.bind(defaultEngine);
 export const readFileByRelativePath = defaultEngine.readFileByRelativePath.bind(defaultEngine);
 export const getOutboxStatus = defaultEngine.getOutboxStatus.bind(defaultEngine);

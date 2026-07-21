@@ -3,6 +3,7 @@ import { SyncEngine, type SyncEngineOptions } from "../src/lib/sync";
 import type { DesktopSnapshot } from "../src/lib/opfs";
 import { desktopSnapshot, remoteWorkspace } from "./fixtures";
 import { applyOutboxOperation, type OutboxRecord } from "../src/lib/outbox";
+import { BUILTIN_THEMES } from "../src/lib/themes";
 
 class FakeEventSource {
   onopen: (() => void) | null = null;
@@ -24,17 +25,17 @@ function remoteOptions(snapshot: DesktopSnapshot, fetchImpl: typeof fetch) {
       loadDesktop: async () => current,
       readDesktopSnapshot: async () => ({ ...current, contents: new Map() }),
       applyRemoteDesktop: async (next: DesktopSnapshot, _contents: Map<string, Blob>, acknowledgedOperationId?: string) => {
-        let manifest = { version: 12 as const, entries: next.entries, snapToGrid: next.layout.snapToGrid, wallpaper: next.layout.wallpaper, editorSettings: next.editorSettings, sync: next.sync };
+        let manifest = { version: 13 as const, entries: next.entries, snapToGrid: next.layout.snapToGrid, wallpaper: next.layout.wallpaper, editorSettings: next.editorSettings, appearance: next.appearance, sync: next.sync };
         for (const record of outbox) if (record.operationId !== acknowledgedOperationId) manifest = applyOutboxOperation(manifest, record.operation);
-        current = { entries: manifest.entries, layout: { snapToGrid: manifest.snapToGrid, wallpaper: manifest.wallpaper }, editorSettings: manifest.editorSettings, sync: manifest.sync };
+        current = { entries: manifest.entries, layout: { snapToGrid: manifest.snapToGrid, wallpaper: manifest.wallpaper }, editorSettings: manifest.editorSettings, appearance: manifest.appearance, sync: manifest.sync };
         return current;
       },
       enqueueMutation: async (operation: OutboxRecord["operation"]) => {
         sequence += 1;
         const record: OutboxRecord = { operationId: sequence.toString().padStart(16, "0"), sequence, clientId: "client-1", workspaceId: current.sync.workspaceId, operation, status: "pending", error: null };
         outbox.push(record);
-        const manifest = applyOutboxOperation({ version: 12, entries: current.entries, snapToGrid: current.layout.snapToGrid, wallpaper: current.layout.wallpaper, editorSettings: current.editorSettings, sync: current.sync }, operation);
-        current = { entries: manifest.entries, layout: { snapToGrid: manifest.snapToGrid, wallpaper: manifest.wallpaper }, editorSettings: manifest.editorSettings, sync: manifest.sync };
+        const manifest = applyOutboxOperation({ version: 13, entries: current.entries, snapToGrid: current.layout.snapToGrid, wallpaper: current.layout.wallpaper, editorSettings: current.editorSettings, appearance: current.appearance, sync: current.sync }, operation);
+        current = { entries: manifest.entries, layout: { snapToGrid: manifest.snapToGrid, wallpaper: manifest.wallpaper }, editorSettings: manifest.editorSettings, appearance: manifest.appearance, sync: manifest.sync };
         return { desktop: current, record };
       },
       readOutbox: async () => outbox,
@@ -147,7 +148,7 @@ describe("SyncEngine remote reconciliation", () => {
     expect(statuses).toEqual(["connecting"]);
     expect(startSettled).toBe(false);
 
-    resolveFetch(Response.json({ schemaVersion: 4, workspaceId: "workspace-1", initialized: false, revision: 0 }));
+    resolveFetch(Response.json({ schemaVersion: 5, workspaceId: "workspace-1", initialized: false, revision: 0 }));
     await starting;
     engine.stop();
   });
@@ -202,13 +203,16 @@ describe("SyncEngine remote reconciliation", () => {
   test("bootstraps an uninitialized server", async () => {
     const snapshot = desktopSnapshot();
     const requests: string[] = [];
+    let bootstrapAppearance: unknown;
     const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
       requests.push(`${init?.method ?? "GET"} ${String(input)}`);
       if (String(input) === "/api/workspace") {
-        return Response.json({ schemaVersion: 4, workspaceId: "workspace-1", initialized: false, revision: 0 });
+        return Response.json({ schemaVersion: 5, workspaceId: "workspace-1", initialized: false, revision: 0 });
       }
+      const workspaceInput = JSON.parse(String((init?.body as FormData).get("workspace"))) as { appearance: unknown };
+      bootstrapAppearance = workspaceInput.appearance;
       return Response.json({
-        schemaVersion: 4,
+        schemaVersion: 5,
         workspaceId: "workspace-1",
         initialized: true,
         revision: 1,
@@ -217,6 +221,7 @@ describe("SyncEngine remote reconciliation", () => {
         layoutRevision: 1,
         editorSettings: snapshot.editorSettings,
         settingsRevision: 1,
+        appearance: { selectedThemeId: "hiraya-dusk", selectionRevision: 1, customThemes: [] },
       });
     }) as typeof fetch;
     const engine = new SyncEngine(remoteOptions(snapshot, fetchImpl));
@@ -225,6 +230,55 @@ describe("SyncEngine remote reconciliation", () => {
     expect(result.status).toBe("online");
     expect(result.desktop.sync.workspaceId).toBe("workspace-1");
     expect(requests).toEqual(["GET /api/workspace", "POST /api/bootstrap"]);
+    expect(bootstrapAppearance).toEqual(snapshot.appearance);
+    engine.stop();
+  });
+
+  test("persists custom theme operations through dedicated endpoints", async () => {
+    const snapshot = desktopSnapshot();
+    let server = remoteWorkspace();
+    let workspaceReads = 0;
+    const requests: Array<{ url: string; method: string; body: unknown }> = [];
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/workspace") {
+        workspaceReads += 1;
+        return Response.json(server);
+      }
+      if (url === "/api/files/file-1/content") return new Response("note");
+      const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+      requests.push({ url, method: init?.method ?? "GET", body });
+      server = structuredClone(server);
+      server.revision += 1;
+      if (url === "/api/themes/custom" && init?.method === "PUT") {
+        server.appearance.customThemes = [{ ...body, revision: server.revision }];
+      } else if (url === "/api/theme-selection") {
+        server.appearance.selectedThemeId = (body as { themeId: string }).themeId;
+        server.appearance.selectionRevision = server.revision;
+      } else if (url === "/api/themes/custom" && init?.method === "DELETE") {
+        server.appearance.customThemes = [];
+        server.appearance.selectedThemeId = "hiraya-dusk";
+        server.appearance.selectionRevision = server.revision;
+      }
+      return Response.json({});
+    }) as typeof fetch;
+    const engine = new SyncEngine(remoteOptions(snapshot, fetchImpl));
+    await engine.start({ x: 100, y: 100 });
+    const theme = { id: "custom", name: "Custom", definition: BUILTIN_THEMES["warm-paper"].definition };
+
+    await engine.saveCustomTheme(theme);
+    await engine.selectTheme(theme.id);
+    const appearance = await engine.deleteCustomTheme(theme.id);
+
+    expect(requests.map(({ url, method }) => `${method} ${url}`)).toEqual([
+      "PUT /api/themes/custom",
+      "PUT /api/theme-selection",
+      "DELETE /api/themes/custom",
+    ]);
+    expect(requests[0].body).toEqual(theme);
+    expect(requests[1].body).toEqual({ themeId: "custom" });
+    expect(appearance).toEqual({ selectedThemeId: "hiraya-dusk", customThemes: [] });
+    expect(workspaceReads).toBe(4);
     engine.stop();
   });
 
@@ -232,7 +286,7 @@ describe("SyncEngine remote reconciliation", () => {
     const snapshot = desktopSnapshot();
     snapshot.sync = { ...snapshot.sync, workspaceId: "old-workspace", revision: 50 };
     const fetchImpl = (async () => Response.json({
-      schemaVersion: 4,
+      schemaVersion: 5,
       workspaceId: "new-workspace",
       initialized: true,
       revision: 1,
@@ -241,6 +295,7 @@ describe("SyncEngine remote reconciliation", () => {
       layoutRevision: 1,
       editorSettings: snapshot.editorSettings,
       settingsRevision: 1,
+      appearance: { selectedThemeId: "hiraya-dusk", selectionRevision: 1, customThemes: [] },
     })) as typeof fetch;
     const engine = new SyncEngine(remoteOptions(snapshot, fetchImpl));
 
@@ -264,7 +319,7 @@ describe("SyncEngine remote reconciliation", () => {
     const starting = engine.start({ x: 100, y: 100 });
     await Promise.resolve();
     engine.stop();
-    resolveFetch(Response.json({ schemaVersion: 4, workspaceId: "workspace-1", initialized: false, revision: 0 }));
+    resolveFetch(Response.json({ schemaVersion: 5, workspaceId: "workspace-1", initialized: false, revision: 0 }));
 
     await expect(starting).rejects.toMatchObject({ name: "AbortError" });
     expect(applications).toBe(0);

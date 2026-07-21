@@ -2,6 +2,7 @@ package syncapi
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -13,7 +14,7 @@ import (
 
 const (
 	databaseName          = "workspace.sqlite"
-	databaseSchemaVersion = 2
+	databaseSchemaVersion = 3
 	minimumSQLiteVersion  = 3051003
 )
 
@@ -132,6 +133,26 @@ func initializeDatabaseSchema(db *sql.DB) error {
         )`); err != nil {
 			return fmt.Errorf("migrate database schema to version 2: %w", err)
 		}
+		version = 2
+	}
+	if version == 2 {
+		statements := []string{
+			`ALTER TABLE workspace ADD COLUMN selected_theme_id TEXT NOT NULL DEFAULT 'hiraya-dusk'`,
+			`ALTER TABLE workspace ADD COLUMN theme_selection_revision INTEGER NOT NULL DEFAULT 0`,
+			`CREATE TABLE custom_themes (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            definition_json TEXT NOT NULL,
+            revision INTEGER NOT NULL
+        )`,
+			`UPDATE workspace SET selected_theme_id = 'hiraya-dusk',
+		    theme_selection_revision = 0, wire_schema_version = 5`,
+		}
+		for _, statement := range statements {
+			if _, err := tx.Exec(statement); err != nil {
+				return fmt.Errorf("migrate database schema to version 3: %w", err)
+			}
+		}
 	}
 	if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version=%d`, databaseSchemaVersion)); err != nil {
 		return fmt.Errorf("set database schema version: %w", err)
@@ -147,10 +168,12 @@ func (s *Store) loadDatabaseWorkspace() (Workspace, bool, error) {
 	var initialized, snapToGrid, autoSave int
 	err := s.db.QueryRow(`SELECT wire_schema_version, workspace_id, initialized, revision,
         snap_to_grid, wallpaper, layout_revision, editor_auto_save, editor_font_size,
-        editor_language, settings_revision FROM workspace WHERE singleton = 1`).Scan(
+        editor_language, settings_revision, selected_theme_id, theme_selection_revision
+        FROM workspace WHERE singleton = 1`).Scan(
 		&workspace.SchemaVersion, &workspace.WorkspaceID, &initialized, &workspace.Revision,
 		&snapToGrid, &workspace.Layout.Wallpaper, &workspace.LayoutRevision, &autoSave,
 		&workspace.EditorSettings.FontSize, &workspace.EditorSettings.Language, &workspace.SettingsRevision,
+		&workspace.Appearance.SelectedThemeID, &workspace.Appearance.SelectionRevision,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Workspace{}, false, nil
@@ -186,14 +209,37 @@ func (s *Store) loadDatabaseWorkspace() (Workspace, bool, error) {
 	if err := rows.Err(); err != nil {
 		return Workspace{}, false, fmt.Errorf("load workspace entries: %w", err)
 	}
+	themeRows, err := s.db.Query(`SELECT id, name, definition_json, revision FROM custom_themes ORDER BY rowid`)
+	if err != nil {
+		return Workspace{}, false, fmt.Errorf("load custom themes: %w", err)
+	}
+	defer themeRows.Close()
+	workspace.Appearance.CustomThemes = []CustomTheme{}
+	for themeRows.Next() {
+		var theme CustomTheme
+		var definition []byte
+		if err := themeRows.Scan(&theme.ID, &theme.Name, &definition, &theme.Revision); err != nil {
+			return Workspace{}, false, fmt.Errorf("load custom theme: %w", err)
+		}
+		if err := json.Unmarshal(definition, &theme.Definition); err != nil {
+			return Workspace{}, false, fmt.Errorf("decode custom theme %q: %w", theme.ID, err)
+		}
+		workspace.Appearance.CustomThemes = append(workspace.Appearance.CustomThemes, theme)
+	}
+	if err := themeRows.Err(); err != nil {
+		return Workspace{}, false, fmt.Errorf("load custom themes: %w", err)
+	}
 	if !validID(workspace.WorkspaceID) {
 		return Workspace{}, false, fmt.Errorf("stored workspace has invalid workspace ID")
+	}
+	if err := validateAppearance(workspace.Appearance); err != nil {
+		return Workspace{}, false, fmt.Errorf("stored workspace: %w", err)
 	}
 	if workspace.Initialized {
 		if err := validateSettings(workspace.EditorSettings); err != nil {
 			return Workspace{}, false, fmt.Errorf("stored workspace: %w", err)
 		}
-		if err := validateWorkspace(workspace.Entries, workspace.Layout); err != nil {
+		if err := validateWorkspace(workspace.Entries, workspace.Layout, workspace.Appearance); err != nil {
 			return Workspace{}, false, fmt.Errorf("stored workspace: %w", err)
 		}
 	}
@@ -213,17 +259,23 @@ func (s *Store) persistDatabaseWithReceipt(next Workspace, importedJSON bool, re
 	if _, err := tx.Exec(`DELETE FROM entries`); err != nil {
 		return err
 	}
+	if _, err := tx.Exec(`DELETE FROM custom_themes`); err != nil {
+		return err
+	}
 	_, err = tx.Exec(`INSERT INTO workspace (singleton, wire_schema_version, workspace_id, initialized,
         revision, snap_to_grid, wallpaper, layout_revision, editor_auto_save, editor_font_size,
-        editor_language, settings_revision) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        editor_language, settings_revision, selected_theme_id, theme_selection_revision)
+        VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(singleton) DO UPDATE SET wire_schema_version=excluded.wire_schema_version,
         workspace_id=excluded.workspace_id, initialized=excluded.initialized, revision=excluded.revision,
         snap_to_grid=excluded.snap_to_grid, wallpaper=excluded.wallpaper, layout_revision=excluded.layout_revision,
         editor_auto_save=excluded.editor_auto_save, editor_font_size=excluded.editor_font_size,
-        editor_language=excluded.editor_language, settings_revision=excluded.settings_revision`,
+        editor_language=excluded.editor_language, settings_revision=excluded.settings_revision,
+        selected_theme_id=excluded.selected_theme_id, theme_selection_revision=excluded.theme_selection_revision`,
 		next.SchemaVersion, next.WorkspaceID, next.Initialized, next.Revision, next.Layout.SnapToGrid,
 		next.Layout.Wallpaper, next.LayoutRevision, next.EditorSettings.AutoSave,
-		next.EditorSettings.FontSize, next.EditorSettings.Language, next.SettingsRevision)
+		next.EditorSettings.FontSize, next.EditorSettings.Language, next.SettingsRevision,
+		next.Appearance.SelectedThemeID, next.Appearance.SelectionRevision)
 	if err != nil {
 		return err
 	}
@@ -233,6 +285,16 @@ func (s *Store) persistDatabaseWithReceipt(next Workspace, importedJSON bool, re
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, ordinal, entry.ID, entry.Kind, entry.Name,
 			entry.ParentID, entry.ModifiedAt, entry.Position.X, entry.Position.Y, entry.MimeType,
 			entry.Size, entry.Revision, entry.ContentRevision); err != nil {
+			return err
+		}
+	}
+	for _, theme := range next.Appearance.CustomThemes {
+		definition, err := json.Marshal(theme.Definition)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`INSERT INTO custom_themes (id, name, definition_json, revision) VALUES (?, ?, ?, ?)`,
+			theme.ID, theme.Name, string(definition), theme.Revision); err != nil {
 			return err
 		}
 	}

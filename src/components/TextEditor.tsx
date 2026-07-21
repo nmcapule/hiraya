@@ -6,10 +6,13 @@ import { json } from "@codemirror/lang-json";
 import { markdown } from "@codemirror/lang-markdown";
 import { xml } from "@codemirror/lang-xml";
 import { yaml } from "@codemirror/lang-yaml";
+import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { Compartment, EditorState, type Extension, type Range, StateField } from "@codemirror/state";
 import { Decoration, type DecorationSet, EditorView, keymap, WidgetType } from "@codemirror/view";
+import { tags } from "@lezer/highlight";
 import { basicSetup } from "codemirror";
 import type { EditorLanguage, EditorSettings, FileEntry } from "../types";
+import type { ThemeDefinition } from "../lib/themes";
 import { editorLanguageFor, fileCapabilities } from "../ui/file-capabilities";
 
 type LinkedFile = { file: FileEntry; blob: Blob };
@@ -18,6 +21,7 @@ type Props = {
   file: FileEntry;
   value: string;
   settings: EditorSettings;
+  theme: ThemeDefinition;
   readOnly?: boolean;
   onChange: (value: string) => void;
   onSave: () => void;
@@ -39,6 +43,28 @@ function languageExtension(language: EditorLanguage): Extension {
     case "yaml": return yaml();
     default: return [];
   }
+}
+
+function editorTheme(theme: ThemeDefinition): Extension {
+  const { colors } = theme;
+  return [
+    EditorView.theme({
+      "&": { color: colors.editorText, backgroundColor: colors.editorBackground },
+      ".cm-content": { caretColor: colors.accent },
+      ".cm-cursor, .cm-dropCursor": { borderLeftColor: colors.accent },
+      ".cm-gutters": { color: colors.textMuted, backgroundColor: colors.editorGutter, borderColor: colors.border },
+      ".cm-activeLine, .cm-activeLineGutter": { backgroundColor: `${colors.selection}1f` },
+      "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection": { backgroundColor: `${colors.selection}45` },
+    }),
+    syntaxHighlighting(HighlightStyle.define([
+      { tag: [tags.keyword, tags.operatorKeyword, tags.modifier], color: colors.editorKeyword },
+      { tag: [tags.string, tags.special(tags.string)], color: colors.editorString },
+      { tag: [tags.comment, tags.lineComment, tags.blockComment], color: colors.editorComment, fontStyle: "italic" },
+      { tag: [tags.number, tags.bool, tags.null], color: colors.accent },
+      { tag: [tags.heading, tags.strong], color: colors.editorKeyword, fontWeight: "700" },
+      { tag: [tags.link, tags.url], color: colors.accent, textDecoration: "underline" },
+    ])),
+  ];
 }
 
 function markdownLinks(text: string) {
@@ -185,17 +211,18 @@ function inlinePreviews(
   });
 }
 
-export function TextEditor({ file, value, settings, readOnly = false, onChange, onSave, onResolveLink, onOpenLinkedFile }: Props) {
+export function TextEditor({ file, value, settings, theme, readOnly = false, onChange, onSave, onResolveLink, onOpenLinkedFile }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView>(null);
   const languageConfig = useRef(new Compartment());
   const fontConfig = useRef(new Compartment());
   const editableConfig = useRef(new Compartment());
+  const themeConfig = useRef(new Compartment());
   const onChangeRef = useRef(onChange);
   const onSaveRef = useRef(onSave);
   const resolveLinkRef = useRef(onResolveLink);
   const openLinkedFileRef = useRef(onOpenLinkedFile);
-  const initialConfig = useRef({ value, fileName: file.name, language: editorLanguageFor(file.name, settings.language), fontSize: settings.fontSize, readOnly });
+  const initialConfig = useRef({ value, fileName: file.name, language: editorLanguageFor(file.name, settings.language), fontSize: settings.fontSize, theme, readOnly });
   onChangeRef.current = onChange;
   onSaveRef.current = onSave;
   resolveLinkRef.current = onResolveLink;
@@ -214,6 +241,7 @@ export function TextEditor({ file, value, settings, readOnly = false, onChange, 
         languageConfig.current.of(languageExtension(initialConfig.current.language)),
         fontConfig.current.of(EditorView.theme({ "&": { fontSize: `${initialConfig.current.fontSize}px` } })),
         editableConfig.current.of(EditorView.editable.of(!initialConfig.current.readOnly)),
+        themeConfig.current.of(editorTheme(initialConfig.current.theme)),
         keymap.of([{ key: "Mod-s", preventDefault: true, run: () => { onSaveRef.current(); return true; } }]),
         EditorView.updateListener.of((update) => {
           if (update.docChanged) onChangeRef.current(update.state.doc.toString());
@@ -248,6 +276,10 @@ export function TextEditor({ file, value, settings, readOnly = false, onChange, 
   useEffect(() => {
     viewRef.current?.dispatch({ effects: editableConfig.current.reconfigure(EditorView.editable.of(!readOnly)) });
   }, [readOnly]);
+
+  useEffect(() => {
+    viewRef.current?.dispatch({ effects: themeConfig.current.reconfigure(editorTheme(theme)) });
+  }, [theme]);
 
   return <div className="text-editor" ref={containerRef} aria-label={`Contents of ${file.name}`} />;
 }
