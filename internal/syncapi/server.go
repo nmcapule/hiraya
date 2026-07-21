@@ -1157,6 +1157,7 @@ func (s *Server) static(w http.ResponseWriter, r *http.Request) {
 	rel := strings.TrimPrefix(clean, "/")
 	path := filepath.Join(s.staticDir, filepath.FromSlash(rel))
 	if info, err := os.Stat(path); err == nil && !info.IsDir() {
+		setStaticCachePolicy(w, clean)
 		http.ServeFile(w, r, path)
 		return
 	}
@@ -1165,7 +1166,19 @@ func (s *Server) static(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	w.Header().Set("Cache-Control", "no-cache")
 	http.ServeFile(w, r, index)
+}
+
+func setStaticCachePolicy(w http.ResponseWriter, path string) {
+	if strings.HasPrefix(path, "/assets/") {
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		return
+	}
+	switch path {
+	case "/", "/index.html", "/sw.js", "/registerSW.js", "/manifest.webmanifest":
+		w.Header().Set("Cache-Control", "no-cache")
+	}
 }
 
 func (s *Server) requireInitializedLocked(w http.ResponseWriter) bool {

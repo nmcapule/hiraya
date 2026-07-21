@@ -1,4 +1,4 @@
-import { ArrowsOut, CornersIn, CornersOut, ExportIcon, GridFour, PaintBrush } from "@phosphor-icons/react";
+import { ArrowClockwise, ArrowsOut, CornersIn, CornersOut, ExportIcon, GridFour, PaintBrush } from "@phosphor-icons/react";
 import { WALLPAPERS, type DesktopLayout, type Wallpaper } from "../types";
 
 const WALLPAPER_LABELS: Record<Wallpaper, { name: string; description: string }> = {
@@ -14,12 +14,18 @@ type Props = {
   exporting: boolean;
   fullscreenEnabled: boolean;
   isFullscreen: boolean;
+  updateSupported: boolean;
+  updateReady: boolean;
+  updateChecking: boolean;
+  autoUpdate: boolean;
   onLayoutChange: (layout: DesktopLayout) => void;
   onExport: () => void;
   onToggleFullscreen: () => void;
+  onCheckForUpdate: () => void;
+  onAutoUpdateChange: (enabled: boolean) => void;
 };
 
-export function SettingsWindow({ layout, canMutate, exportDisabled, exporting, fullscreenEnabled, isFullscreen, onLayoutChange, onExport, onToggleFullscreen }: Props) {
+export function SettingsWindow({ layout, canMutate, exportDisabled, exporting, fullscreenEnabled, isFullscreen, updateSupported, updateReady, updateChecking, autoUpdate, onLayoutChange, onExport, onToggleFullscreen, onCheckForUpdate, onAutoUpdateChange }: Props) {
   return (
     <div className="settings-window settings-window--embedded">
         <div className="settings-window__content">
@@ -78,6 +84,28 @@ export function SettingsWindow({ layout, canMutate, exportDisabled, exporting, f
                   <button className="button button--quiet" type="button" onClick={onToggleFullscreen}>{isFullscreen ? "Exit" : "Enter"}</button>
                 </div>
               )}
+            </div>
+          </section>
+
+          <section className="settings-section" aria-labelledby="updates-heading">
+            <div className="settings-section__heading">
+              <ArrowClockwise size={18} />
+              <div>
+                <h3 id="updates-heading">Updates</h3>
+                <p>Keep this installed frontend current.</p>
+              </div>
+            </div>
+            <div className="settings-list">
+              <div className="settings-row">
+                <span className="settings-row__icon"><ArrowClockwise size={17} weight={updateReady ? "bold" : "regular"} /></span>
+                <span className="settings-row__copy"><strong>Update to latest version</strong><small>{!updateSupported ? "Available in production PWA builds." : updateReady ? "A new version is ready to install." : "Check for a newer frontend release."}</small></span>
+                <button className="button button--quiet" type="button" disabled={!updateSupported || updateChecking} onClick={onCheckForUpdate}>{updateChecking ? "Checking" : updateReady ? "Review" : "Check now"}</button>
+              </div>
+              <label className="settings-row">
+                <span className="settings-row__icon"><ArrowClockwise size={17} /></span>
+                <span className="settings-row__copy"><strong>Auto-update to latest version</strong><small>Check automatically, then ask before reloading.</small></span>
+                <input type="checkbox" checked={autoUpdate} disabled={!updateSupported} onChange={(event) => onAutoUpdateChange(event.target.checked)} />
+              </label>
             </div>
           </section>
 

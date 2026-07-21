@@ -1235,6 +1235,43 @@ func TestStaticSPAFallbackDoesNotInterceptAPI(t *testing.T) {
 	}
 }
 
+func TestStaticCacheHeaders(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "assets"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for path, contents := range map[string]string{
+		"index.html":           "index",
+		"sw.js":                "worker",
+		"assets/app-abc123.js": "asset",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(path)), []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	server := New(store, dir, 1024)
+
+	for path, want := range map[string]string{
+		"/assets/app-abc123.js": "public, max-age=31536000, immutable",
+		"/sw.js":                "no-cache",
+		"/route":                "no-cache",
+	} {
+		response := httptest.NewRecorder()
+		server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d", path, response.Code)
+		}
+		if got := response.Header().Get("Cache-Control"); got != want {
+			t.Errorf("GET %s Cache-Control = %q, want %q", path, got, want)
+		}
+	}
+}
+
 func Example_entryResponse() {
 	response := entryResponse{Revision: 4, Entry: Entry{Kind: "folder", ID: "docs", Name: "Docs", Revision: 4}}
 	b, _ := json.Marshal(response)

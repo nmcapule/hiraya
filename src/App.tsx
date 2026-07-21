@@ -9,6 +9,7 @@ import { FileWindow } from "./components/FileWindow";
 import { FolderExplorer } from "./components/FolderExplorer";
 import { MoveDialog } from "./components/MoveDialog";
 import { SettingsWindow } from "./components/SettingsWindow";
+import { UpdateToast } from "./components/UpdateToast";
 import {
   createFolder,
   createTextFile,
@@ -28,7 +29,8 @@ import {
   stopDesktopSync,
   type SyncStatus,
 } from "./lib/sync";
-import { DEFAULT_EDITOR_SETTINGS } from "./lib/opfs";
+import { DEFAULT_EDITOR_SETTINGS, readLocalPreferences, saveLocalPreferences } from "./lib/opfs";
+import { createPwaUpdater, type PwaUpdater } from "./lib/pwa-update";
 import { exportSeededDesktop } from "./lib/seeded";
 import { formatDesktopRoute, normalizeDesktopRoute, parseDesktopRoute, type DesktopRoute } from "./lib/routes";
 import { DEFAULT_WALLPAPER, type ContextMenuState, type DesktopEntry, type DesktopLayout, type DialogState, type EditorSettings, type EntryPosition, type FileEntry } from "./types";
@@ -75,6 +77,13 @@ function App() {
   const [draggedPageKey, setDraggedPageKey] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(() => Boolean(document.fullscreenElement));
   const [isMobile, setIsMobile] = useState(() => window.matchMedia("(max-width: 620px)").matches);
+  const [autoUpdate, setAutoUpdate] = useState(true);
+  const [updateSupported, setUpdateSupported] = useState(false);
+  const [updateReady, setUpdateReady] = useState(false);
+  const [updateChecking, setUpdateChecking] = useState(false);
+  const [showUpdateToast, setShowUpdateToast] = useState(false);
+  const [updateBlocked, setUpdateBlocked] = useState(false);
+  const [updateApplying, setUpdateApplying] = useState(false);
   const desktopRef = useRef<HTMLElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
   const uploadRef = useRef<HTMLInputElement>(null);
@@ -121,6 +130,10 @@ function App() {
   const editorSettingsSaveRef = useRef<Promise<void>>(Promise.resolve());
   const contentRevisionsRef = useRef<Record<string, number>>({});
   const fileDirtyRef = useRef<Record<string, boolean>>({});
+  const updaterRef = useRef<PwaUpdater | null>(null);
+  const autoUpdateRef = useRef(true);
+  const updatePreferenceLoadedRef = useRef(false);
+  const manualUpdateCheckRef = useRef(false);
   const activeSegment = { column: route?.column ?? 0, row: route?.row ?? 0 };
   const routeExplorerFolderId = route?.explorerFolderId;
   const routeFileId = route?.fileId;
@@ -318,6 +331,51 @@ function App() {
       active = false;
       unsubscribe();
       stopDesktopSync();
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    const updater = createPwaUpdater({
+      onUpdateAvailable: () => {
+        if (!active) return;
+        setUpdateReady(true);
+        if (manualUpdateCheckRef.current || updatePreferenceLoadedRef.current && autoUpdateRef.current) setShowUpdateToast(true);
+      },
+      onError: () => { if (active) setError("Hiraya could not check for frontend updates."); },
+    });
+    updaterRef.current = updater;
+    setUpdateSupported(updater.supported);
+
+    const checkAutomatically = () => {
+      if (!active || !autoUpdateRef.current || !updater.supported) return;
+      void updater.check().catch(() => { if (active) setError("Hiraya could not check for frontend updates."); });
+    };
+    const checkWhenVisible = () => { if (document.visibilityState === "visible") checkAutomatically(); };
+    window.addEventListener("online", checkAutomatically);
+    document.addEventListener("visibilitychange", checkWhenVisible);
+
+    void readLocalPreferences()
+      .then((preferences) => {
+        if (!active) return;
+        autoUpdateRef.current = preferences.autoUpdate;
+        updatePreferenceLoadedRef.current = true;
+        setAutoUpdate(preferences.autoUpdate);
+        checkAutomatically();
+      })
+      .catch(() => {
+        if (!active) return;
+        updatePreferenceLoadedRef.current = true;
+        setError("The local update preference could not be loaded.");
+        checkAutomatically();
+      });
+
+    return () => {
+      active = false;
+      updater.dispose();
+      if (updaterRef.current === updater) updaterRef.current = null;
+      window.removeEventListener("online", checkAutomatically);
+      document.removeEventListener("visibilitychange", checkWhenVisible);
     };
   }, []);
 
@@ -576,6 +634,58 @@ function App() {
     editorSettingsSaveRef.current = editorSettingsSaveRef.current
       .then(() => saveEditorSettings(next))
       .catch(() => { setError("The editor settings could not be saved."); });
+  }
+
+  async function checkForUpdate() {
+    const updater = updaterRef.current;
+    if (!updater?.supported || updateChecking) return;
+    if (updateReady) {
+      setUpdateBlocked(false);
+      setShowUpdateToast(true);
+      return;
+    }
+    manualUpdateCheckRef.current = true;
+    setUpdateChecking(true);
+    try {
+      const result = await updater.check();
+      if (result === "current") setNotice("Hiraya is already up to date.");
+    } catch {
+      setError("Hiraya could not check for frontend updates.");
+    } finally {
+      manualUpdateCheckRef.current = false;
+      setUpdateChecking(false);
+    }
+  }
+
+  async function changeAutoUpdate(enabled: boolean) {
+    const previous = autoUpdateRef.current;
+    autoUpdateRef.current = enabled;
+    setAutoUpdate(enabled);
+    try {
+      await saveLocalPreferences({ autoUpdate: enabled });
+      if (enabled) void updaterRef.current?.check().catch(() => setError("Hiraya could not check for frontend updates."));
+    } catch {
+      autoUpdateRef.current = previous;
+      setAutoUpdate(previous);
+      setError("The local update preference could not be saved.");
+    }
+  }
+
+  async function activateUpdate() {
+    if (Object.values(fileDirtyRef.current).some(Boolean)) {
+      setUpdateBlocked(true);
+      return;
+    }
+    const updater = updaterRef.current;
+    if (!updater) return;
+    setUpdateBlocked(false);
+    setUpdateApplying(true);
+    try {
+      await updater.activate();
+    } catch {
+      setUpdateApplying(false);
+      setError("The frontend update could not be applied.");
+    }
   }
 
   async function handleDialogSubmit(name: string) {
@@ -1269,9 +1379,15 @@ function App() {
                     exporting={exporting}
                     fullscreenEnabled={document.fullscreenEnabled}
                     isFullscreen={isFullscreen}
+                    updateSupported={updateSupported}
+                    updateReady={updateReady}
+                    updateChecking={updateChecking}
+                    autoUpdate={autoUpdate}
                     onLayoutChange={applyLayout}
                     onExport={() => void handleExport()}
                     onToggleFullscreen={() => void toggleFullscreen()}
+                    onCheckForUpdate={() => void checkForUpdate()}
+                    onAutoUpdateChange={(enabled) => void changeAutoUpdate(enabled)}
                   />
                 )}
               </AppWindow>
@@ -1348,6 +1464,14 @@ function App() {
 
       {error && <div className="error-banner" role="alert"><WarningCircle size={19} weight="fill" /><span>{error}</span><button type="button" onClick={() => setError("")} aria-label="Dismiss error">Dismiss</button></div>}
       {notice && <div className="notice" role="status">{notice}</div>}
+      {showUpdateToast && (
+        <UpdateToast
+          applying={updateApplying}
+          blocked={updateBlocked}
+          onConfirm={() => void activateUpdate()}
+          onDismiss={() => { setShowUpdateToast(false); setUpdateBlocked(false); }}
+        />
+      )}
 
       {contextMenu?.type === "entry" && contextMenuEntry && (
         <ContextMenu

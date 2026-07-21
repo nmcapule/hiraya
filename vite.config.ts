@@ -14,8 +14,8 @@ export default defineConfig(({ mode }) => {
       seededDesktopPlugin(process.cwd(), env.HIRAYA_SEEDED_DIR),
       react(),
       VitePWA({
-        injectRegister: "auto",
-        registerType: "autoUpdate",
+        injectRegister: null,
+        registerType: "prompt",
         includeAssets: ["favicon.svg", "apple-touch-icon.png"],
         manifest: {
           name: "Hiraya Desktop",
@@ -34,9 +34,8 @@ export default defineConfig(({ mode }) => {
         },
         workbox: {
           cleanupOutdatedCaches: true,
-          clientsClaim: true,
           globPatterns: ["**/*.{js,css,html,ico,png,svg,webmanifest}"],
-          skipWaiting: true,
+          navigateFallbackDenylist: [/^\/api\//],
         },
       }),
     ],

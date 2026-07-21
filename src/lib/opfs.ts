@@ -13,6 +13,7 @@ import {
 import { parseLayout, parsePosition, parseRootDesktopPositions } from "./contracts";
 
 const MANIFEST_NAME = ".hiraya-manifest.json";
+const PREFERENCES_NAME = ".hiraya-preferences.json";
 const FILES_DIRECTORY = "files";
 
 type Manifest = PersistedManifestV12;
@@ -24,6 +25,8 @@ export type DesktopSnapshot = {
   editorSettings: EditorSettings;
   sync: DesktopSyncState;
 };
+
+export type LocalPreferences = { autoUpdate: boolean };
 
 export { DEFAULT_EDITOR_SETTINGS } from "./manifest-codec";
 
@@ -163,6 +166,33 @@ function serializeStorage<T>(operation: () => Promise<T>): Promise<T> {
   const next = storageWork.then(locked, locked);
   storageWork = next.then(() => undefined, () => undefined);
   return next;
+}
+
+async function readLocalPreferencesUnsafe(): Promise<LocalPreferences> {
+  const root = await getRoot();
+  let handle: FileSystemFileHandle;
+  try {
+    handle = await root.getFileHandle(PREFERENCES_NAME);
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "NotFoundError") return { autoUpdate: true };
+    throw error;
+  }
+  const value: unknown = JSON.parse(await (await handle.getFile()).text());
+  if (!value || typeof value !== "object" || (value as Record<string, unknown>).version !== 1 || typeof (value as Record<string, unknown>).autoUpdate !== "boolean") {
+    throw new Error("The local preferences have an unsupported format.");
+  }
+  return { autoUpdate: (value as Record<string, unknown>).autoUpdate as boolean };
+}
+
+async function saveLocalPreferencesUnsafe(preferences: LocalPreferences) {
+  const root = await getRoot();
+  const handle = await root.getFileHandle(PREFERENCES_NAME, { create: true });
+  const writable = await handle.createWritable();
+  try {
+    await writable.write(JSON.stringify({ version: 1, autoUpdate: preferences.autoUpdate }));
+  } finally {
+    await writable.close();
+  }
 }
 
 async function loadDesktopUnsafe(_viewport: EntryPosition, seeded: SeededManifest | null = null): Promise<DesktopSnapshot> {
@@ -525,3 +555,5 @@ export function readFile(id: FileEntry["id"]) { return serializeStorage(() => re
 export function readDesktopSnapshot() { return serializeStorage(() => readDesktopSnapshotUnsafe()); }
 export function readFileByRelativePath(fromFileId: FileEntry["id"], relativePath: string) { return serializeStorage(() => readFileByRelativePathUnsafe(fromFileId, relativePath)); }
 export function saveTextFile(id: FileEntry["id"], content: string) { return serializeStorage(() => saveTextFileUnsafe(id, content)); }
+export function readLocalPreferences() { return serializeStorage(() => readLocalPreferencesUnsafe()); }
+export function saveLocalPreferences(preferences: LocalPreferences) { return serializeStorage(() => saveLocalPreferencesUnsafe(preferences)); }

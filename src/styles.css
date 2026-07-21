@@ -1844,6 +1844,89 @@ textarea:focus-visible {
   animation: toast-in 180ms ease-out;
 }
 
+.update-toast {
+  position: fixed;
+  z-index: 52;
+  top: 58px;
+  right: 16px;
+  display: flex;
+  width: min(390px, calc(100vw - 32px));
+  align-items: flex-start;
+  gap: 10px;
+  padding: 13px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 14px;
+  color: #f3f2e9;
+  background: rgba(31, 46, 48, 0.94);
+  box-shadow: 0 16px 54px rgba(7, 17, 19, 0.38);
+  backdrop-filter: blur(18px);
+  animation: toast-in-right 180ms ease-out;
+}
+
+.update-toast__icon {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 9px;
+  color: #e5bb69;
+  background: rgba(183, 128, 40, 0.18);
+}
+
+.update-toast__copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.update-toast__copy strong,
+.update-toast__copy > span {
+  display: block;
+}
+
+.update-toast__copy strong {
+  font-size: 11px;
+}
+
+.update-toast__copy > span {
+  margin-top: 3px;
+  color: rgba(255, 255, 255, 0.68);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.update-toast__actions {
+  display: flex;
+  gap: 7px;
+  margin-top: 10px;
+}
+
+.update-toast__actions .button {
+  min-height: 30px;
+  padding: 6px 10px;
+  font-size: 9px;
+}
+
+.update-toast__dismiss {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 7px;
+  color: rgba(255, 255, 255, 0.65);
+  background: transparent;
+  cursor: pointer;
+}
+
+.update-toast__dismiss:hover,
+.update-toast__dismiss:focus-visible {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.1);
+}
+
 .error-banner {
   bottom: 20px;
   width: min(560px, calc(100% - 28px));
@@ -1889,6 +1972,10 @@ textarea:focus-visible {
 
 @keyframes breathe {
   to { opacity: 0.48; }
+}
+
+@keyframes toast-in-right {
+  from { opacity: 0; transform: translate3d(10px, -4px, 0); }
 }
 
 @keyframes backdrop-in {
@@ -2091,6 +2178,14 @@ textarea:focus-visible {
   .settings-export {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .update-toast {
+    top: auto;
+    right: 12px;
+    bottom: 12px;
+    width: calc(100vw - 24px);
+    animation-name: toast-in;
   }
 
   .folder-explorer,

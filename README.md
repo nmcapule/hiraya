@@ -56,7 +56,7 @@ If the server has never been initialized, the first browser uploads its complete
 
 Hiraya is an installable progressive web app. In a supported browser, use the browser's **Install app** action to add it to the desktop or home screen. The installed app launches in a standalone window; open **Settings** and use **Fullscreen** to enter or leave native fullscreen mode where the Fullscreen API is available.
 
-The production service worker caches Hiraya's app shell, so the installed app can reopen offline after it has loaded successfully once. Saved files and desktop metadata remain available to view from the OPFS cache, but changes are disabled until the sync server reconnects. The cache is tied to the exact browser origin and is not a backup: clearing site data removes it, and using a different hostname or port creates a separate local cache.
+The production service worker caches Hiraya's app shell, so the installed app can reopen quickly or offline after it has loaded successfully once. Hashed frontend resources use long-lived browser caching when served by the Go process. Open **Settings** to check for a new frontend version or change automatic update checks; a detected update waits for confirmation before reloading. Saved files and desktop metadata remain available to view from the OPFS cache, but changes are disabled until the sync server reconnects. The cache is tied to the exact browser origin and is not a backup: clearing site data removes it, and using a different hostname or port creates a separate local cache.
 
 Installation and offline caching require HTTPS in production. Browsers treat `localhost` as secure for development.
 
