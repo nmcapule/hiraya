@@ -1,0 +1,9 @@
+.git
+.github
+.agent-screenshots
+.hiraya-data
+node_modules
+dist
+hiraya-server
+.DS_Store
+*.local

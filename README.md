@@ -44,6 +44,32 @@ go build -o hiraya-server ./cmd/hiraya-server
 
 This initial server exposes one shared workspace without authentication. Keep it bound to a trusted interface; anyone who can reach it can read or change the workspace.
 
+### Docker
+
+Build the production image and run it with a named volume for the authoritative workspace:
+
+```sh
+docker build -t hiraya .
+docker run -d \
+  --name hiraya \
+  --restart unless-stopped \
+  -p 8080:8080 \
+  -v hiraya-data:/data \
+  hiraya
+```
+
+The container serves both the frontend and API on port `8080`, reports its status at `/api/health`, and runs as an unprivileged user. Keep `/data` on an explicitly managed volume so the authoritative workspace survives container replacement. `HIRAYA_MAX_UPLOAD_BYTES` can be passed with `docker run -e` to override the 100 MiB default.
+
+To bundle a seeded desktop into the frontend, pass its repository-relative directory at image build time:
+
+```sh
+docker build \
+  --build-arg HIRAYA_SEEDED_DIR=examples/seeded \
+  -t hiraya:seeded .
+```
+
+Put the container behind an HTTPS reverse proxy for production PWA installation and offline caching. The server has no authentication, so do not expose it to untrusted networks without adding access controls at the proxy or application layer.
+
 ## Synchronization
 
 The server orders accepted writes with a monotonic revision. The last accepted write to an entry wins, while writes to different entries are retained independently. Layout and editor settings have their own revisions. Server-Sent Events notify connected browsers of changes; browsers then fetch current metadata and only download file bodies whose content revision changed.
