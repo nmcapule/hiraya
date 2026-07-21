@@ -176,6 +176,8 @@ textarea:focus-visible {
   inset: 44px 0 0;
   overflow: hidden;
   isolation: isolate;
+  -webkit-user-select: none;
+  user-select: none;
   --wallpaper-main:
     radial-gradient(circle at 78% 25%, rgba(239, 186, 100, 0.34) 0 3%, transparent 19%),
     radial-gradient(ellipse at 86% 37%, rgba(218, 134, 84, 0.23), transparent 27%),
@@ -264,7 +266,8 @@ textarea:focus-visible {
   will-change: transform;
 }
 
-.desktop-canvas[data-swiping] {
+.desktop-canvas[data-swiping],
+.desktop-canvas[data-icon-dragging] {
   transition: none;
 }
 
@@ -1677,7 +1680,8 @@ textarea:focus-visible {
     will-change: transform;
   }
 
-  .desktop-canvas[data-swiping] {
+  .desktop-canvas[data-swiping],
+  .desktop-canvas[data-icon-dragging] {
     transition: none;
   }
 

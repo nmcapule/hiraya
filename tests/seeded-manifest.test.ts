@@ -37,8 +37,22 @@ describe("seeded manifests", () => {
         { kind: "folder", id: "b", name: "B", parentId: null, viewId: "second", modifiedAt: 1, position: { x: 1, y: 1 } },
       ],
     });
-    expect(parsed.version).toBe(4);
+    expect(parsed.version).toBe(5);
     expect(parsed.layout.rootOrder).toEqual(["b", "a"]);
+    expect(parsed.layout.workspaceBreaks).toEqual([]);
     expect(parsed.entries.some((entry) => "viewId" in entry)).toBe(false);
+  });
+
+  test("migrates version 4 with no workspace breaks", () => {
+    const snapshot = desktopSnapshot();
+    snapshot.entries = [{ kind: "folder", id: "a", name: "A", parentId: null, modifiedAt: 1, position: { x: 0, y: 0 } }];
+    const parsed = parsePortableSeededManifest({
+      version: 4,
+      layout: { rootOrder: ["a"], snapToGrid: true, wallpaper: "grove" },
+      editorSettings: snapshot.editorSettings,
+      entries: snapshot.entries,
+    });
+    expect(parsed.version).toBe(5);
+    expect(parsed.layout.workspaceBreaks).toEqual([]);
   });
 });

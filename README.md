@@ -25,7 +25,7 @@ The authoritative file tree is stored under `.hiraya-data/files` using the same 
 
 Files and folders may also be changed directly in the server's `files` directory. Hiraya watches the tree and performs a fallback scan every second; it also scans at startup for changes made while the server was stopped. Same-path file edits preserve their ID, while external renames and moves are represented as a deletion and a newly created entry. New root entries are appended to the synchronized desktop order. Symbolic links, non-regular files, invalid names, and case-insensitive sibling conflicts are ignored and logged. Avoid placing unrelated files in this directory.
 
-Desktop workspaces are responsive pages rather than persisted containers. Each browser fits the synchronized root icon order into its current viewport, preserving dragged positions when they remain visible and non-overlapping. Additional workspaces appear only when the icons no longer fit; empty workspaces are never stored. Reordering workspace pages updates the shared root icon order, then every device repaginates that order for its own resolution.
+Desktop workspaces are responsive pages rather than persisted containers. Each browser fits the synchronized root icon order into its current viewport, preserving dragged positions when they remain visible and non-overlapping. Additional workspaces appear when icons no longer fit, and dragging an icon through any outer desktop edge creates a non-empty adaptive workspace. Edge-created workspaces remain separate at the creation capacity and on smaller screens, then merge on roomier devices. Empty workspaces are never stored. Reordering workspace pages updates the shared root icon order, then every device repaginates that order for its own resolution.
 
 The backend accepts these optional environment variables:
 
@@ -67,7 +67,7 @@ HIRAYA_SEEDED_DIR=examples/seeded bun run dev
 HIRAYA_SEEDED_DIR=examples/seeded bun run build
 ```
 
-The value must be a directory inside the repository. It must contain a `manifest.json`; each file entry's `contentUrl` is resolved relative to that directory. See `examples/seeded` for the version 4 format. Version 1 through 3 packages remain supported and are migrated from views to `layout.rootOrder`; older packages default to the Dusk wallpaper, and version 1 also defaults to snap-to-grid being disabled.
+The value must be a directory inside the repository. It must contain a `manifest.json`; each file entry's `contentUrl` is resolved relative to that directory. See `examples/seeded` for the version 5 format. Version 1 through 4 packages remain supported; versions 1 through 3 are migrated from views to `layout.rootOrder`, while version 4 defaults to no adaptive workspace breaks. Older packages default to the Dusk wallpaper, and version 1 also defaults to snap-to-grid being disabled.
 
 The seeded desktop is copied into OPFS only when the browser origin has no Hiraya manifest. Existing desktops, including intentionally empty desktops, are never merged with or replaced. After seeding, seeded files and folders behave like ordinary editable entries. If the shared server is also uninitialized, this seeded desktop becomes its initial workspace; an initialized server remains authoritative. Clearing the origin's site data removes the local cache and allows seeded content to seed it again before synchronization.
 

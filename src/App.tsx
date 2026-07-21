@@ -15,6 +15,7 @@ import {
   importFiles,
   initializeDesktop,
   moveEntry,
+  moveDesktopEntry,
   readFile,
   readFileByRelativePath,
   renameEntry,
@@ -30,7 +31,7 @@ import { DEFAULT_EDITOR_SETTINGS } from "./lib/opfs";
 import { exportSeededDesktop } from "./lib/seeded";
 import { formatDesktopRoute, normalizeDesktopRoute, parseDesktopRoute, type DesktopRoute } from "./lib/routes";
 import { DEFAULT_WALLPAPER, type ContextMenuState, type DesktopEntry, type DesktopLayout, type DialogState, type EditorSettings, type EntryPosition, type FileEntry } from "./types";
-import { desktopSlots, FILE_ICON_SIZE, GRID_ORIGIN, GRID_STEP, nextDesktopPosition, pagePositionTarget, responsiveDesktop, snapAxis } from "./ui/desktop-geometry";
+import { createEdgeWorkspaceLayout, desktopSlots, FILE_ICON_SIZE, GRID_ORIGIN, GRID_STEP, layoutForPageOrder, moveEntryToWorkspaceLayout, nextDesktopPosition, pagePositionTarget, responsiveDesktop, snapAxis } from "./ui/desktop-geometry";
 import { fileCapabilities } from "./ui/file-capabilities";
 import { topOverlay } from "./ui/overlay";
 import { createWorkspaceIndex } from "./ui/workspace-index";
@@ -57,7 +58,7 @@ function App() {
   const [route, setRoute] = useState<DesktopRoute | null>(null);
   const [clock, setClock] = useState(() => new Date());
   const [desktopSize, setDesktopSize] = useState(() => ({ width: window.innerWidth, height: Math.max(1, window.innerHeight - 44) }));
-  const [layout, setLayout] = useState<DesktopLayout>(() => ({ rootOrder: [], snapToGrid: false, wallpaper: DEFAULT_WALLPAPER }));
+  const [layout, setLayout] = useState<DesktopLayout>(() => ({ rootOrder: [], workspaceBreaks: [], snapToGrid: false, wallpaper: DEFAULT_WALLPAPER }));
   const [editorSettings, setEditorSettings] = useState<EditorSettings>(DEFAULT_EDITOR_SETTINGS);
   const [exporting, setExporting] = useState(false);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("connecting");
@@ -77,11 +78,11 @@ function App() {
     startY: number;
     timer: number;
     pageKey: string;
-    initialRootOrder: string[];
+    initialLayout: DesktopLayout;
   } | null>(null);
   const suppressClickRef = useRef(false);
   const edgeDragRef = useRef({ direction: "", time: 0 });
-  const edgeNavigationRef = useRef<{ route: DesktopRoute; historyState: unknown } | null>(null);
+  const edgeNavigationRef = useRef<{ route: DesktopRoute; historyState: unknown; originalLayout?: DesktopLayout; draftEntryId?: string } | null>(null);
   const layoutRef = useRef(layout);
   const entriesRef = useRef(entries);
   const routeRef = useRef<DesktopRoute | null>(null);
@@ -100,7 +101,7 @@ function App() {
   const canMutate = syncStatus === "online" || syncStatus === "local";
   const workspace = useMemo(() => createWorkspaceIndex(entries), [entries]);
   const rootEntries = workspace.roots;
-  const responsive = useMemo(() => responsiveDesktop(entries, layout.rootOrder, desktopSize), [desktopSize, entries, layout.rootOrder]);
+  const responsive = useMemo(() => responsiveDesktop(entries, layout.rootOrder, desktopSize, layout.workspaceBreaks), [desktopSize, entries, layout.rootOrder, layout.workspaceBreaks]);
   const pages = responsive.pages.length ? responsive.pages : [{ entries: [] }];
   const pageColumns = responsive.columns;
   const pageRows = responsive.rows;
@@ -133,7 +134,7 @@ function App() {
 
   function applyLocationRoute(entriesValue = entriesRef.current, layoutValue = layoutRef.current) {
     if (!navigationReadyRef.current) return;
-    const pageCount = Math.max(1, responsiveDesktop(entriesValue, layoutValue.rootOrder, desktopSize).pages.length);
+    const pageCount = Math.max(1, responsiveDesktop(entriesValue, layoutValue.rootOrder, desktopSize, layoutValue.workspaceBreaks).pages.length);
     const normalized = normalizeDesktopRoute(parseDesktopRoute(window.location.hash), entriesValue, pageCount);
     if (!normalized) return;
     const canonicalHash = formatDesktopRoute(normalized);
@@ -142,7 +143,7 @@ function App() {
   }
 
   function navigateRoute(next: DesktopRoute, mode: "push" | "replace" = "push") {
-    const pageCount = Math.max(1, responsiveDesktop(entriesRef.current, layoutRef.current.rootOrder, desktopSize).pages.length);
+    const pageCount = Math.max(1, responsiveDesktop(entriesRef.current, layoutRef.current.rootOrder, desktopSize, layoutRef.current.workspaceBreaks).pages.length);
     const normalized = normalizeDesktopRoute(next, entriesRef.current, pageCount);
     if (normalized) writeRoute(normalized, mode);
   }
@@ -407,7 +408,7 @@ function App() {
   }
 
   function pageIndexForRoot(id: string) {
-    const current = responsiveDesktop(entriesRef.current, layoutRef.current.rootOrder, desktopSize);
+    const current = responsiveDesktop(entriesRef.current, layoutRef.current.rootOrder, desktopSize, layoutRef.current.workspaceBreaks);
     return Math.max(0, current.pages.findIndex((candidate) => candidate.entries.some((entry) => entry.id === id)));
   }
 
@@ -489,46 +490,60 @@ function App() {
   }
 
   async function handleDesktopMove(entry: DesktopEntry, position: EntryPosition, targetParentId: string | null) {
-    if (!canMutate) return;
+    if (!canMutate) return false;
     if (targetParentId) {
-      await handleMoveTo(entry, targetParentId);
-      return;
+      const pending = edgeNavigationRef.current;
+      if (pending?.originalLayout) applyLayout(pending.originalLayout, false);
+      return handleMoveTo(entry, targetParentId, true);
     }
     const finalPosition = layoutRef.current.snapToGrid ? snapDesktopPosition(position) : position;
-    const target = pagePositionTarget(pages.length, pageColumns, { x: desktopSize.width, y: desktopSize.height }, finalPosition);
+    const currentDesktop = responsiveDesktop(entriesRef.current, layoutRef.current.rootOrder, desktopSize, layoutRef.current.workspaceBreaks);
+    const currentPages = currentDesktop.pages.length ? currentDesktop.pages : [{ entries: [] }];
+    const target = pagePositionTarget(currentPages.length, currentDesktop.columns, { x: desktopSize.width, y: desktopSize.height }, finalPosition);
     const localPosition = {
       x: Math.max(8, finalPosition.x - target.column * desktopSize.width),
       y: Math.max(8, finalPosition.y - target.row * desktopSize.height),
     };
     setEntries((current) => current.map((item) => item.id === entry.id ? { ...item, position: localPosition } : item));
     try {
-      if (target.index !== activePageIndex) {
-        const order = layoutRef.current.rootOrder.filter((id) => id !== entry.id);
-        const insertionIndex = Math.min(order.length, (target.index + 1) * responsive.capacity - 1);
-        applyLayout({ ...layoutRef.current, rootOrder: [...order.slice(0, insertionIndex), entry.id, ...order.slice(insertionIndex)] });
-        await layoutSaveRef.current;
+      const pending = edgeNavigationRef.current;
+      if (pending?.draftEntryId === entry.id) {
+        await moveDesktopEntry(entry.id, localPosition, layoutRef.current);
+        return true;
+      }
+      const nextLayout = moveEntryToWorkspaceLayout(layoutRef.current, currentPages, entry.id, target.index, currentDesktop.breakCapacity);
+      if (nextLayout !== layoutRef.current) {
+        applyLayout(nextLayout, false);
+        await moveDesktopEntry(entry.id, localPosition, nextLayout);
+        return true;
       }
       await updateEntryPosition(entry.id, localPosition);
+      return true;
     } catch {
+      const pending = edgeNavigationRef.current;
+      if (pending?.originalLayout) applyLayout(pending.originalLayout, false);
       setError("The new icon position could not be saved.");
+      return false;
     }
   }
 
   async function handleMoveTo(entry: DesktopEntry, parentId: string | null, bubbleError = false) {
-    if (!canMutate) return;
+    if (!canMutate) return false;
     setError("");
     try {
-      if (entry.parentId === parentId) return;
+      if (entry.parentId === parentId) return true;
       const moved = await moveEntry(entry.id, parentId, positionFor(parentId));
       setEntries((current) => current.map((item) => item.id === moved.id ? moved : item));
       if (entry.parentId !== null && parentId === null) placeRootIds([moved.id]);
       setSelectedId(null);
       setContextMenu(null);
       setNotice(`${entry.name} moved`);
+      return true;
     } catch (moveError) {
       const message = moveError instanceof Error ? moveError.message : "The item could not be moved.";
       setError(message);
       if (bubbleError) throw moveError;
+      return false;
     }
   }
 
@@ -591,7 +606,7 @@ function App() {
   }
 
   function goToPage(pageIndex: number, mode: "push" | "replace" = "push") {
-    const current = responsiveDesktop(entriesRef.current, layoutRef.current.rootOrder, desktopSize);
+    const current = responsiveDesktop(entriesRef.current, layoutRef.current.rootOrder, desktopSize, layoutRef.current.workspaceBreaks);
     const pageCount = Math.max(1, current.pages.length);
     const index = Math.max(0, Math.min(pageCount - 1, pageIndex));
     const currentRoute = routeRef.current;
@@ -606,20 +621,21 @@ function App() {
     if (event.button !== 0) return;
     const target = event.target as Element;
     if (target.closest(".file-icon, .empty-state__actions")) return;
+    event.preventDefault();
     swipeRef.current = { axis: null, pointerId: event.pointerId, startIndex: activePageIndex, startTime: performance.now(), startX: event.clientX, startY: event.clientY, x: event.clientX, y: event.clientY };
   }
 
-  function handleIconDragAtEdge(clientX: number, clientY: number) {
+  function handleIconDragAtEdge(entry: DesktopEntry, clientX: number, clientY: number) {
     const desktop = desktopRef.current;
     if (!desktop) return null;
     const bounds = desktop.getBoundingClientRect();
     const threshold = Math.min(36, Math.max(24, Math.min(bounds.width, bounds.height) * 0.06));
     const candidates = [
-      { direction: "left", distance: clientX - bounds.left, enabled: page.column > 0 },
-      { direction: "right", distance: bounds.right - clientX, enabled: page.column < pageColumns - 1 && activePageIndex + 1 < pages.length },
-      { direction: "up", distance: clientY - bounds.top, enabled: page.row > 0 },
-      { direction: "down", distance: bounds.bottom - clientY, enabled: activePageIndex + pageColumns < pages.length },
-    ].filter((candidate) => candidate.enabled && candidate.distance <= threshold).sort((a, b) => a.distance - b.distance);
+      { direction: "left", distance: clientX - bounds.left },
+      { direction: "right", distance: bounds.right - clientX },
+      { direction: "up", distance: clientY - bounds.top },
+      { direction: "down", distance: bounds.bottom - clientY },
+    ].filter((candidate) => candidate.distance <= threshold).sort((a, b) => a.distance - b.distance);
     const edge = candidates[0];
     if (!edge) {
       edgeDragRef.current.direction = "";
@@ -630,22 +646,46 @@ function App() {
     const previousIndex = activePageIndex;
     const previousColumn = previousIndex % pageColumns;
     const previousRow = Math.floor(previousIndex / pageColumns);
-    let targetIndex = previousIndex;
-    if (edge.direction === "left") targetIndex -= 1;
-    if (edge.direction === "up") targetIndex -= pageColumns;
-    if (edge.direction === "right") targetIndex += 1;
-    if (edge.direction === "down") targetIndex += pageColumns;
-    targetIndex = Math.max(0, Math.min(pages.length - 1, targetIndex));
-    const nextColumn = targetIndex % pageColumns;
-    const nextRow = Math.floor(targetIndex / pageColumns);
+    const neighborIndex = edge.direction === "left" ? previousIndex - 1
+      : edge.direction === "right" ? previousIndex + 1
+        : edge.direction === "up" ? previousIndex - pageColumns
+          : previousIndex + pageColumns;
+    const hasNeighbor = edge.direction === "left" ? page.column > 0
+      : edge.direction === "right" ? page.column < pageColumns - 1 && neighborIndex < pages.length
+        : edge.direction === "up" ? neighborIndex >= 0
+          : neighborIndex < pages.length;
+    let targetIndex = neighborIndex;
+    let targetColumns = pageColumns;
+    let targetRows = pageRows;
+    if (!hasNeighbor) {
+      const pending = edgeNavigationRef.current;
+      if (pending?.draftEntryId) return null;
+      const originalLayout = layoutRef.current;
+      const draftLayout = createEdgeWorkspaceLayout(originalLayout, pages, entry.id, activePageIndex, edge.direction === "left" || edge.direction === "up", responsive.breakCapacity);
+      const draftDesktop = responsiveDesktop(entriesRef.current, draftLayout.rootOrder, desktopSize, draftLayout.workspaceBreaks);
+      targetIndex = draftDesktop.pages.findIndex((candidate) => candidate.entries.some((item) => item.id === entry.id));
+      if (targetIndex < 0 || draftDesktop.pages.length <= responsive.pages.length) return null;
+      if (!edgeNavigationRef.current && routeRef.current) edgeNavigationRef.current = { route: routeRef.current, historyState: window.history.state };
+      if (edgeNavigationRef.current) {
+        edgeNavigationRef.current.originalLayout = originalLayout;
+        edgeNavigationRef.current.draftEntryId = entry.id;
+      }
+      applyLayout(draftLayout, false);
+      targetColumns = draftDesktop.columns;
+      targetRows = draftDesktop.rows;
+    } else if (!edgeNavigationRef.current && routeRef.current) {
+      edgeNavigationRef.current = { route: routeRef.current, historyState: window.history.state };
+    }
+    targetIndex = Math.max(0, targetIndex);
+    const nextColumn = targetIndex % targetColumns;
+    const nextRow = Math.floor(targetIndex / targetColumns);
     edgeDragRef.current = { direction: edge.direction, time: now };
-    if (!edgeNavigationRef.current && routeRef.current) edgeNavigationRef.current = { route: routeRef.current, historyState: window.history.state };
     goToPage(targetIndex, "replace");
     return {
       deltaX: (nextColumn - previousColumn) * desktopSize.width,
       deltaY: (nextRow - previousRow) * desktopSize.height,
-      maxX: Math.max(8, pageColumns * desktopSize.width - FILE_ICON_SIZE.width),
-      maxY: Math.max(8, pageRows * desktopSize.height - FILE_ICON_SIZE.height),
+      maxX: Math.max(8, targetColumns * desktopSize.width - FILE_ICON_SIZE.width),
+      maxY: Math.max(8, targetRows * desktopSize.height - FILE_ICON_SIZE.height),
     };
   }
 
@@ -657,6 +697,7 @@ function App() {
     const finalRoute = routeRef.current;
     window.history.replaceState(pending.historyState, "", formatDesktopRoute(pending.route));
     if (cancelled || !finalRoute) {
+      if (pending.originalLayout) applyLayout(pending.originalLayout, false);
       setCurrentRoute(pending.route);
       return;
     }
@@ -706,14 +747,14 @@ function App() {
 
   function movePage(pageKey: string, targetIndex: number, persist = true) {
     const current = layoutRef.current;
-    const currentPages = responsiveDesktop(entriesRef.current, current.rootOrder, desktopSize).pages;
+    const currentPages = responsiveDesktop(entriesRef.current, current.rootOrder, desktopSize, current.workspaceBreaks).pages;
     const sourceIndex = currentPages.findIndex((candidate) => candidate.entries[0]?.id === pageKey);
     const boundedTarget = Math.max(0, Math.min(currentPages.length - 1, targetIndex));
     if (sourceIndex < 0 || sourceIndex === boundedTarget) return;
     const chunks = currentPages.map((candidate) => candidate.entries.map((entry) => entry.id));
     const [moved] = chunks.splice(sourceIndex, 1);
     chunks.splice(boundedTarget, 0, moved);
-    applyLayout({ ...current, rootOrder: chunks.flat() }, persist);
+    applyLayout(layoutForPageOrder(current, chunks, responsive.breakCapacity), persist);
   }
 
   function startMinimapPress(event: React.PointerEvent<HTMLButtonElement>, pageKey: string) {
@@ -725,7 +766,7 @@ function App() {
       startY: event.clientY,
       timer: 0,
       pageKey,
-      initialRootOrder: [...layoutRef.current.rootOrder],
+      initialLayout: structuredClone(layoutRef.current),
     };
     press.timer = window.setTimeout(() => {
       press.activated = true;
@@ -751,7 +792,7 @@ function App() {
       .map((element) => element.closest<HTMLElement>("[data-page-key]"))
       .find(Boolean);
     if (!target?.dataset.pageKey) return;
-    const currentPages = responsiveDesktop(entriesRef.current, layoutRef.current.rootOrder, desktopSize).pages;
+    const currentPages = responsiveDesktop(entriesRef.current, layoutRef.current.rootOrder, desktopSize, layoutRef.current.workspaceBreaks).pages;
     const targetIndex = currentPages.findIndex((candidate) => candidate.entries[0]?.id === target.dataset.pageKey);
     movePage(press.pageKey, targetIndex, false);
   }
@@ -763,7 +804,7 @@ function App() {
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
     minimapPointerRef.current = null;
     if (press.activated && cancelled) {
-      applyLayout({ ...layoutRef.current, rootOrder: press.initialRootOrder }, false);
+      applyLayout(press.initialLayout, false);
       setDraggedPageKey(null);
     } else if (press.activated) {
       applyLayout(layoutRef.current);
@@ -771,7 +812,7 @@ function App() {
       suppressClickRef.current = true;
       window.setTimeout(() => { suppressClickRef.current = false; }, 0);
     } else if (!cancelled) {
-      const currentPages = responsiveDesktop(entriesRef.current, layoutRef.current.rootOrder, desktopSize).pages;
+      const currentPages = responsiveDesktop(entriesRef.current, layoutRef.current.rootOrder, desktopSize, layoutRef.current.workspaceBreaks).pages;
       goToPage(Math.max(0, currentPages.findIndex((candidate) => candidate.entries[0]?.id === press.pageKey)));
     }
   }
@@ -856,8 +897,8 @@ function App() {
               selected={selectedId === entry.id}
               onSelect={() => setSelectedId(entry.id)}
               onOpen={() => void handleOpen(entry)}
-              onMove={(position, targetParentId) => void handleDesktopMove(entry, position, targetParentId)}
-              onDragAtEdge={handleIconDragAtEdge}
+              onMove={(position, targetParentId) => handleDesktopMove(entry, position, targetParentId)}
+              onDragAtEdge={(clientX, clientY) => handleIconDragAtEdge(entry, clientX, clientY)}
               onDragEnd={finishEdgeNavigation}
               getSnapPreview={layout.snapToGrid ? snapDesktopPosition : undefined}
               onExternalDrop={(sources) => void handleImport(sources, entry.id)}

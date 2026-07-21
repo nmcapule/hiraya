@@ -77,6 +77,34 @@ describe("SyncEngine local lifecycle", () => {
     expect(folder.id).toBe("folder-1");
     engine.stop();
   });
+
+  test("moves a desktop entry and layout through one local storage operation", async () => {
+    let snapshot = desktopSnapshot();
+    const entry = { kind: "folder" as const, id: "a", name: "A", parentId: null, modifiedAt: 1, position: { x: 0, y: 0 } };
+    snapshot = { ...snapshot, entries: [entry], layout: { ...snapshot.layout, rootOrder: ["a"] } };
+    let calls = 0;
+    const storage = {
+      loadDesktop: async () => snapshot,
+      moveDesktopEntry: async (id: string, position: { x: number; y: number }, layout: DesktopSnapshot["layout"]) => {
+        calls += 1;
+        const moved = { ...entry, position };
+        snapshot = { ...snapshot, entries: [moved], layout };
+        expect(id).toBe("a");
+        return moved;
+      },
+      readCurrentDesktop: async () => snapshot,
+    } as unknown as NonNullable<SyncEngineOptions["storage"]>;
+    const engine = new SyncEngine({ frontendOnly: true, storage });
+    await engine.start({ x: 100, y: 100 });
+    const layout = { ...snapshot.layout, workspaceBreaks: [] };
+
+    const moved = await engine.moveDesktopEntry("a", { x: 40, y: 60 }, layout);
+
+    expect(calls).toBe(1);
+    expect(moved.position).toEqual({ x: 40, y: 60 });
+    expect(snapshot.layout).toEqual(layout);
+    engine.stop();
+  });
 });
 
 describe("SyncEngine remote reconciliation", () => {
@@ -100,7 +128,7 @@ describe("SyncEngine remote reconciliation", () => {
     expect(statuses).toEqual(["connecting"]);
     expect(startSettled).toBe(false);
 
-    resolveFetch(Response.json({ schemaVersion: 2, workspaceId: "workspace-1", initialized: false, revision: 0 }));
+    resolveFetch(Response.json({ schemaVersion: 3, workspaceId: "workspace-1", initialized: false, revision: 0 }));
     await starting;
     engine.stop();
   });
@@ -158,10 +186,10 @@ describe("SyncEngine remote reconciliation", () => {
     const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
       requests.push(`${init?.method ?? "GET"} ${String(input)}`);
       if (String(input) === "/api/workspace") {
-        return Response.json({ schemaVersion: 2, workspaceId: "workspace-1", initialized: false, revision: 0 });
+        return Response.json({ schemaVersion: 3, workspaceId: "workspace-1", initialized: false, revision: 0 });
       }
       return Response.json({
-        schemaVersion: 2,
+        schemaVersion: 3,
         workspaceId: "workspace-1",
         initialized: true,
         revision: 1,
@@ -185,7 +213,7 @@ describe("SyncEngine remote reconciliation", () => {
     const snapshot = desktopSnapshot();
     snapshot.sync = { ...snapshot.sync, workspaceId: "old-workspace", revision: 50 };
     const fetchImpl = (async () => Response.json({
-      schemaVersion: 2,
+      schemaVersion: 3,
       workspaceId: "new-workspace",
       initialized: true,
       revision: 1,
@@ -217,9 +245,44 @@ describe("SyncEngine remote reconciliation", () => {
     const starting = engine.start({ x: 100, y: 100 });
     await Promise.resolve();
     engine.stop();
-    resolveFetch(Response.json({ schemaVersion: 2, workspaceId: "workspace-1", initialized: false, revision: 0 }));
+    resolveFetch(Response.json({ schemaVersion: 3, workspaceId: "workspace-1", initialized: false, revision: 0 }));
 
     await expect(starting).rejects.toMatchObject({ name: "AbortError" });
     expect(applications).toBe(0);
+  });
+
+  test("uses the atomic desktop placement endpoint and reconciles its result", async () => {
+    const snapshot = desktopSnapshot();
+    const initial = remoteWorkspace();
+    const next = remoteWorkspace();
+    next.revision = 2;
+    next.layoutRevision = 2;
+    next.entries[0].revision = 2;
+    next.entries[0].position = { x: 80, y: 90 };
+    next.layout = { ...next.layout, workspaceBreaks: [] };
+    let workspaceReads = 0;
+    let placementBody: unknown;
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/workspace") {
+        workspaceReads += 1;
+        return Response.json(workspaceReads === 1 ? initial : next);
+      }
+      if (url === "/api/files/file-1/content") return new Response("note");
+      if (url === "/api/desktop-placement") {
+        placementBody = JSON.parse(String(init?.body));
+        return Response.json({});
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    }) as typeof fetch;
+    const engine = new SyncEngine(remoteOptions(snapshot, fetchImpl));
+    await engine.start({ x: 100, y: 100 });
+
+    const moved = await engine.moveDesktopEntry("file-1", { x: 80, y: 90 }, next.layout);
+
+    expect(placementBody).toEqual({ entryId: "file-1", position: { x: 80, y: 90 }, layout: next.layout });
+    expect(moved.position).toEqual({ x: 80, y: 90 });
+    expect(workspaceReads).toBe(2);
+    engine.stop();
   });
 });

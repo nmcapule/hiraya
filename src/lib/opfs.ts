@@ -6,15 +6,17 @@ import {
   decodeManifest,
   emptySyncState,
   manifestLayout,
-  parseManifestV10,
+  parseManifestV11,
+  removeRootsFromLayout,
   type DesktopSyncState,
-  type PersistedManifestV10,
+  type PersistedManifestV11,
 } from "./manifest-codec";
+import { parseLayout, parsePosition } from "./contracts";
 
 const MANIFEST_NAME = ".hiraya-manifest.json";
 const FILES_DIRECTORY = "files";
 
-type Manifest = PersistedManifestV10;
+type Manifest = PersistedManifestV11;
 export type { DesktopSyncState } from "./manifest-codec";
 
 export type DesktopSnapshot = {
@@ -60,7 +62,7 @@ async function writeManifest(manifest: Manifest) {
 }
 
 function assertValidManifest(manifest: Manifest) {
-  parseManifestV10(manifest);
+  parseManifestV11(manifest);
 }
 
 async function createManifestFromSeeded(seeded: SeededManifest): Promise<Manifest> {
@@ -82,9 +84,10 @@ async function createManifestFromSeeded(seeded: SeededManifest): Promise<Manifes
     return file;
   });
   const created: Manifest = {
-    version: 10,
+    version: 11,
     entries,
     rootOrder: parsedSeeded.layout.rootOrder,
+    workspaceBreaks: parsedSeeded.layout.workspaceBreaks,
     snapToGrid: parsedSeeded.layout.snapToGrid,
     wallpaper: parsedSeeded.layout.wallpaper,
     editorSettings: parsedSeeded.editorSettings,
@@ -111,7 +114,7 @@ async function readManifest(
   } catch (error) {
     if (error instanceof DOMException && error.name === "NotFoundError") {
       if (seeded) return createManifestFromSeeded(seeded);
-       const created: Manifest = { version: 10, entries: [], rootOrder: [], snapToGrid: false, wallpaper: DEFAULT_WALLPAPER, editorSettings: DEFAULT_EDITOR_SETTINGS, sync: emptySyncState() };
+       const created: Manifest = { version: 11, entries: [], rootOrder: [], workspaceBreaks: [], snapToGrid: false, wallpaper: DEFAULT_WALLPAPER, editorSettings: DEFAULT_EDITOR_SETTINGS, sync: emptySyncState() };
       await writeManifest(created);
       return created;
     }
@@ -181,9 +184,10 @@ async function applyRemoteDesktopUnsafe(snapshot: DesktopSnapshot, contents: Map
     return { entries: current.entries, layout: manifestLayout(current), editorSettings: current.editorSettings, sync: current.sync };
   }
   const next: Manifest = {
-    version: 10,
+    version: 11,
     entries: snapshot.entries,
     rootOrder: snapshot.layout.rootOrder,
+    workspaceBreaks: snapshot.layout.workspaceBreaks,
     snapToGrid: snapshot.layout.snapToGrid,
     wallpaper: snapshot.layout.wallpaper,
     editorSettings: snapshot.editorSettings,
@@ -223,7 +227,7 @@ async function saveEditorSettingsUnsafe(settings: EditorSettings) {
 
 async function saveDesktopLayoutUnsafe(layout: DesktopLayout) {
   const manifest = await readManifest();
-  const next = { ...manifest, rootOrder: layout.rootOrder, snapToGrid: layout.snapToGrid, wallpaper: layout.wallpaper };
+  const next = { ...manifest, rootOrder: layout.rootOrder, workspaceBreaks: layout.workspaceBreaks, snapToGrid: layout.snapToGrid, wallpaper: layout.wallpaper };
   assertValidManifest(next);
   await writeManifest(next);
 }
@@ -331,12 +335,13 @@ async function deleteEntryUnsafe(id: string): Promise<DesktopEntry[]> {
     }
   }
   const deleted = manifest.entries.filter((entry) => deletedIds.has(entry.id));
+  const layout = removeRootsFromLayout(manifestLayout(manifest), deletedIds);
 
   // Remove visible metadata first; failed blob cleanup can then only leave invisible orphans.
   await writeManifest({
     ...manifest,
     entries: manifest.entries.filter((entry) => !deletedIds.has(entry.id)),
-    rootOrder: manifest.rootOrder.filter((entryId) => !deletedIds.has(entryId)),
+    ...layout,
   });
   try {
     const directory = await getFilesDirectory();
@@ -370,14 +375,40 @@ async function moveEntryUnsafe(id: string, parentId: string | null, position: En
   assertUniqueName(manifest.entries, existing.name, parentId, id);
 
   const moved: DesktopEntry = { ...existing, parentId, position, modifiedAt: Date.now() };
-  const rootOrder = manifest.rootOrder.filter((entryId) => entryId !== id);
+  const removedFromRoot = existing.parentId === null && parentId !== null;
+  const normalized = removedFromRoot ? removeRootsFromLayout(manifestLayout(manifest), new Set([id])) : {
+    rootOrder: manifest.rootOrder.filter((entryId) => entryId !== id),
+    workspaceBreaks: manifest.workspaceBreaks,
+  };
+  const rootOrder = normalized.rootOrder;
   if (parentId === null) rootOrder.push(id);
   await writeManifest({
     ...manifest,
     entries: manifest.entries.map((entry) => (entry.id === id ? moved : entry)),
     rootOrder,
+    workspaceBreaks: normalized.workspaceBreaks,
   });
   return moved;
+}
+
+async function moveDesktopEntryUnsafe(id: string, positionValue: EntryPosition, layout: DesktopLayout) {
+  const manifest = await readManifest();
+  const existing = getEntry(manifest.entries, id);
+  if (existing.parentId !== null) throw new Error("Desktop placement requires a root entry.");
+  const position = parsePosition(positionValue);
+  const parsedLayout = parseLayout(layout);
+  const updated: DesktopEntry = { ...existing, position };
+  const next: Manifest = {
+    ...manifest,
+    entries: manifest.entries.map((entry) => (entry.id === id ? updated : entry)),
+    rootOrder: parsedLayout.rootOrder,
+    workspaceBreaks: parsedLayout.workspaceBreaks,
+    snapToGrid: parsedLayout.snapToGrid,
+    wallpaper: parsedLayout.wallpaper,
+  };
+  assertValidManifest(next);
+  await writeManifest(next);
+  return updated;
 }
 
 async function updateEntryPositionUnsafe(id: string, position: EntryPosition) {
@@ -512,6 +543,7 @@ export function importFiles(files: File[], parentId: string | null, positions: E
 export function renameEntry(id: string, name: string) { return serializeStorage(() => renameEntryUnsafe(id, name)); }
 export function deleteEntry(id: string) { return serializeStorage(() => deleteEntryUnsafe(id)); }
 export function moveEntry(id: string, parentId: string | null, position: EntryPosition) { return serializeStorage(() => moveEntryUnsafe(id, parentId, position)); }
+export function moveDesktopEntry(id: string, position: EntryPosition, layout: DesktopLayout) { return serializeStorage(() => moveDesktopEntryUnsafe(id, position, layout)); }
 export function updateEntryPosition(id: string, position: EntryPosition) { return serializeStorage(() => updateEntryPositionUnsafe(id, position)); }
 export function readFile(id: FileEntry["id"]) { return serializeStorage(() => readFileUnsafe(id)); }
 export function readDesktopSnapshot() { return serializeStorage(() => readDesktopSnapshotUnsafe()); }

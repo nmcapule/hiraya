@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useLayoutEffect, useRef } from "react";
 import {
   File as FileGlyph,
   FileArchive,
@@ -18,7 +18,7 @@ type Props = {
   selected: boolean;
   onSelect: () => void;
   onOpen: () => void;
-  onMove: (position: EntryPosition, targetParentId: string | null) => void;
+  onMove: (position: EntryPosition, targetParentId: string | null) => Promise<boolean>;
   onDragAtEdge: (clientX: number, clientY: number) => {
     deltaX: number;
     deltaY: number;
@@ -52,6 +52,7 @@ export function FileIcon({ entry, selected, onSelect, onOpen, onMove, onDragAtEd
   const drag = useRef<{
     pointerX: number;
     pointerY: number;
+    pointerId: number;
     maxX: number;
     maxY: number;
     moved: boolean;
@@ -62,7 +63,24 @@ export function FileIcon({ entry, selected, onSelect, onOpen, onMove, onDragAtEd
     x: number;
     y: number;
     targetFolderId: string | null;
+    canvas: HTMLElement;
+    finishing: boolean;
   } | null>(null);
+  const onMoveRef = useRef(onMove);
+  const onDragEndRef = useRef(onDragEnd);
+  const getSnapPreviewRef = useRef(getSnapPreview);
+  onMoveRef.current = onMove;
+  onDragEndRef.current = onDragEnd;
+  getSnapPreviewRef.current = getSnapPreview;
+
+  useLayoutEffect(() => {
+    const current = drag.current;
+    const icon = iconRef.current;
+    if (!current?.moved || !icon) return;
+    current.baseX = icon.offsetLeft;
+    current.baseY = icon.offsetTop;
+    icon.style.transform = `translate3d(${current.x - current.baseX}px, ${current.y - current.baseY}px, 0)`;
+  }, [entry.position.x, entry.position.y]);
 
   function setDropTarget(folderId: string | null) {
     document.querySelectorAll<HTMLElement>(".file-icon[data-drop-target]").forEach((element) => {
@@ -98,13 +116,15 @@ export function FileIcon({ entry, selected, onSelect, onOpen, onMove, onDragAtEd
 
   function handlePointerDown(event: React.PointerEvent<HTMLButtonElement>) {
     if (event.button !== 0) return;
-    const desktop = event.currentTarget.parentElement;
-    if (!desktop) return;
+    const canvas = event.currentTarget.parentElement;
+    if (!canvas) return;
 
-    const bounds = desktop.getBoundingClientRect();
+    event.preventDefault();
+    const bounds = canvas.getBoundingClientRect();
     drag.current = {
       pointerX: event.clientX,
       pointerY: event.clientY,
+      pointerId: event.pointerId,
       maxX: Math.max(8, bounds.width - event.currentTarget.offsetWidth - 8),
       maxY: Math.max(8, bounds.height - event.currentTarget.offsetHeight - 8),
       moved: false,
@@ -115,7 +135,10 @@ export function FileIcon({ entry, selected, onSelect, onOpen, onMove, onDragAtEd
       x: event.currentTarget.offsetLeft,
       y: event.currentTarget.offsetTop,
       targetFolderId: null,
+      canvas,
+      finishing: false,
     };
+    canvas.dataset.iconDragging = "true";
     event.currentTarget.setPointerCapture(event.pointerId);
     onSelect();
   }
@@ -149,21 +172,34 @@ export function FileIcon({ entry, selected, onSelect, onOpen, onMove, onDragAtEd
     iconRef.current.dataset.dragging = "true";
   }
 
-  function finishDrag(event: React.PointerEvent<HTMLButtonElement>, cancelled = false) {
-    if (!drag.current) return;
-    event.currentTarget.releasePointerCapture(event.pointerId);
-
-    if (drag.current.moved && !cancelled) {
+  async function finishDrag(event: Pick<PointerEvent, "pointerId" | "clientX" | "clientY">, cancelled = false) {
+    const completed = drag.current;
+    if (!completed || completed.pointerId !== event.pointerId || completed.finishing) return;
+    completed.finishing = true;
+    if (iconRef.current?.hasPointerCapture(event.pointerId)) iconRef.current.releasePointerCapture(event.pointerId);
+    let succeeded = !cancelled;
+    if (completed.moved && !cancelled) {
       const targetFolderId = findDropTarget(event.clientX, event.clientY);
-      const position = { x: Math.round(drag.current.x), y: Math.round(drag.current.y) };
-      onMove(getSnapPreview && !targetFolderId ? getSnapPreview(position) : position, targetFolderId);
+      const position = { x: Math.round(completed.x), y: Math.round(completed.y) };
+      const preview = getSnapPreviewRef.current;
+      try {
+        succeeded = await onMoveRef.current(preview && !targetFolderId ? preview(position) : position, targetFolderId);
+      } catch {
+        succeeded = false;
+      }
     }
-    onDragEnd(cancelled);
-    iconRef.current?.style.removeProperty("transform");
-    if (iconRef.current) delete iconRef.current.dataset.dragging;
+    onDragEndRef.current(cancelled || !succeeded);
     setDropTarget(null);
     updateSnapPreview(null);
-    drag.current = null;
+    const cleanUp = () => {
+      if (drag.current !== completed) return;
+      drag.current = null;
+      delete completed.canvas.dataset.iconDragging;
+      iconRef.current?.style.removeProperty("transform");
+      if (iconRef.current) delete iconRef.current.dataset.dragging;
+    };
+    if (completed.moved) requestAnimationFrame(cleanUp);
+    else cleanUp();
   }
 
   return (
@@ -202,8 +238,8 @@ export function FileIcon({ entry, selected, onSelect, onOpen, onMove, onDragAtEd
         }}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
-        onPointerUp={finishDrag}
-        onPointerCancel={(event) => finishDrag(event, true)}
+        onPointerUp={(event) => { void finishDrag(event); }}
+        onPointerCancel={(event) => { void finishDrag(event, true); }}
       >
         <span className="file-icon__art">
           <FileTypeIcon entry={entry} />

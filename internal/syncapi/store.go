@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	workspaceSchemaVersion = 2
+	workspaceSchemaVersion = 3
 	metadataName           = "workspace.json"
 	logicalMarker          = ".logical-path-storage"
 	diskIndexName          = ".filesystem.json"
@@ -79,6 +79,7 @@ func OpenStore(dir string) (*Store, error) {
 	s := &Store{dir: dir, filesDir: filesDir, subs: make(map[chan int64]struct{}), disk: make(map[string]diskFingerprint), done: make(chan struct{}), watched: make(map[string]bool), writeMetadata: atomicWrite, scanFiles: scanFilesystem}
 	s.workspace.Entries = []Entry{}
 	s.workspace.Layout.RootOrder = []string{}
+	s.workspace.Layout.WorkspaceBreaks = []WorkspaceBreak{}
 	s.workspace.Layout.Wallpaper = "dusk"
 	s.workspace.EditorSettings = EditorSettings{AutoSave: true, FontSize: 13, Language: "auto"}
 	b, err := os.ReadFile(filepath.Join(dir, metadataName))
@@ -109,7 +110,7 @@ func OpenStore(dir string) (*Store, error) {
 		return nil, fmt.Errorf("unsupported workspace schema version %d", header.SchemaVersion)
 	}
 	migrateMetadata := header.SchemaVersion < workspaceSchemaVersion
-	if header.SchemaVersion < workspaceSchemaVersion {
+	if header.SchemaVersion < 2 {
 		if err := migrateWorkspaceV1(b, &s.workspace); err != nil {
 			return nil, fmt.Errorf("migrate workspace schema v1: %w", err)
 		}
@@ -132,6 +133,9 @@ func OpenStore(dir string) (*Store, error) {
 	}
 	if s.workspace.Layout.RootOrder == nil {
 		s.workspace.Layout.RootOrder = []string{}
+	}
+	if s.workspace.Layout.WorkspaceBreaks == nil {
+		s.workspace.Layout.WorkspaceBreaks = []WorkspaceBreak{}
 	}
 	if s.workspace.Initialized {
 		if err := validateSettings(s.workspace.EditorSettings); err != nil {
@@ -222,14 +226,17 @@ func (s *Store) snapshot() Workspace {
 func cloneWorkspace(workspace Workspace) Workspace {
 	workspace.Entries = append([]Entry(nil), workspace.Entries...)
 	workspace.Layout.RootOrder = append([]string(nil), workspace.Layout.RootOrder...)
+	workspace.Layout.WorkspaceBreaks = append([]WorkspaceBreak(nil), workspace.Layout.WorkspaceBreaks...)
 	workspace.Entries = nonNilEntries(workspace.Entries)
 	workspace.Layout.RootOrder = nonNilStrings(workspace.Layout.RootOrder)
+	workspace.Layout.WorkspaceBreaks = nonNilWorkspaceBreaks(workspace.Layout.WorkspaceBreaks)
 	return workspace
 }
 
 func (s *Store) persistLocked(next Workspace) error {
 	next.Entries = nonNilEntries(next.Entries)
 	next.Layout.RootOrder = nonNilStrings(next.Layout.RootOrder)
+	next.Layout.WorkspaceBreaks = nonNilWorkspaceBreaks(next.Layout.WorkspaceBreaks)
 	b, err := json.Marshal(next)
 	if err != nil {
 		return err
@@ -255,6 +262,13 @@ func nonNilEntries(v []Entry) []Entry {
 func nonNilStrings(v []string) []string {
 	if v == nil {
 		return []string{}
+	}
+	return v
+}
+
+func nonNilWorkspaceBreaks(v []WorkspaceBreak) []WorkspaceBreak {
+	if v == nil {
+		return []WorkspaceBreak{}
 	}
 	return v
 }
@@ -342,7 +356,7 @@ func migrateWorkspaceV1(data []byte, workspace *Workspace) error {
 	for i, index := range rootIndexes {
 		rootOrder[i] = entries[index].ID
 	}
-	*workspace = Workspace{SchemaVersion: workspaceSchemaVersion, WorkspaceID: legacy.WorkspaceID, Initialized: legacy.Initialized, Revision: legacy.Revision, Entries: entries, Layout: Layout{RootOrder: rootOrder, SnapToGrid: legacy.Layout.SnapToGrid, Wallpaper: legacy.Layout.Wallpaper}, LayoutRevision: legacy.LayoutRevision, EditorSettings: legacy.EditorSettings, SettingsRevision: legacy.SettingsRevision}
+	*workspace = Workspace{SchemaVersion: workspaceSchemaVersion, WorkspaceID: legacy.WorkspaceID, Initialized: legacy.Initialized, Revision: legacy.Revision, Entries: entries, Layout: Layout{RootOrder: rootOrder, WorkspaceBreaks: []WorkspaceBreak{}, SnapToGrid: legacy.Layout.SnapToGrid, Wallpaper: legacy.Layout.Wallpaper}, LayoutRevision: legacy.LayoutRevision, EditorSettings: legacy.EditorSettings, SettingsRevision: legacy.SettingsRevision}
 	return nil
 }
 

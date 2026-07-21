@@ -2,14 +2,14 @@ import type { SeededManifest } from "./seeded-manifest";
 import * as storage from "./opfs";
 import { assertUniqueName, namesMatch, validateEntryName } from "./entry-validation";
 import { API_ROUTES } from "./api-routes";
-import { parseEntries, parseLayout, parseRemoteWorkspace, type InitializedRemoteWorkspace, type RemoteEntry, type RemoteWorkspace } from "./contracts";
+import { parseEntries, parseLayout, parsePosition, parseRemoteWorkspace, type InitializedRemoteWorkspace, type RemoteEntry, type RemoteWorkspace } from "./contracts";
 import type { DesktopEntry, DesktopLayout, EditorSettings, EntryPosition, FileEntry, FolderEntry } from "../types";
 
 export type SyncStatus = "connecting" | "online" | "offline" | "local";
 
 type StorageBoundary = Pick<typeof storage,
   "applyRemoteDesktop" | "createFolder" | "createTextFile" | "deleteEntry" | "importFiles" | "loadDesktop" |
-  "moveEntry" | "readCurrentDesktop" | "readDesktopSnapshot" | "readFile" | "readFileByRelativePath" |
+  "moveDesktopEntry" | "moveEntry" | "readCurrentDesktop" | "readDesktopSnapshot" | "readFile" | "readFileByRelativePath" |
   "renameEntry" | "saveDesktopLayout" | "saveEditorSettings" | "saveTextFile" | "updateEntryPosition"
 >;
 
@@ -400,6 +400,21 @@ export class SyncEngine {
     return this.mutate(() => this.requestJson(API_ROUTES.entry(id), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(entry) }).then(() => undefined), (next) => next.entries.find((item) => item.id === id) as DesktopEntry);
   }
 
+  moveDesktopEntry(id: string, positionValue: EntryPosition, layoutValue: DesktopLayout) {
+    const position = parsePosition(positionValue);
+    const layout = parseLayout(layoutValue);
+    const existing = this.current().entries.find((entry) => entry.id === id);
+    if (!existing) throw new Error("That entry no longer exists.");
+    if (existing.parentId !== null) throw new Error("Desktop placement requires a root entry.");
+    parseEntries(this.current().entries.map((entry) => entry.id === id ? { ...entry, position } : entry), layout);
+    if (this.frontendOnly) return this.localMutation(() => this.storage.moveDesktopEntry(id, position, layout));
+    return this.mutate(() => this.requestJson(API_ROUTES.desktopPlacement, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ entryId: id, position, layout }),
+    }).then(() => undefined), (next) => next.entries.find((entry) => entry.id === id) as DesktopEntry);
+  }
+
   saveTextFile(id: string, content: string) {
     if (this.frontendOnly) return this.localMutation(() => this.storage.saveTextFile(id, content));
     const existing = this.current().entries.find((entry): entry is FileEntry => entry.id === id && entry.kind === "file");
@@ -434,6 +449,7 @@ export const importFiles = defaultEngine.importFiles.bind(defaultEngine);
 export const renameEntry = defaultEngine.renameEntry.bind(defaultEngine);
 export const deleteEntry = defaultEngine.deleteEntry.bind(defaultEngine);
 export const moveEntry = defaultEngine.moveEntry.bind(defaultEngine);
+export const moveDesktopEntry = defaultEngine.moveDesktopEntry.bind(defaultEngine);
 export const updateEntryPosition = defaultEngine.updateEntryPosition.bind(defaultEngine);
 export const saveTextFile = defaultEngine.saveTextFile.bind(defaultEngine);
 export const saveDesktopLayout = defaultEngine.saveDesktopLayout.bind(defaultEngine);

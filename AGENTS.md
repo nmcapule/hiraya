@@ -68,6 +68,8 @@ If adding destructive operations, update file content and the manifest carefully
 - Persist file bytes before metadata that references them. Publish SSE only after the metadata commit is durable.
 - Recursive folder deletion commits metadata before best-effort blob cleanup so visible entries never point to deleted content.
 - Keep server validation equivalent to browser validation for IDs, names, sibling uniqueness, hierarchy, cycles, root ordering, MIME data, sizes, layout, and editor settings.
+- Workspace breaks reference root IDs and a creation capacity. Keep them unique, forbid a break on the first root, and promote or remove breaks when their root leaves the desktop.
+- Commit edge-created workspace layout and icon position atomically in one revision so failed drops cannot leave partial workspace state.
 - SSE events carry only the current workspace revision. Clients pull authoritative metadata and selectively fetch changed content.
 - Keep the health revision fallback in addition to SSE; proxies can leave a dead event stream appearing open.
 - Mutations are disabled when the server is unavailable. Cached files remain viewable, and unsaved editor text must not be silently discarded.
@@ -96,7 +98,8 @@ If adding destructive operations, update file content and the manifest carefully
 - Use Pointer Events so dragging works with both mouse and touch.
 - Keep dragged icons clamped inside the desktop.
 - Compute workspace pages from the synchronized root order and the current viewport. Preserve dragged positions when they fit without collisions, and project other icons into available grid slots without rewriting their saved positions.
-- Never persist empty workspace pages. The empty desktop is one implicit page, and additional pages exist only while root icons exceed the current viewport capacity.
+- Never persist empty workspace pages. The empty desktop is one implicit page; additional pages exist for capacity overflow or a non-empty adaptive break created by edge dragging.
+- Outer-edge icon drags create a draft workspace without persistence. Commit its adaptive break only on a successful drop; cancellation must restore the original layout and route.
 - Do not replace the drag implementation with continuous `setState` calls.
 - External files can arrive through the hidden file input or desktop drag-and-drop. Both paths must call the same import function.
 - Text-like MIME types and known text extensions open in the editor. Images, PDFs, video, and audio use object-URL previews. Revoke every object URL after use.

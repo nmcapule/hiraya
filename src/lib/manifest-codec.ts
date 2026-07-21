@@ -10,10 +10,11 @@ export type DesktopSyncState = {
   settingsRevision: number;
 };
 
-export type PersistedManifestV10 = {
-  version: 10;
+export type PersistedManifestV11 = {
+  version: 11;
   entries: DesktopEntry[];
   rootOrder: string[];
+  workspaceBreaks: DesktopLayout["workspaceBreaks"];
   snapToGrid: boolean;
   wallpaper: Wallpaper;
   editorSettings: EditorSettings;
@@ -46,13 +47,14 @@ function parseSyncState(value: unknown): DesktopSyncState {
   };
 }
 
-export function parseManifestV10(value: unknown): PersistedManifestV10 {
-  if (!isRecord(value) || value.version !== 10) throw new Error("The storage index has an unsupported format.");
-  const layout = parseLayout({ rootOrder: value.rootOrder, snapToGrid: value.snapToGrid, wallpaper: value.wallpaper });
+export function parseManifestV11(value: unknown): PersistedManifestV11 {
+  if (!isRecord(value) || value.version !== 11) throw new Error("The storage index has an unsupported format.");
+  const layout = parseLayout({ rootOrder: value.rootOrder, workspaceBreaks: value.workspaceBreaks, snapToGrid: value.snapToGrid, wallpaper: value.wallpaper });
   return {
-    version: 10,
+    version: 11,
     entries: parseEntries(value.entries, layout),
     rootOrder: layout.rootOrder,
+    workspaceBreaks: layout.workspaceBreaks,
     snapToGrid: layout.snapToGrid,
     wallpaper: layout.wallpaper,
     editorSettings: parseEditorSettings(value.editorSettings),
@@ -113,10 +115,13 @@ function migratePositionedEntries(entries: unknown[], viewport: EntryPosition, c
   return { entries: migrated, views };
 }
 
-export function decodeManifest(value: unknown, viewport: EntryPosition, createId: () => string): { manifest: PersistedManifestV10; migrated: boolean } {
+export function decodeManifest(value: unknown, viewport: EntryPosition, createId: () => string): { manifest: PersistedManifestV11; migrated: boolean } {
   if (!isRecord(value) || !Number.isInteger(value.version)) throw new Error("The storage index has an unsupported format.");
   const version = value.version as number;
-  if (version === 10) return { manifest: parseManifestV10(value), migrated: false };
+  if (version === 11) return { manifest: parseManifestV11(value), migrated: false };
+  if (version === 10) {
+    return { manifest: parseManifestV11({ ...value, version: 11, workspaceBreaks: [] }), migrated: true };
+  }
   if (version < 1 || version > 9) throw new Error("The storage index has an unsupported format.");
 
   let entries: unknown[];
@@ -143,10 +148,11 @@ export function decodeManifest(value: unknown, viewport: EntryPosition, createId
     : value.sync;
   const plainEntries = stripViewIds(entries);
   return {
-    manifest: parseManifestV10({
-      version: 10,
+    manifest: parseManifestV11({
+      version: 11,
       entries: plainEntries,
       rootOrder: legacyRootOrder(entries as DesktopEntry[], views),
+      workspaceBreaks: [],
       snapToGrid: version < 7 ? false : value.snapToGrid,
       wallpaper: version < 8 ? DEFAULT_WALLPAPER : value.wallpaper,
       editorSettings,
@@ -156,6 +162,32 @@ export function decodeManifest(value: unknown, viewport: EntryPosition, createId
   };
 }
 
-export function manifestLayout(manifest: PersistedManifestV10): DesktopLayout {
-  return { rootOrder: manifest.rootOrder, snapToGrid: manifest.snapToGrid, wallpaper: manifest.wallpaper };
+export function manifestLayout(manifest: PersistedManifestV11): DesktopLayout {
+  return { rootOrder: manifest.rootOrder, workspaceBreaks: manifest.workspaceBreaks, snapToGrid: manifest.snapToGrid, wallpaper: manifest.wallpaper };
+}
+
+export function removeRootsFromLayout(layout: DesktopLayout, removed: Set<string>): DesktopLayout {
+  const breaks = new Map(layout.workspaceBreaks.map((workspaceBreak) => [workspaceBreak.entryId, workspaceBreak]));
+  const workspaceBreaks: DesktopLayout["workspaceBreaks"] = [];
+  for (const [index, id] of layout.rootOrder.entries()) {
+    const workspaceBreak = breaks.get(id);
+    if (!workspaceBreak) continue;
+    if (!removed.has(id)) {
+      workspaceBreaks.push(workspaceBreak);
+      continue;
+    }
+    for (let candidateIndex = index + 1; candidateIndex < layout.rootOrder.length; candidateIndex += 1) {
+      const candidate = layout.rootOrder[candidateIndex];
+      if (breaks.has(candidate)) break;
+      if (!removed.has(candidate)) {
+        workspaceBreaks.push({ ...workspaceBreak, entryId: candidate });
+        break;
+      }
+    }
+  }
+  return {
+    ...layout,
+    rootOrder: layout.rootOrder.filter((entryId) => !removed.has(entryId)),
+    workspaceBreaks,
+  };
 }

@@ -9,7 +9,7 @@ export type BundledContentUrl = string & { readonly [bundledContentUrl]: true };
 
 export type PortableSeededFileEntry = FileEntry & { contentUrl: PortableContentUrl };
 export type PortableSeededManifest = {
-  version: 4;
+  version: 5;
   layout: DesktopLayout;
   editorSettings: EditorSettings;
   entries: Array<FolderEntry | PortableSeededFileEntry>;
@@ -26,7 +26,7 @@ export type SeededFileEntry = BundledSeededFileEntry;
 export type SeededManifest = BundledSeededManifest;
 
 function readSeeded(value: unknown, portable: boolean): PortableSeededManifest {
-  if (!isRecord(value) || (value.version !== 1 && value.version !== 2 && value.version !== 3 && value.version !== 4) || !Array.isArray(value.entries)) {
+  if (!isRecord(value) || (value.version !== 1 && value.version !== 2 && value.version !== 3 && value.version !== 4 && value.version !== 5) || !Array.isArray(value.entries)) {
     throw new Error("The seeded desktop manifest has an unsupported format.");
   }
   if (!isRecord(value.layout)) throw new Error("The seeded desktop layout has an unsupported format.");
@@ -45,8 +45,8 @@ function readSeeded(value: unknown, portable: boolean): PortableSeededManifest {
   });
   let layout: DesktopLayout;
   let parsedEntries: DesktopEntry[];
-  if (value.version === 4) {
-    layout = parseLayout(value.layout);
+  if (value.version === 4 || value.version === 5) {
+    layout = parseLayout(value.version === 4 ? { ...value.layout, workspaceBreaks: [] } : value.layout);
     parsedEntries = parseEntries(plainEntries, layout);
   } else {
     const migrated = decodeManifest({
@@ -65,7 +65,7 @@ function readSeeded(value: unknown, portable: boolean): PortableSeededManifest {
   const entries = parsedEntries.map((entry) => entry.kind === "file"
     ? { ...entry, contentUrl: contentUrls.get(entry.id) as string }
     : entry) as Array<FolderEntry | PortableSeededFileEntry>;
-  return { version: 4, layout, editorSettings, entries };
+  return { version: 5, layout, editorSettings, entries };
 }
 
 export function assertPortableContentUrl(contentUrl: string) {
@@ -95,7 +95,7 @@ export function toPortableSeededManifest(
   contentUrlFor: (file: FileEntry) => string,
 ): PortableSeededManifest {
   return parsePortableSeededManifest({
-    version: 4,
+    version: 5,
     layout: desktop.layout,
     editorSettings: desktop.editorSettings,
     entries: desktop.entries.map((entry) => entry.kind === "file" ? { ...entry, contentUrl: contentUrlFor(entry) } : entry),

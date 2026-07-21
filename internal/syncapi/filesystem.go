@@ -529,7 +529,7 @@ func (s *Store) reconcileFilesystemLocked(nodes map[string]diskNode) error {
 	}
 	next := cloneWorkspace(s.workspace)
 	if len(deleted) != 0 {
-		next.Layout.RootOrder = removeRootIDs(next.Layout.RootOrder, deleted)
+		removeRoots(&next.Layout, deleted)
 		kept := next.Entries[:0]
 		for _, entry := range next.Entries {
 			if !deleted[entry.ID] {

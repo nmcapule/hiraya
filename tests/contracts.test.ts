@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { isValidId, parseRemoteWorkspace } from "../src/lib/contracts";
+import { isValidId, parseLayout, parseRemoteWorkspace } from "../src/lib/contracts";
 import { namesMatch, validateEntryName } from "../src/lib/entry-validation";
 import { remoteWorkspace } from "./fixtures";
 
@@ -20,16 +20,28 @@ describe("workspace contracts", () => {
 
   test("accepts the intentionally empty shape of an uninitialized server", () => {
     expect(parseRemoteWorkspace({
-      schemaVersion: 2,
+      schemaVersion: 3,
       workspaceId: "workspace-1",
       initialized: false,
       revision: 0,
       entries: [],
-      layout: { rootOrder: [], snapToGrid: false, wallpaper: "dusk" },
+      layout: { rootOrder: [], workspaceBreaks: [], snapToGrid: false, wallpaper: "dusk" },
       layoutRevision: 0,
       editorSettings: { autoSave: true, fontSize: 13, language: "auto" },
       settingsRevision: 0,
-    })).toEqual({ schemaVersion: 2, workspaceId: "workspace-1", initialized: false, revision: 0 });
+    })).toEqual({ schemaVersion: 3, workspaceId: "workspace-1", initialized: false, revision: 0 });
+  });
+
+  test("validates workspace breaks against root order", () => {
+    const layout = { rootOrder: ["a", "b", "c"], workspaceBreaks: [{ entryId: "b", maxCapacity: 8 }], snapToGrid: false, wallpaper: "dusk" };
+    expect(parseLayout(layout)).toEqual(layout);
+    expect(() => parseLayout({ ...layout, workspaceBreaks: [{ entryId: "a", maxCapacity: 1 }] })).toThrow("first root");
+    expect(() => parseLayout({ ...layout, workspaceBreaks: [{ entryId: "missing", maxCapacity: 1 }] })).toThrow("reference a root");
+    expect(() => parseLayout({ ...layout, workspaceBreaks: [{ entryId: "b", maxCapacity: 1 }, { entryId: "b", maxCapacity: 2 }] })).toThrow("duplicate");
+    for (const maxCapacity of [0, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(() => parseLayout({ ...layout, workspaceBreaks: [{ entryId: "b", maxCapacity }] })).toThrow("capacity");
+    }
+    expect(() => parseLayout({ ...layout, rootOrder: [], workspaceBreaks: [{ entryId: "b", maxCapacity: 1 }] })).toThrow();
   });
 
   test("uses deterministic Go-aligned ID and sibling-name rules", () => {

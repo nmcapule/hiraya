@@ -4,6 +4,7 @@ export const API_ROUTES = {
   imports: "/api/imports",
   entries: "/api/entries",
   layout: "/api/layout",
+  desktopPlacement: "/api/desktop-placement",
   editorSettings: "/api/editor-settings",
   events: "/api/events",
   health: "/api/health",

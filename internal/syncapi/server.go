@@ -42,6 +42,7 @@ func New(store *Store, staticDir string, maxUpload int64) *Server {
 	mux.HandleFunc("GET /api/files/{id}/content", s.getContent)
 	mux.HandleFunc("PUT /api/files/{id}/content", s.putContent)
 	mux.HandleFunc("PUT /api/layout", s.putLayout)
+	mux.HandleFunc("PUT /api/desktop-placement", s.putDesktopPlacement)
 	mux.HandleFunc("PUT /api/editor-settings", s.putSettings)
 	mux.HandleFunc("GET /api/events", s.events)
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
@@ -598,7 +599,7 @@ func (s *Server) upsertEntry(w http.ResponseWriter, r *http.Request) {
 	} else {
 		next.Entries[idx] = entry
 		if old.ParentID == nil && entry.ParentID != nil {
-			next.Layout.RootOrder = removeRootIDs(next.Layout.RootOrder, map[string]bool{entry.ID: true})
+			removeRoots(&next.Layout, map[string]bool{entry.ID: true})
 		} else if old.ParentID != nil && entry.ParentID == nil {
 			next.Layout.RootOrder = append(next.Layout.RootOrder, entry.ID)
 		}
@@ -752,7 +753,7 @@ func (s *Server) patchEntry(w http.ResponseWriter, r *http.Request) {
 	entry.Revision = next.Revision + 1
 	next.Entries[idx] = entry
 	if old.ParentID == nil && entry.ParentID != nil {
-		next.Layout.RootOrder = removeRootIDs(next.Layout.RootOrder, map[string]bool{id: true})
+		removeRoots(&next.Layout, map[string]bool{id: true})
 	} else if old.ParentID != nil && entry.ParentID == nil {
 		next.Layout.RootOrder = append(next.Layout.RootOrder, id)
 	}
@@ -968,7 +969,7 @@ func (s *Server) deleteEntry(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	next.Entries = kept
-	next.Layout.RootOrder = removeRootIDs(next.Layout.RootOrder, deleted)
+	removeRoots(&next.Layout, deleted)
 	next.Revision++
 	if deletedRoot {
 		next.LayoutRevision = next.Revision
@@ -1032,6 +1033,8 @@ func (s *Server) putLayout(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	layout.RootOrder = nonNilStrings(layout.RootOrder)
+	layout.WorkspaceBreaks = nonNilWorkspaceBreaks(layout.WorkspaceBreaks)
 	if err := validateLayout(layout); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -1057,6 +1060,62 @@ func (s *Server) putLayout(w http.ResponseWriter, r *http.Request) {
 	}
 	s.store.publishLocked(next.Revision)
 	writeJSON(w, http.StatusOK, layoutResponse{Revision: next.Revision, Layout: layout, LayoutRevision: next.LayoutRevision})
+}
+
+func (s *Server) putDesktopPlacement(w http.ResponseWriter, r *http.Request) {
+	var input desktopPlacementRequest
+	if err := decodeJSON(w, r, &input, 1<<20); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	input.Layout.RootOrder = nonNilStrings(input.Layout.RootOrder)
+	input.Layout.WorkspaceBreaks = nonNilWorkspaceBreaks(input.Layout.WorkspaceBreaks)
+	if !validID(input.EntryID) {
+		writeError(w, http.StatusBadRequest, "invalid entry ID")
+		return
+	}
+	if err := validatePosition(input.Position); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := validateLayout(input.Layout); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	s.store.mu.Lock()
+	s.store.beginMutationLocked()
+	w, unlock := unlockBeforeResponse(w, s.store.mu.Unlock)
+	defer unlock()
+	if !s.requireInitializedLocked(w) {
+		return
+	}
+	next := cloneWorkspace(s.store.workspace)
+	idx := entryIndex(next.Entries, input.EntryID)
+	if idx < 0 {
+		writeError(w, http.StatusNotFound, "entry not found")
+		return
+	}
+	if next.Entries[idx].ParentID != nil {
+		writeError(w, http.StatusConflict, "desktop placement requires a root entry")
+		return
+	}
+	if err := validateWorkspace(next.Entries, input.Layout); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	revision := next.Revision + 1
+	next.Revision = revision
+	next.Entries[idx].Position = input.Position
+	next.Entries[idx].Revision = revision
+	next.Layout = input.Layout
+	next.LayoutRevision = revision
+	if err := s.store.persistLocked(next); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.store.publishLocked(revision)
+	writeJSON(w, http.StatusOK, desktopPlacementResponse{Revision: revision, Entry: next.Entries[idx], Layout: next.Layout, LayoutRevision: revision})
 }
 
 func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
@@ -1205,6 +1264,19 @@ type deleteResponse struct {
 
 type layoutResponse struct {
 	Revision       int64  `json:"revision"`
+	Layout         Layout `json:"layout"`
+	LayoutRevision int64  `json:"layoutRevision"`
+}
+
+type desktopPlacementRequest struct {
+	EntryID  string   `json:"entryId"`
+	Position Position `json:"position"`
+	Layout   Layout   `json:"layout"`
+}
+
+type desktopPlacementResponse struct {
+	Revision       int64  `json:"revision"`
+	Entry          Entry  `json:"entry"`
 	Layout         Layout `json:"layout"`
 	LayoutRevision int64  `json:"layoutRevision"`
 }

@@ -1,4 +1,4 @@
-import type { DesktopEntry, EntryPosition } from "../types";
+import type { DesktopEntry, DesktopLayout, EntryPosition } from "../types";
 
 export const FILE_ICON_SIZE = { width: 98, height: 102 } as const;
 export const GRID_ORIGIN = { x: 22, y: 22 } as const;
@@ -12,6 +12,7 @@ export type DesktopPage = {
 
 export type ResponsiveDesktop = {
   capacity: number;
+  breakCapacity: number;
   columns: number;
   rows: number;
   pages: DesktopPage[];
@@ -80,23 +81,102 @@ function placePage(entries: DesktopEntry[], slots: EntryPosition[], size: { widt
   return placed;
 }
 
-export function responsiveDesktop(entries: readonly DesktopEntry[], rootOrder: readonly string[], size: { width: number; height: number }): ResponsiveDesktop {
+export function responsiveDesktop(entries: readonly DesktopEntry[], rootOrder: readonly string[], size: { width: number; height: number }, workspaceBreaks: DesktopLayout["workspaceBreaks"] = []): ResponsiveDesktop {
   const roots = new Map(entries.filter((entry) => entry.parentId === null).map((entry) => [entry.id, entry]));
   const ordered = rootOrder.map((id) => roots.get(id)).filter((entry): entry is DesktopEntry => Boolean(entry));
   const baseSlots = desktopSlots(size);
-  const reserveMinimap = ordered.length > baseSlots.length;
+  const activeBreaks = new Set(workspaceBreaks.filter((workspaceBreak) => baseSlots.length <= workspaceBreak.maxCapacity).map((workspaceBreak) => workspaceBreak.entryId));
+  const reserveMinimap = activeBreaks.size > 0 || ordered.length > baseSlots.length;
   const slots = reserveMinimap ? desktopSlots(size, true) : baseSlots;
   const capacity = slots.length;
   const pages: DesktopPage[] = [];
   const positions = new Map<string, EntryPosition>();
-  for (let index = 0; index < ordered.length; index += capacity) {
-    const pageEntries = ordered.slice(index, index + capacity);
-    pages.push({ entries: pageEntries });
-    for (const [id, position] of placePage(pageEntries, slots, size, reserveMinimap)) positions.set(id, position);
+  const groups: DesktopEntry[][] = [];
+  for (const entry of ordered) {
+    if (!groups.length || activeBreaks.has(entry.id)) groups.push([]);
+    groups.at(-1)!.push(entry);
+  }
+  for (const group of groups) {
+    for (let index = 0; index < group.length; index += capacity) {
+      const pageEntries = group.slice(index, index + capacity);
+      pages.push({ entries: pageEntries });
+      for (const [id, position] of placePage(pageEntries, slots, size, reserveMinimap)) positions.set(id, position);
+    }
   }
   const pageCount = Math.max(1, pages.length);
   const columns = Math.ceil(Math.sqrt(pageCount));
-  return { capacity, columns, rows: Math.ceil(pageCount / columns), pages, positions };
+  return { capacity, breakCapacity: baseSlots.length, columns, rows: Math.ceil(pageCount / columns), pages, positions };
+}
+
+function breakMapWithout(layout: DesktopLayout, entryId: string) {
+  const existing = new Map(layout.workspaceBreaks.map((workspaceBreak) => [workspaceBreak.entryId, workspaceBreak.maxCapacity]));
+  const removedCapacity = existing.get(entryId);
+  existing.delete(entryId);
+  if (removedCapacity !== undefined) {
+    const index = layout.rootOrder.indexOf(entryId);
+    for (let candidateIndex = index + 1; candidateIndex < layout.rootOrder.length; candidateIndex += 1) {
+      const candidate = layout.rootOrder[candidateIndex];
+      if (layout.workspaceBreaks.some((workspaceBreak) => workspaceBreak.entryId === candidate)) break;
+      if (candidate !== entryId) {
+        existing.set(candidate, removedCapacity);
+        break;
+      }
+    }
+  }
+  return existing;
+}
+
+function orderedBreaks(rootOrder: string[], breaks: Map<string, number>) {
+  return rootOrder.slice(1).flatMap((entryId) => {
+    const maxCapacity = breaks.get(entryId);
+    return maxCapacity === undefined ? [] : [{ entryId, maxCapacity }];
+  });
+}
+
+export function createEdgeWorkspaceLayout(layout: DesktopLayout, pages: readonly DesktopPage[], entryId: string, activePageIndex: number, before: boolean, maxCapacity: number): DesktopLayout {
+  const chunks = pages.map((page) => page.entries.map((entry) => entry.id));
+  let insertionIndex = before ? activePageIndex : activePageIndex + 1;
+  for (const [index, chunk] of chunks.entries()) {
+    const entryIndex = chunk.indexOf(entryId);
+    if (entryIndex < 0) continue;
+    chunk.splice(entryIndex, 1);
+    if (!chunk.length && index < insertionIndex) insertionIndex -= 1;
+    break;
+  }
+  const retained = chunks.filter((chunk) => chunk.length > 0);
+  insertionIndex = Math.max(0, Math.min(retained.length, insertionIndex));
+  retained.splice(insertionIndex, 0, [entryId]);
+  const rootOrder = retained.flat();
+  const breaks = breakMapWithout(layout, entryId);
+  if (insertionIndex > 0) breaks.set(entryId, Math.max(maxCapacity, breaks.get(entryId) ?? 0));
+  const following = retained[insertionIndex + 1]?.[0];
+  if (following) breaks.set(following, Math.max(maxCapacity, breaks.get(following) ?? 0));
+  return { ...layout, rootOrder, workspaceBreaks: orderedBreaks(rootOrder, breaks) };
+}
+
+export function layoutForPageOrder(layout: DesktopLayout, chunks: readonly string[][], maxCapacity: number): DesktopLayout {
+  const rootOrder = chunks.flat();
+  return {
+    ...layout,
+    rootOrder,
+    workspaceBreaks: chunks.slice(1).filter((chunk) => chunk.length > 0).map((chunk) => ({ entryId: chunk[0], maxCapacity })),
+  };
+}
+
+export function moveEntryToWorkspaceLayout(layout: DesktopLayout, pages: readonly DesktopPage[], entryId: string, targetPageIndex: number, maxCapacity: number): DesktopLayout {
+  const sourcePageIndex = pages.findIndex((page) => page.entries.some((entry) => entry.id === entryId));
+  const boundedTargetIndex = Math.max(0, Math.min(pages.length - 1, targetPageIndex));
+  if (sourcePageIndex < 0 || sourcePageIndex === boundedTargetIndex) return layout;
+
+  const targetKey = pages[boundedTargetIndex]?.entries[0]?.id;
+  if (!targetKey) return layout;
+  const chunks = pages
+    .map((page) => page.entries.map((entry) => entry.id).filter((id) => id !== entryId))
+    .filter((chunk) => chunk.length > 0);
+  const targetChunk = chunks.find((chunk) => chunk.includes(targetKey));
+  if (!targetChunk) return layout;
+  targetChunk.push(entryId);
+  return layoutForPageOrder(layout, chunks, maxCapacity);
 }
 
 export function pagePositionTarget(pageCount: number, columns: number, size: EntryPosition, position: EntryPosition) {

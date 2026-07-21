@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -96,7 +97,7 @@ func TestPersistenceDefaultsLegacyWallpaper(t *testing.T) {
 	}
 }
 
-func TestWorkspaceSchemaV1MigrationOrdersRootsAndPersistsV2(t *testing.T) {
+func TestWorkspaceSchemaV1MigrationOrdersRootsAndPersistsV3(t *testing.T) {
 	dir := t.TempDir()
 	filesDir := filepath.Join(dir, "files")
 	if err := os.MkdirAll(filesDir, 0o700); err != nil {
@@ -121,7 +122,7 @@ func TestWorkspaceSchemaV1MigrationOrdersRootsAndPersistsV2(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	workspace := store.snapshot()
-	if workspace.SchemaVersion != 2 || workspace.Revision != 12 || workspace.LayoutRevision != 7 || workspace.SettingsRevision != 8 {
+	if workspace.SchemaVersion != 3 || workspace.Revision != 12 || workspace.LayoutRevision != 7 || workspace.SettingsRevision != 8 {
 		t.Fatalf("migration changed revisions: %+v", workspace)
 	}
 	if got := strings.Join(workspace.Layout.RootOrder, ","); got != "earlier,later,tie-2,tie-1" {
@@ -134,8 +135,39 @@ func TestWorkspaceSchemaV1MigrationOrdersRootsAndPersistsV2(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bytes.Contains(persisted, []byte(`"views"`)) || bytes.Contains(persisted, []byte(`"viewId"`)) || !bytes.Contains(persisted, []byte(`"schemaVersion":2`)) {
-		t.Fatalf("persisted migration is not schema v2: %s", persisted)
+	if bytes.Contains(persisted, []byte(`"views"`)) || bytes.Contains(persisted, []byte(`"viewId"`)) || !bytes.Contains(persisted, []byte(`"schemaVersion":3`)) || !bytes.Contains(persisted, []byte(`"workspaceBreaks":[]`)) {
+		t.Fatalf("persisted migration is not schema v3: %s", persisted)
+	}
+}
+
+func TestWorkspaceSchemaV2MigrationAddsEmptyBreaks(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "files"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	legacy := []byte(`{"schemaVersion":2,"workspaceId":"workspace","initialized":true,"revision":4,"entries":[],"layout":{"rootOrder":[],"snapToGrid":true,"wallpaper":"grove"},"layoutRevision":3,"editorSettings":{"autoSave":true,"fontSize":13,"language":"auto"},"settingsRevision":2}`)
+	if err := os.WriteFile(filepath.Join(dir, metadataName), legacy, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, logicalMarker), []byte("1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	workspace := store.snapshot()
+	if workspace.SchemaVersion != 3 || workspace.Revision != 4 || workspace.LayoutRevision != 3 || workspace.Layout.WorkspaceBreaks == nil || len(workspace.Layout.WorkspaceBreaks) != 0 {
+		t.Fatalf("v2 migration = %+v", workspace)
+	}
+	persisted, err := os.ReadFile(filepath.Join(dir, metadataName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(persisted, []byte(`"schemaVersion":3`)) || !bytes.Contains(persisted, []byte(`"workspaceBreaks":[]`)) {
+		t.Fatalf("persisted v2 migration = %s", persisted)
 	}
 }
 
@@ -181,6 +213,65 @@ func TestRootOrderMaintainedByEntryMutations(t *testing.T) {
 	reorder := jsonRequest(t, server, http.MethodPut, "/api/layout", Layout{RootOrder: []string{"c", "d"}, SnapToGrid: true, Wallpaper: "grove"})
 	if reorder.Code != http.StatusOK || strings.Join(store.snapshot().Layout.RootOrder, ",") != "c,d" {
 		t.Fatalf("layout reorder: %d %s", reorder.Code, reorder.Body.String())
+	}
+}
+
+func TestWorkspaceBreakValidationAndRootLifecycle(t *testing.T) {
+	store, server := initializedTestServer(t)
+	for _, entry := range []Entry{
+		folder("a", "A", nil, nil),
+		folder("b", "B", nil, nil),
+		folder("c", "C", nil, nil),
+		folder("d", "D", nil, nil),
+	} {
+		if response := multipartEntryRequest(t, server, http.MethodPost, "/api/entries", entry, nil); response.Code != http.StatusOK {
+			t.Fatalf("create %s: %d %s", entry.ID, response.Code, response.Body.String())
+		}
+	}
+
+	invalid := []Layout{
+		{RootOrder: []string{"a", "b", "c", "d"}, WorkspaceBreaks: []WorkspaceBreak{{EntryID: "a", MaxCapacity: 2}}, Wallpaper: "dusk"},
+		{RootOrder: []string{"a", "b", "c", "d"}, WorkspaceBreaks: []WorkspaceBreak{{EntryID: "b", MaxCapacity: 0}}, Wallpaper: "dusk"},
+		{RootOrder: []string{"a", "b", "c", "d"}, WorkspaceBreaks: []WorkspaceBreak{{EntryID: "missing", MaxCapacity: 2}}, Wallpaper: "dusk"},
+		{RootOrder: []string{"a", "b", "c", "d"}, WorkspaceBreaks: []WorkspaceBreak{{EntryID: "b", MaxCapacity: 2}, {EntryID: "b", MaxCapacity: 3}}, Wallpaper: "dusk"},
+	}
+	for i, layout := range invalid {
+		if response := jsonRequest(t, server, http.MethodPut, "/api/layout", layout); response.Code == http.StatusOK {
+			t.Fatalf("invalid layout %d accepted", i)
+		}
+	}
+
+	layout := Layout{RootOrder: []string{"a", "b", "c", "d"}, WorkspaceBreaks: []WorkspaceBreak{{EntryID: "b", MaxCapacity: 2}, {EntryID: "d", MaxCapacity: 7}}, SnapToGrid: true, Wallpaper: "grove"}
+	if response := jsonRequest(t, server, http.MethodPut, "/api/layout", layout); response.Code != http.StatusOK {
+		t.Fatalf("set breaks: %d %s", response.Code, response.Body.String())
+	}
+
+	b := findEntry(t, store.snapshot().Entries, "b")
+	b.ParentID = ptr("a")
+	if response := jsonRequest(t, server, http.MethodPatch, "/api/entries/b", b); response.Code != http.StatusOK {
+		t.Fatalf("nest break root: %d %s", response.Code, response.Body.String())
+	}
+	afterMove := store.snapshot().Layout
+	if got := strings.Join(afterMove.RootOrder, ","); got != "a,c,d" || len(afterMove.WorkspaceBreaks) != 2 || afterMove.WorkspaceBreaks[0] != (WorkspaceBreak{EntryID: "c", MaxCapacity: 2}) {
+		t.Fatalf("break promotion after nesting = %+v", afterMove)
+	}
+
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, httptest.NewRequest(http.MethodDelete, "/api/entries/c", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("delete promoted break: %d %s", response.Code, response.Body.String())
+	}
+	afterDelete := store.snapshot().Layout
+	if got := strings.Join(afterDelete.RootOrder, ","); got != "a,d" || len(afterDelete.WorkspaceBreaks) != 1 || afterDelete.WorkspaceBreaks[0] != (WorkspaceBreak{EntryID: "d", MaxCapacity: 7}) {
+		t.Fatalf("empty group break removal = %+v", afterDelete)
+	}
+
+	if response := multipartEntryRequest(t, server, http.MethodPost, "/api/entries", folder("e", "E", nil, nil), nil); response.Code != http.StatusOK {
+		t.Fatal(response.Body.String())
+	}
+	appended := store.snapshot().Layout
+	if got := strings.Join(appended.RootOrder, ","); got != "a,d,e" || len(appended.WorkspaceBreaks) != 1 {
+		t.Fatalf("new root did not append without a break: %+v", appended)
 	}
 }
 
@@ -432,6 +523,32 @@ func TestExternalRootsAppendAndDeletionRemovesOrder(t *testing.T) {
 	deleted := store.snapshot()
 	if got := strings.Join(deleted.Layout.RootOrder, ","); got != external.ID || deleted.LayoutRevision != 4 {
 		t.Fatalf("root order after external deletion = %q, layout revision = %d", got, deleted.LayoutRevision)
+	}
+}
+
+func TestExternalRootDeletionPromotesWorkspaceBreak(t *testing.T) {
+	store, server := initializedTestServer(t)
+	for _, entry := range []Entry{
+		file("a", "a.txt", nil, nil, "text/plain", 0),
+		file("b", "b.txt", nil, nil, "text/plain", 0),
+		file("c", "c.txt", nil, nil, "text/plain", 0),
+	} {
+		if response := multipartEntryRequest(t, server, http.MethodPost, "/api/entries", entry, ptr("")); response.Code != http.StatusOK {
+			t.Fatal(response.Body.String())
+		}
+	}
+	layout := Layout{RootOrder: []string{"a", "b", "c"}, WorkspaceBreaks: []WorkspaceBreak{{EntryID: "b", MaxCapacity: 8}}, Wallpaper: "dusk"}
+	if response := jsonRequest(t, server, http.MethodPut, "/api/layout", layout); response.Code != http.StatusOK {
+		t.Fatal(response.Body.String())
+	}
+	before := store.snapshot().Revision
+	if err := os.Remove(filepath.Join(store.filesDir, "b.txt")); err != nil {
+		t.Fatal(err)
+	}
+	waitForRevision(t, store, before+1)
+	after := store.snapshot().Layout
+	if len(after.WorkspaceBreaks) != 1 || after.WorkspaceBreaks[0] != (WorkspaceBreak{EntryID: "c", MaxCapacity: 8}) {
+		t.Fatalf("external deletion break normalization = %+v", after)
 	}
 }
 
@@ -763,6 +880,81 @@ func TestMutationsRevisionsAndLastRequestWins(t *testing.T) {
 	}
 }
 
+func TestDesktopPlacementIsAtomicDurableAndPublishesOnce(t *testing.T) {
+	store, server := initializedTestServer(t)
+	created := multipartEntryRequest(t, server, http.MethodPost, "/api/entries", file("file", "file.txt", nil, nil, "text/plain", 0), ptr("content"))
+	if created.Code != http.StatusOK {
+		t.Fatal(created.Body.String())
+	}
+	before := store.snapshot()
+	contentRevision := findEntry(t, before.Entries, "file").ContentRevision
+	events, unsubscribe := store.subscribe()
+	defer unsubscribe()
+	<-events
+	input := desktopPlacementRequest{
+		EntryID:  "file",
+		Position: Position{X: 48, Y: 96},
+		Layout:   Layout{RootOrder: []string{"file"}, WorkspaceBreaks: []WorkspaceBreak{}, SnapToGrid: true, Wallpaper: "ember"},
+	}
+	response := jsonRequest(t, server, http.MethodPut, "/api/desktop-placement", input)
+	if response.Code != http.StatusOK {
+		t.Fatalf("placement status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var result desktopPlacementResponse
+	decodeResponse(t, response, &result)
+	wantRevision := before.Revision + 1
+	if result.Revision != wantRevision || result.LayoutRevision != wantRevision || result.Entry.Revision != wantRevision || result.Entry.Position != input.Position || result.Entry.ContentRevision != contentRevision || !reflect.DeepEqual(result.Layout, input.Layout) {
+		t.Fatalf("placement response = %+v", result)
+	}
+	if revision := <-events; revision != wantRevision {
+		t.Fatalf("placement SSE revision = %d", revision)
+	}
+	select {
+	case revision := <-events:
+		t.Fatalf("unexpected second placement SSE event at revision %d", revision)
+	default:
+	}
+
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenStore(store.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	after := reopened.snapshot()
+	entry := findEntry(t, after.Entries, "file")
+	if after.Revision != wantRevision || after.LayoutRevision != wantRevision || !reflect.DeepEqual(after.Layout, input.Layout) || entry.Position != input.Position || entry.Revision != wantRevision || entry.ContentRevision != contentRevision {
+		t.Fatalf("restarted placement = %+v", after)
+	}
+}
+
+func TestDesktopPlacementFailureChangesNothing(t *testing.T) {
+	store, server := initializedTestServer(t)
+	if response := multipartEntryRequest(t, server, http.MethodPost, "/api/entries", folder("root", "Root", nil, nil), nil); response.Code != http.StatusOK {
+		t.Fatal(response.Body.String())
+	}
+	before := store.snapshot()
+	events, unsubscribe := store.subscribe()
+	defer unsubscribe()
+	<-events
+	store.writeMetadata = func(string, []byte, os.FileMode) error { return errors.New("injected persistence failure") }
+	response := jsonRequest(t, server, http.MethodPut, "/api/desktop-placement", desktopPlacementRequest{EntryID: "root", Position: Position{X: 9, Y: 10}, Layout: Layout{RootOrder: []string{"root"}, Wallpaper: "dusk"}})
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("placement failure status = %d, body = %s", response.Code, response.Body.String())
+	}
+	after := store.snapshot()
+	if after.Revision != before.Revision || findEntry(t, after.Entries, "root").Position != findEntry(t, before.Entries, "root").Position || !reflect.DeepEqual(after.Layout, before.Layout) {
+		t.Fatalf("failed placement changed workspace: before=%+v after=%+v", before, after)
+	}
+	select {
+	case revision := <-events:
+		t.Fatalf("failed placement published revision %d", revision)
+	default:
+	}
+}
+
 func TestMutationResponseDoesNotHoldStoreLock(t *testing.T) {
 	store, server := initializedTestServer(t)
 	w := &blockingResponseWriter{header: make(http.Header), started: make(chan struct{}), release: make(chan struct{})}
@@ -902,7 +1094,7 @@ func TestSSENotifiesAfterMutation(t *testing.T) {
 	defer response.Body.Close()
 	reader := bufio.NewReader(response.Body)
 	identity := store.snapshot()
-	if event := readSSEEvent(t, reader); event != fmt.Sprintf("id: 1\nevent: workspace\ndata: {\"revision\":1,\"schemaVersion\":2,\"workspaceId\":%q}\n", identity.WorkspaceID) {
+	if event := readSSEEvent(t, reader); event != fmt.Sprintf("id: 1\nevent: workspace\ndata: {\"revision\":1,\"schemaVersion\":3,\"workspaceId\":%q}\n", identity.WorkspaceID) {
 		t.Fatalf("initial SSE event = %q", event)
 	}
 
@@ -910,7 +1102,7 @@ func TestSSENotifiesAfterMutation(t *testing.T) {
 	if mutation.Code != http.StatusOK || store.snapshot().Revision != 2 {
 		t.Fatalf("mutation failed: %d %s", mutation.Code, mutation.Body.String())
 	}
-	if event := readSSEEvent(t, reader); event != fmt.Sprintf("id: 2\nevent: workspace\ndata: {\"revision\":2,\"schemaVersion\":2,\"workspaceId\":%q}\n", identity.WorkspaceID) {
+	if event := readSSEEvent(t, reader); event != fmt.Sprintf("id: 2\nevent: workspace\ndata: {\"revision\":2,\"schemaVersion\":3,\"workspaceId\":%q}\n", identity.WorkspaceID) {
 		t.Fatalf("mutation SSE event = %q", event)
 	}
 

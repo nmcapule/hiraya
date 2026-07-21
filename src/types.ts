@@ -6,6 +6,7 @@ export const DEFAULT_WALLPAPER: Wallpaper = "dusk";
 
 export type DesktopLayout = {
   rootOrder: string[];
+  workspaceBreaks: Array<{ entryId: string; maxCapacity: number }>;
   snapToGrid: boolean;
   wallpaper: Wallpaper;
 };
