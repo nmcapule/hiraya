@@ -177,18 +177,12 @@ export function FileIcon({ entry, selected, onSelect, onOpen, onMove, onDragAtEd
     if (!completed || completed.pointerId !== event.pointerId || completed.finishing) return;
     completed.finishing = true;
     if (iconRef.current?.hasPointerCapture(event.pointerId)) iconRef.current.releasePointerCapture(event.pointerId);
-    let succeeded = !cancelled;
-    if (completed.moved && !cancelled) {
-      const targetFolderId = findDropTarget(event.clientX, event.clientY);
-      const position = { x: Math.round(completed.x), y: Math.round(completed.y) };
-      const preview = getSnapPreviewRef.current;
-      try {
-        succeeded = await onMoveRef.current(preview && !targetFolderId ? preview(position) : position, targetFolderId);
-      } catch {
-        succeeded = false;
-      }
-    }
-    onDragEndRef.current(cancelled || !succeeded);
+    const targetFolderId = completed.moved && !cancelled ? findDropTarget(event.clientX, event.clientY) : null;
+    const position = { x: Math.round(completed.x), y: Math.round(completed.y) };
+    const preview = getSnapPreviewRef.current;
+    const move = completed.moved && !cancelled
+      ? Promise.resolve().then(() => onMoveRef.current(preview && !targetFolderId ? preview(position) : position, targetFolderId))
+      : Promise.resolve(!cancelled);
     setDropTarget(null);
     updateSnapPreview(null);
     const cleanUp = () => {
@@ -200,6 +194,16 @@ export function FileIcon({ entry, selected, onSelect, onOpen, onMove, onDragAtEd
     };
     if (completed.moved) requestAnimationFrame(cleanUp);
     else cleanUp();
+
+    let succeeded = !cancelled;
+    if (completed.moved && !cancelled) {
+      try {
+        succeeded = await move;
+      } catch {
+        succeeded = false;
+      }
+    }
+    onDragEndRef.current(cancelled || !succeeded);
   }
 
   return (
