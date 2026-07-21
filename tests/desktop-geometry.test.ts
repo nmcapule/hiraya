@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { DesktopEntry, DesktopLayout } from "../src/types";
-import { createEdgeWorkspaceLayout, desktopSlots, moveEntryToWorkspaceLayout, responsiveDesktop } from "../src/ui/desktop-geometry";
+import { createEdgeWorkspaceLayout, desktopSlots, destinationSurfaceSegment, moveEntryToWorkspaceLayout, nextAvailableDesktopSlot, projectLogicalAxis, projectLogicalPosition, responsiveDesktop, restoreLogicalPosition } from "../src/ui/desktop-geometry";
 
 function file(id: string, x = 22, y = 22): DesktopEntry {
   return { kind: "file", id, name: `${id}.txt`, parentId: null, modifiedAt: 1, position: { x, y }, mimeType: "text/plain", size: 0 };
@@ -21,17 +21,65 @@ describe("responsive desktop geometry", () => {
     expect(three.pages.every((page) => page.entries.length > 0)).toBeTrue();
   });
 
-  test("preserves fitting positions and relocates collisions", () => {
+  test("preserves fitting positions and collisions", () => {
     const entries = [file("one", 160, 30), file("two", 160, 30)];
     const desktop = responsiveDesktop(entries, ["one", "two"], { width: 500, height: 500 });
     expect(desktop.positions.get("one")).toEqual({ x: 160, y: 30 });
-    expect(desktop.positions.get("two")).not.toEqual({ x: 160, y: 30 });
+    expect(desktop.positions.get("two")).toEqual({ x: 160, y: 30 });
+  });
+
+  test("places new icons into free slots without moving existing positions", () => {
+    const size = { width: 500, height: 500 };
+    const slots = desktopSlots(size);
+    expect(nextAvailableDesktopSlot(size, [slots[0], slots[2]])).toEqual(slots[1]);
+    expect(nextAvailableDesktopSlot(size, slots)).toEqual(slots[0]);
+  });
+
+  test("projects exact boundaries into reversible logical segments", () => {
+    expect(projectLogicalAxis(0, 390, 98)).toEqual({ segment: 0, local: 0 });
+    expect(projectLogicalAxis(292, 390, 98)).toEqual({ segment: 0, local: 292 });
+    expect(projectLogicalAxis(293, 390, 98)).toEqual({ segment: 1, local: 1 });
+    expect(projectLogicalAxis(584, 390, 98)).toEqual({ segment: 1, local: 292 });
+    expect(projectLogicalAxis(585, 390, 98)).toEqual({ segment: 2, local: 1 });
+    expect(projectLogicalAxis(25, 80, 98)).toEqual({ segment: 0, local: 0 });
+
+    const logical = { x: 585, y: 520 };
+    const projected = projectLogicalPosition(logical, { width: 390, height: 600 });
+    expect(projected).toEqual({ segment: { column: 2, row: 1 }, local: { x: 1, y: 22 } });
+    expect(restoreLogicalPosition(projected.local, projected.segment, { width: 390, height: 600 })).toEqual(logical);
+  });
+
+  test("extends the continuous surface when adjacent views share a logical segment", () => {
+    const origin = { column: 0, row: 0 };
+    expect(destinationSurfaceSegment(origin, origin, origin, "right")).toEqual({ column: 1, row: 0 });
+    expect(destinationSurfaceSegment({ column: 1, row: 0 }, origin, origin, "right")).toEqual({ column: 2, row: 0 });
+    expect(destinationSurfaceSegment(origin, origin, origin, "left")).toEqual({ column: 1, row: 0 });
+    expect(destinationSurfaceSegment(origin, origin, { column: 4, row: 1 }, "right")).toEqual({ column: 4, row: 1 });
+  });
+
+  test("moves overflowing coordinates to occupied workspaces without rearranging them", () => {
+    const entries = [file("near", 22, 22), file("right", 314, 22), file("down", 22, 520), file("far", 900, 22)];
+    const small = responsiveDesktop(entries, entries.map((entry) => entry.id), { width: 390, height: 600 });
+    expect(small.pages.map((page) => page.entries.map((entry) => entry.id))).toEqual([["near"], ["right"], ["far"], ["down"]]);
+    expect(small.pages.map((page) => page.segment)).toEqual([
+      { column: 0, row: 0 },
+      { column: 1, row: 0 },
+      { column: 3, row: 0 },
+      { column: 0, row: 1 },
+    ]);
+    expect(small.positions.get("right")).toEqual({ x: 22, y: 22 });
+    expect(small.positions.get("far")).toEqual({ x: 24, y: 22 });
+    expect(small.positions.get("down")).toEqual({ x: 22, y: 22 });
+
+    const large = responsiveDesktop(entries, entries.map((entry) => entry.id), { width: 1200, height: 700 });
+    expect(large.pages).toHaveLength(1);
+    expect(large.positions.get("far")).toEqual({ x: 900, y: 22 });
   });
 
   test("repaginates the same order for a smaller device", () => {
     const entries = Array.from({ length: 20 }, (_, index) => file(`file-${index}`, 22 + index * 104, 22));
     const order = entries.map((entry) => entry.id);
-    expect(responsiveDesktop(entries, order, { width: 1200, height: 700 }).pages).toHaveLength(1);
+    expect(responsiveDesktop(entries, order, { width: 2500, height: 700 }).pages).toHaveLength(1);
     expect(responsiveDesktop(entries, order, { width: 390, height: 600 }).pages.length).toBeGreaterThan(1);
   });
 
@@ -47,6 +95,7 @@ describe("responsive desktop geometry", () => {
     const breaks = [{ entryId: "two", maxCapacity: 16 }];
     const desktop = responsiveDesktop(entries, ["one", "two"], { width: 500, height: 500 }, breaks);
     expect(desktop.pages).toHaveLength(2);
+    expect(desktop.pages.map((page) => page.segment)).toEqual([{ column: 0, row: 0 }, { column: 1, row: 0 }]);
     expect(desktop.breakCapacity).toBe(16);
     expect(desktop.capacity).toBeLessThan(desktop.breakCapacity);
     expect(responsiveDesktop(entries, ["one", "two"], { width: 1200, height: 700 }, breaks).pages).toHaveLength(1);

@@ -97,7 +97,7 @@ If adding destructive operations, update file content and the manifest carefully
 - Dragging deliberately avoids React state updates during pointer movement. `FileIcon` applies a direct `translate3d` transform and commits the position through the sync boundary only on pointer release.
 - Use Pointer Events so dragging works with both mouse and touch.
 - Keep dragged icons clamped inside the desktop.
-- Compute workspace pages from the synchronized root order and the current viewport. Preserve dragged positions when they fit without collisions, and project other icons into available grid slots without rewriting their saved positions.
+- Compute workspace pages from the synchronized root order, continuous saved coordinates, and the current viewport. Project coordinate overflow into later virtual workspaces without rewriting or rearranging saved positions; enlarging the viewport must restore the exact arrangement.
 - Never persist empty workspace pages. The empty desktop is one implicit page; additional pages exist for capacity overflow or a non-empty adaptive break created by edge dragging.
 - Outer-edge icon drags create a draft workspace without persistence. Commit its adaptive break only on a successful drop; cancellation must restore the original layout and route.
 - Do not replace the drag implementation with continuous `setState` calls.

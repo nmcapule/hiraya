@@ -4,10 +4,12 @@ export const FILE_ICON_SIZE = { width: 98, height: 102 } as const;
 export const GRID_ORIGIN = { x: 22, y: 22 } as const;
 export const GRID_STEP = { x: 104, y: 112 } as const;
 
-const MINIMAP_RESERVED_SIZE = { width: 132, height: 110 } as const;
+const MINIMAP_RESERVED_SIZE = { width: 138, height: 111 } as const;
 
 export type DesktopPage = {
   entries: DesktopEntry[];
+  key: string;
+  segment: { column: number; row: number };
 };
 
 export type ResponsiveDesktop = {
@@ -31,11 +33,6 @@ export function snapAxis(value: number, origin: number, step: number, max: numbe
   return origin + index * step;
 }
 
-function overlaps(a: EntryPosition, b: EntryPosition) {
-  return a.x < b.x + FILE_ICON_SIZE.width && a.x + FILE_ICON_SIZE.width > b.x
-    && a.y < b.y + FILE_ICON_SIZE.height && a.y + FILE_ICON_SIZE.height > b.y;
-}
-
 export function desktopSlots(size: { width: number; height: number }, reserveMinimap = false) {
   const maxX = Math.max(8, size.width - FILE_ICON_SIZE.width);
   const maxY = Math.max(8, size.height - FILE_ICON_SIZE.height);
@@ -57,28 +54,102 @@ export function desktopSlots(size: { width: number; height: number }, reserveMin
   return slots.length ? slots : [{ x: Math.min(maxX, GRID_ORIGIN.x), y: Math.min(maxY, GRID_ORIGIN.y) }];
 }
 
-function placePage(entries: DesktopEntry[], slots: EntryPosition[], size: { width: number; height: number }, reserveMinimap: boolean) {
-  const placed = new Map<string, EntryPosition>();
-  const positions: EntryPosition[] = [];
-  const maxX = Math.max(8, size.width - FILE_ICON_SIZE.width);
-  const maxY = Math.max(8, size.height - FILE_ICON_SIZE.height);
-  for (const entry of entries) {
-    const desired = entry.position;
-    const underMinimap = reserveMinimap
-      && desired.x + FILE_ICON_SIZE.width > size.width - MINIMAP_RESERVED_SIZE.width
-      && desired.y + FILE_ICON_SIZE.height > size.height - MINIMAP_RESERVED_SIZE.height;
-    const fits = desired.x >= 8 && desired.y >= 8 && desired.x <= maxX && desired.y <= maxY && !underMinimap
-      && positions.every((position) => !overlaps(position, desired));
-    const position = fits ? desired : slots.find((slot) => positions.every((candidate) => !overlaps(candidate, slot)));
-    if (!position) {
-      const compact = new Map<string, EntryPosition>();
-      entries.forEach((candidate, index) => compact.set(candidate.id, slots[index]));
-      return compact;
+function positionsOverlap(a: EntryPosition, b: EntryPosition) {
+  return a.x < b.x + FILE_ICON_SIZE.width && a.x + FILE_ICON_SIZE.width > b.x
+    && a.y < b.y + FILE_ICON_SIZE.height && a.y + FILE_ICON_SIZE.height > b.y;
+}
+
+export function nextAvailableDesktopSlot(size: { width: number; height: number }, occupied: readonly EntryPosition[], reserveMinimap = false, fallbackIndex = 0) {
+  const slots = desktopSlots(size, reserveMinimap);
+  return slots.find((slot) => occupied.every((position) => !positionsOverlap(position, slot))) ?? slots[fallbackIndex % slots.length];
+}
+
+export function projectLogicalAxis(value: number, viewportExtent: number, footprint: number) {
+  const maximum = Math.max(0, viewportExtent - footprint);
+  if (maximum === 0) return { segment: 0, local: 0 };
+  const segment = Math.max(0, Math.ceil((value - maximum) / maximum));
+  return { segment, local: value - segment * maximum };
+}
+
+export function projectLogicalPosition(position: EntryPosition, size: { width: number; height: number }) {
+  const x = projectLogicalAxis(position.x, size.width, FILE_ICON_SIZE.width);
+  const y = projectLogicalAxis(position.y, size.height, FILE_ICON_SIZE.height);
+  return {
+    segment: { column: x.segment, row: y.segment },
+    local: { x: x.local, y: y.local },
+  };
+}
+
+export function restoreLogicalPosition(position: EntryPosition, segment: { column: number; row: number }, size: { width: number; height: number }) {
+  const maximumX = Math.max(0, size.width - FILE_ICON_SIZE.width);
+  const maximumY = Math.max(0, size.height - FILE_ICON_SIZE.height);
+  return {
+    x: segment.column * maximumX + position.x,
+    y: segment.row * maximumY + position.y,
+  };
+}
+
+export function destinationSurfaceSegment(
+  current: { column: number; row: number },
+  sourcePage: { column: number; row: number },
+  targetPage: { column: number; row: number },
+  direction: "left" | "right" | "up" | "down",
+) {
+  if (sourcePage.column !== targetPage.column || sourcePage.row !== targetPage.row) return targetPage;
+  if (direction === "right") return { column: current.column + 1, row: current.row };
+  if (direction === "down") return { column: current.column, row: current.row + 1 };
+  if (direction === "left" && current.column > 0) return { column: current.column - 1, row: current.row };
+  if (direction === "up" && current.row > 0) return { column: current.column, row: current.row - 1 };
+  // Stored coordinates cannot be negative, so a new leading view extends the positive surface.
+  return direction === "left"
+    ? { column: current.column + 1, row: current.row }
+    : { column: current.column, row: current.row + 1 };
+}
+
+function buildPages(groups: readonly DesktopEntry[][], size: { width: number; height: number }, capacity: number) {
+  const pages: DesktopPage[] = [];
+  const positions = new Map<string, EntryPosition>();
+  for (const group of groups) {
+    const buckets = new Map<string, { segment: { column: number; row: number }; entries: DesktopEntry[] }>();
+    for (const entry of group) {
+      const projection = projectLogicalPosition(entry.position, size);
+      const key = `${projection.segment.row}:${projection.segment.column}`;
+      const bucket = buckets.get(key) ?? { segment: projection.segment, entries: [] };
+      bucket.entries.push(entry);
+      buckets.set(key, bucket);
+      positions.set(entry.id, projection.local);
     }
-    positions.push(position);
-    placed.set(entry.id, position);
+    const orderedBuckets = [...buckets.values()].sort((a, b) => a.segment.row - b.segment.row || a.segment.column - b.segment.column);
+    for (const bucket of orderedBuckets) {
+      for (let index = 0; index < bucket.entries.length; index += capacity) {
+        const pageEntries = bucket.entries.slice(index, index + capacity);
+        pages.push({ entries: pageEntries, key: pageEntries[0].id, segment: bucket.segment });
+      }
+    }
   }
-  return placed;
+  return { pages, positions };
+}
+
+function assignSurfaceSegments(pages: readonly DesktopPage[], columns: number) {
+  const naturalSegments = new Set(pages.map((page) => `${page.segment.row}:${page.segment.column}`));
+  const used = new Set<string>();
+  return pages.map((page, pageIndex) => {
+    const naturalKey = `${page.segment.row}:${page.segment.column}`;
+    if (!used.has(naturalKey)) {
+      used.add(naturalKey);
+      return page;
+    }
+    let candidateIndex = pageIndex;
+    let segment = { column: candidateIndex % columns, row: Math.floor(candidateIndex / columns) };
+    let key = `${segment.row}:${segment.column}`;
+    while (used.has(key) || naturalSegments.has(key)) {
+      candidateIndex += 1;
+      segment = { column: candidateIndex % columns, row: Math.floor(candidateIndex / columns) };
+      key = `${segment.row}:${segment.column}`;
+    }
+    used.add(key);
+    return { ...page, segment };
+  });
 }
 
 export function responsiveDesktop(entries: readonly DesktopEntry[], rootOrder: readonly string[], size: { width: number; height: number }, workspaceBreaks: DesktopLayout["workspaceBreaks"] = []): ResponsiveDesktop {
@@ -86,25 +157,19 @@ export function responsiveDesktop(entries: readonly DesktopEntry[], rootOrder: r
   const ordered = rootOrder.map((id) => roots.get(id)).filter((entry): entry is DesktopEntry => Boolean(entry));
   const baseSlots = desktopSlots(size);
   const activeBreaks = new Set(workspaceBreaks.filter((workspaceBreak) => baseSlots.length <= workspaceBreak.maxCapacity).map((workspaceBreak) => workspaceBreak.entryId));
-  const reserveMinimap = activeBreaks.size > 0 || ordered.length > baseSlots.length;
-  const slots = reserveMinimap ? desktopSlots(size, true) : baseSlots;
-  const capacity = slots.length;
-  const pages: DesktopPage[] = [];
-  const positions = new Map<string, EntryPosition>();
   const groups: DesktopEntry[][] = [];
   for (const entry of ordered) {
     if (!groups.length || activeBreaks.has(entry.id)) groups.push([]);
     groups.at(-1)!.push(entry);
   }
-  for (const group of groups) {
-    for (let index = 0; index < group.length; index += capacity) {
-      const pageEntries = group.slice(index, index + capacity);
-      pages.push({ entries: pageEntries });
-      for (const [id, position] of placePage(pageEntries, slots, size, reserveMinimap)) positions.set(id, position);
-    }
-  }
-  const pageCount = Math.max(1, pages.length);
+  const initial = buildPages(groups, size, baseSlots.length);
+  const reserveMinimap = initial.pages.length > 1;
+  const capacity = reserveMinimap ? desktopSlots(size, true).length : baseSlots.length;
+  const built = capacity === baseSlots.length ? initial : buildPages(groups, size, capacity);
+  const pageCount = Math.max(1, built.pages.length);
   const columns = Math.ceil(Math.sqrt(pageCount));
+  const pages = assignSurfaceSegments(built.pages, columns);
+  const { positions } = built;
   return { capacity, breakCapacity: baseSlots.length, columns, rows: Math.ceil(pageCount / columns), pages, positions };
 }
 

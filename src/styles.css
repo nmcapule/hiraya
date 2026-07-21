@@ -289,8 +289,8 @@ textarea:focus-visible {
   touch-action: none;
   user-select: none;
   transition: background 130ms ease, border-color 130ms ease, box-shadow 130ms ease;
-  left: min(var(--file-x), calc(100% - 98px));
-  top: min(var(--file-y), calc(100% - 102px));
+  left: var(--file-x);
+  top: var(--file-y);
 }
 
 .file-icon:hover,
@@ -464,6 +464,12 @@ textarea:focus-visible {
   box-shadow: 0 8px 25px rgba(6, 17, 18, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.08);
   backdrop-filter: blur(13px) saturate(115%);
   -webkit-backdrop-filter: blur(13px) saturate(115%);
+  transition: opacity 150ms ease;
+}
+
+.desktop-minimap[data-obscured] {
+  opacity: 0.18;
+  pointer-events: none;
 }
 
 .desktop-minimap__grid {
@@ -1683,11 +1689,6 @@ textarea:focus-visible {
   .desktop-canvas[data-swiping],
   .desktop-canvas[data-icon-dragging] {
     transition: none;
-  }
-
-  .file-icon {
-    left: var(--file-x);
-    top: var(--file-y);
   }
 
   .desktop-minimap {
