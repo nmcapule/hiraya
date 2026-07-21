@@ -1,7 +1,7 @@
 import type { EditorLanguage, FileEntry } from "../types";
 
-export type FilePreviewKind = "text" | "image" | "pdf" | "video" | "audio" | "none";
-export type FileIconKind = "code" | "text" | "image" | "pdf" | "video" | "audio" | "archive" | "file";
+export type FilePreviewKind = "text" | "url" | "image" | "pdf" | "video" | "audio" | "none";
+export type FileIconKind = "code" | "text" | "url" | "image" | "pdf" | "video" | "audio" | "archive" | "file";
 
 const EXTENSION_LANGUAGES: Readonly<Record<string, EditorLanguage>> = {
   css: "css",
@@ -33,14 +33,17 @@ export function editorLanguageFor(fileName: string, language: EditorLanguage) {
 export function fileCapabilities(file: FileEntry) {
   const extension = fileExtension(file.name);
   const mimeType = file.mimeType.toLowerCase();
-  const editable = mimeType.startsWith("text/") || mimeType.includes("json") || TEXT_EXTENSIONS.has(extension);
-  const preview: FilePreviewKind = editable ? "text"
+  const urlShortcut = extension === "url";
+  const editable = urlShortcut || mimeType.startsWith("text/") || mimeType.includes("json") || TEXT_EXTENSIONS.has(extension);
+  const preview: FilePreviewKind = urlShortcut ? "url"
+    : editable ? "text"
     : mimeType.startsWith("image/") ? "image"
       : mimeType === "application/pdf" ? "pdf"
         : mimeType.startsWith("video/") ? "video"
           : mimeType.startsWith("audio/") ? "audio"
             : "none";
-  const icon: FileIconKind = mimeType.startsWith("image/") ? "image"
+  const icon: FileIconKind = urlShortcut ? "url"
+    : mimeType.startsWith("image/") ? "image"
     : mimeType.startsWith("video/") ? "video"
       : mimeType.startsWith("audio/") ? "audio"
         : mimeType === "application/pdf" ? "pdf"

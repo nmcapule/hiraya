@@ -225,7 +225,6 @@ export function TextEditor({ file, value, settings, readOnly = false, onChange, 
       ],
     });
     viewRef.current = view;
-    view.focus();
     return () => {
       view.destroy();
       viewRef.current = null;

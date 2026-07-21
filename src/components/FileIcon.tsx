@@ -9,6 +9,7 @@ import {
   FileText,
   FileVideo,
   Folder,
+  LinkSimple,
 } from "@phosphor-icons/react";
 import type { DesktopEntry, EntryPosition } from "../types";
 import { fileCapabilities } from "../ui/file-capabilities";
@@ -41,6 +42,7 @@ function FileTypeIcon({ entry }: { entry: DesktopEntry }) {
   if (icon === "audio") return <FileAudio {...props} />;
   if (icon === "pdf") return <FilePdf {...props} />;
   if (icon === "archive") return <FileArchive {...props} />;
+  if (icon === "url") return <LinkSimple {...props} />;
   if (icon === "code") return <FileCode {...props} />;
   if (icon === "text") return <FileText {...props} />;
   return <FileGlyph {...props} />;

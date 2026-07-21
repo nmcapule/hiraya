@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, CloudCheck, CloudSlash, File as FileGlyph, Folder, FolderPlus, GearSix, HardDrive, Plus, SpinnerGap, UploadSimple, WarningCircle } from "@phosphor-icons/react";
+import { Check, CloudCheck, CloudSlash, File as FileGlyph, Folder, FolderPlus, GearSix, HardDrive, LinkSimple, Plus, SpinnerGap, UploadSimple, WarningCircle } from "@phosphor-icons/react";
 import seededDesktop from "virtual:hiraya-seeded";
 import { ContextMenu, DesktopContextMenu } from "./components/ContextMenu";
 import { AppWindow } from "./components/AppWindow";
@@ -482,7 +482,7 @@ function App() {
       if (expectedRevision !== app.contentRevision && fileDirtyRef.current[app.id]) {
         return [{ ...app, file: entry, contentRevision: expectedRevision, remoteChanged: true }];
       }
-      return [{ ...app, file: entry }];
+      return [{ ...app, file: entry, editable: fileCapabilities(entry).editable }];
     });
     updateRunningApps(reconciledApps);
     if (focusedAppIdRef.current && !reconciledApps.some((app) => app.id === focusedAppIdRef.current)) {
@@ -714,7 +714,11 @@ function App() {
       if (!dialogEntry) { setDialog(null); return; }
       const renamed = await renameEntry(dialogEntry.id, name);
       setEntries((current) => current.map((entry) => entry.id === renamed.id ? renamed : entry));
-      updateRunningApps((current) => current.map((app) => app.kind === "file" && app.fileId === renamed.id ? { ...app, file: renamed as FileEntry } : app));
+      updateRunningApps((current) => current.map((app) => app.kind === "file" && app.fileId === renamed.id ? {
+        ...app,
+        file: renamed as FileEntry,
+        editable: renamed.kind === "file" ? fileCapabilities(renamed).editable : app.editable,
+      } : app));
       setNotice(`${renamed.kind === "folder" ? "Folder" : "File"} renamed`);
     } else {
       if (!dialogEntry) { setDialog(null); return; }
@@ -1218,7 +1222,7 @@ function App() {
                 aria-pressed={focusedAppId === app.id && !app.minimized}
                 onClick={() => focusedAppId === app.id && !app.minimized && !isMobile ? minimizeApp(app.id) : focusApp(app.id)}
               >
-                {app.kind === "file" ? <FileGlyph size={15} /> : app.kind === "explorer" ? <Folder size={15} /> : <GearSix size={15} />}
+                {app.kind === "file" ? entry?.kind === "file" && fileCapabilities(entry).preview === "url" ? <LinkSimple size={15} /> : <FileGlyph size={15} /> : app.kind === "explorer" ? <Folder size={15} /> : <GearSix size={15} />}
                 <span>{label}</span>
               </button>
             );
@@ -1350,7 +1354,7 @@ function App() {
                 onBoundsChange={updateAppBounds}
                 onMinimize={minimizeApp}
                 onClose={closeApp}
-                titleArea={<div><span className="window-kicker">{app.kind === "file" ? app.editable ? "Text editor" : "Preview" : app.kind === "explorer" ? "Folder" : "Hiraya desktop"}</span><h2 id={titleId}>{title}</h2></div>}
+                titleArea={<div><span className="window-kicker">{app.kind === "file" ? file && fileCapabilities(file).preview === "url" ? "URL editor" : app.editable ? "Text editor" : "Preview" : app.kind === "explorer" ? "Folder" : "Hiraya desktop"}</span><h2 id={titleId}>{title}</h2></div>}
               >
                 {app.kind === "file" && file && app.blob ? (
                   <FileWindow

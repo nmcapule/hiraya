@@ -3,6 +3,8 @@ import { Check, DownloadSimple, FloppyDisk } from "@phosphor-icons/react";
 import type { EditorLanguage, EditorSettings, FileEntry } from "../types";
 import { fileCapabilities } from "../ui/file-capabilities";
 import { TextEditor } from "./TextEditor";
+import { UrlEditor } from "./UrlEditor";
+import { parseInternetShortcut } from "../lib/internet-shortcut";
 
 const LANGUAGE_OPTIONS: Array<{ value: EditorLanguage; label: string }> = [
   { value: "auto", label: "Auto" },
@@ -82,6 +84,7 @@ export function FileWindow({ file, blob, editable, readOnly = false, remoteChang
 
   const dirty = content !== savedContent;
   const preview = fileCapabilities(file).preview;
+  const validContent = preview !== "url" || (() => { try { parseInternetShortcut(content); return true; } catch { return false; } })();
 
   useEffect(() => {
     onDirtyChange?.(dirty);
@@ -89,24 +92,24 @@ export function FileWindow({ file, blob, editable, readOnly = false, remoteChang
   }, [dirty, onDirtyChange]);
 
   useEffect(() => {
-    if (!editable || readOnly || !editorSettings.autoSave || !contentLoaded || !dirty || saving || lastAutoSaveAttemptRef.current === content) return;
+    if (!editable || readOnly || !editorSettings.autoSave || !contentLoaded || !dirty || !validContent || saving || lastAutoSaveAttemptRef.current === content) return;
     const timer = window.setTimeout(() => {
       lastAutoSaveAttemptRef.current = content;
       void save(content);
     }, 600);
     return () => window.clearTimeout(timer);
-  }, [content, contentLoaded, dirty, editable, editorSettings.autoSave, readOnly, save, saving]);
+  }, [content, contentLoaded, dirty, editable, editorSettings.autoSave, readOnly, save, saving, validContent]);
 
   return (
     <div className="file-window file-window--embedded">
       <div className="file-window__actions">
-        <span className="file-window__mode">{editable ? readOnly ? "Text preview" : "Text editor" : "Preview"}{dirty ? " / Unsaved" : ""}</span>
+        <span className="file-window__mode">{preview === "url" ? readOnly ? "URL preview" : "URL editor" : editable ? readOnly ? "Text preview" : "Text editor" : "Preview"}{dirty ? " / Unsaved" : ""}</span>
         <div className="window-controls">
           <button className="icon-button icon-button--wide" type="button" onClick={onDownload} aria-label="Download file">
             <DownloadSimple size={17} /> <span>Download</span>
           </button>
           {editable && !readOnly && (
-            <button className="button button--primary button--save" type="button" onClick={() => void save(content)} disabled={saving || !dirty}>
+            <button className="button button--primary button--save" type="button" onClick={() => void save(content)} disabled={saving || !dirty || !validContent}>
               {saving ? <FloppyDisk size={17} /> : <Check size={17} />}
               {saving ? "Saving" : dirty ? "Save" : "Saved"}
             </button>
@@ -115,7 +118,7 @@ export function FileWindow({ file, blob, editable, readOnly = false, remoteChang
       </div>
         {saveError && <div className="window-error">{saveError}</div>}
         {remoteChanged && <div className="window-error">This file changed on the server. Your unsaved text is preserved; saving it will become the latest version.</div>}
-        {editable && !readOnly && (
+        {editable && preview === "text" && !readOnly && (
           <div className="editor-toolbar" aria-label="Editor settings">
             <label>
               <span>Language</span>
@@ -149,7 +152,7 @@ export function FileWindow({ file, blob, editable, readOnly = false, remoteChang
           </div>
         )}
         <div className="file-window__content">
-          {editable && contentLoaded && (
+          {editable && preview === "text" && contentLoaded && (
             <TextEditor
               key={file.id}
               file={file}
@@ -161,6 +164,9 @@ export function FileWindow({ file, blob, editable, readOnly = false, remoteChang
               onResolveLink={onResolveLink}
               onOpenLinkedFile={onOpenLinkedFile}
             />
+          )}
+          {preview === "url" && contentLoaded && (
+            <UrlEditor content={content} readOnly={readOnly} onChange={setContent} onSave={() => void save(content)} />
           )}
           {!editable && preview === "image" && objectUrl && <img className="preview-image" src={objectUrl} alt={file.name} />}
           {!editable && preview === "pdf" && objectUrl && <iframe className="preview-frame" src={objectUrl} title={file.name} />}
