@@ -37,6 +37,24 @@ describe("OPFS manifest codec", () => {
     expect("workspaceBreaks" in decoded.manifest).toBe(false);
   });
 
+  test("migrates the original file-only manifest into current relational input", () => {
+    const decoded = decodeManifest({
+      version: 1,
+      files: [{ id: "legacy-file", name: "legacy.txt", mimeType: "text/plain", size: 3, modifiedAt: 1, position: { x: -20, y: 40 } }],
+    });
+    expect(decoded.manifest.entries).toEqual([{
+      kind: "file",
+      id: "legacy-file",
+      name: "legacy.txt",
+      parentId: null,
+      mimeType: "text/plain",
+      size: 3,
+      modifiedAt: 1,
+      position: { x: -20, y: 40 },
+    }]);
+    expect(decoded.manifest.sync).toEqual({ workspaceId: null, revision: 0, entryRevisions: {}, contentRevisions: {}, layoutRevision: 0, settingsRevision: 0 });
+  });
+
   test("migrates old view manifests without viewport-based coordinate rewriting", () => {
     const current = manifestV12();
     const decoded = decodeManifest({

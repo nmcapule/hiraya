@@ -49,7 +49,7 @@ func New(store *Store, staticDir string, maxUpload int64) *Server {
 		writeError(w, http.StatusNotFound, "API endpoint not found")
 	})
 	mux.HandleFunc("/", s.static)
-	s.handler = mux
+	s.handler = s.idempotency(mux)
 	return s
 }
 
@@ -93,8 +93,9 @@ func (s *Server) bootstrap(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		name := part.FormName()
+		partReader := hashMultipartPart(r, name, part.FileName(), part)
 		if name == "workspace" {
-			if gotWorkspace || part.FileName() != "" || decodeJSONReader(part, &input, 4<<20) != nil {
+			if gotWorkspace || part.FileName() != "" || decodeJSONReader(partReader, &input, 4<<20) != nil {
 				part.Close()
 				writeError(w, http.StatusBadRequest, "invalid workspace part")
 				return
@@ -114,7 +115,7 @@ func (s *Server) bootstrap(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusInternalServerError, "could not stage file")
 				return
 			}
-			n, copyErr := io.Copy(file, io.LimitReader(part, s.maxUpload-total+1))
+			n, copyErr := io.Copy(file, io.LimitReader(partReader, s.maxUpload-total+1))
 			closeErr := file.Close()
 			if copyErr != nil || closeErr != nil || total+n > s.maxUpload {
 				part.Close()
@@ -165,9 +166,12 @@ func (s *Server) bootstrap(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.store.mu.Lock()
-	s.store.beginMutationLocked()
 	w, unlock := unlockBeforeResponse(w, s.store.mu.Unlock)
 	defer unlock()
+	if s.replayMutationLocked(w, r) {
+		return
+	}
+	s.store.beginMutationLocked()
 	if s.store.workspace.Initialized {
 		writeError(w, http.StatusConflict, "workspace is already initialized")
 		return
@@ -248,7 +252,8 @@ func (s *Server) bootstrap(w http.ResponseWriter, r *http.Request) {
 		promoted = append(promoted, rel)
 	}
 	next := Workspace{SchemaVersion: workspaceSchemaVersion, WorkspaceID: s.store.workspace.WorkspaceID, Initialized: true, Revision: 1, Entries: input.Entries, Layout: input.Layout, LayoutRevision: 1, EditorSettings: input.EditorSettings, SettingsRevision: 1}
-	if err := s.store.persistLocked(next); err != nil {
+	responseBody, err := s.persistMutationLocked(next, r, http.StatusCreated, cloneWorkspace(next))
+	if err != nil {
 		for i := len(promoted) - 1; i >= 0; i-- {
 			_ = os.Rename(filepath.Join(s.store.filesDir, promoted[i]), filepath.Join(treeStage, promoted[i]))
 		}
@@ -271,7 +276,7 @@ func (s *Server) bootstrap(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("could not persist filesystem index", "error", err)
 	}
 	s.store.publishLocked(1)
-	writeJSON(w, http.StatusCreated, cloneWorkspace(next))
+	writeJSONBody(w, http.StatusCreated, responseBody)
 }
 
 func countFiles(entries []Entry) int {
@@ -315,8 +320,9 @@ func (s *Server) importEntries(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		name := part.FormName()
+		partReader := hashMultipartPart(r, name, part.FileName(), part)
 		if name == "entries" {
-			if gotEntries || part.FileName() != "" || decodeJSONReader(part, &entries, 4<<20) != nil {
+			if gotEntries || part.FileName() != "" || decodeJSONReader(partReader, &entries, 4<<20) != nil {
 				part.Close()
 				writeError(w, http.StatusBadRequest, "invalid entries part")
 				return
@@ -341,7 +347,7 @@ func (s *Server) importEntries(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusInternalServerError, "could not stage file")
 				return
 			}
-			n, copyErr := io.Copy(file, io.LimitReader(part, s.maxUpload-total+1))
+			n, copyErr := io.Copy(file, io.LimitReader(partReader, s.maxUpload-total+1))
 			closeErr := file.Close()
 			if copyErr != nil || closeErr != nil || total+n > s.maxUpload {
 				part.Close()
@@ -388,9 +394,12 @@ func (s *Server) importEntries(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.store.mu.Lock()
-	s.store.beginMutationLocked()
 	w, unlock := unlockBeforeResponse(w, s.store.mu.Unlock)
 	defer unlock()
+	if s.replayMutationLocked(w, r) {
+		return
+	}
+	s.store.beginMutationLocked()
 	if !s.requireInitializedLocked(w) {
 		return
 	}
@@ -454,7 +463,9 @@ func (s *Server) importEntries(w http.ResponseWriter, r *http.Request) {
 		written = append(written, target)
 	}
 	next.Revision = revision
-	if err := s.store.persistLocked(next); err != nil {
+	result := importResponse{Revision: revision, Entries: entries}
+	responseBody, err := s.persistMutationLocked(next, r, http.StatusOK, result)
+	if err != nil {
 		for _, path := range written {
 			_ = os.Remove(path)
 		}
@@ -470,7 +481,7 @@ func (s *Server) importEntries(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("could not persist filesystem index", "error", err)
 	}
 	s.store.publishLocked(revision)
-	writeJSON(w, http.StatusOK, importResponse{Revision: revision, Entries: entries})
+	writeJSONBody(w, http.StatusOK, responseBody)
 }
 
 func (s *Server) upsertEntry(w http.ResponseWriter, r *http.Request) {
@@ -499,9 +510,11 @@ func (s *Server) upsertEntry(w http.ResponseWriter, r *http.Request) {
 			writeError(w, statusForReadError(nextErr), "invalid multipart request")
 			return
 		}
-		switch part.FormName() {
+		name := part.FormName()
+		partReader := hashMultipartPart(r, name, part.FileName(), part)
+		switch name {
 		case "entry":
-			if gotEntry || decodeJSONReader(part, &entry, 1<<20) != nil {
+			if gotEntry || decodeJSONReader(partReader, &entry, 1<<20) != nil {
 				part.Close()
 				writeError(w, http.StatusBadRequest, "invalid entry part")
 				return
@@ -520,7 +533,7 @@ func (s *Server) upsertEntry(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusInternalServerError, "could not stage content")
 				return
 			}
-			n, copyErr := io.Copy(f, io.LimitReader(part, s.maxUpload+1))
+			n, copyErr := io.Copy(f, io.LimitReader(partReader, s.maxUpload+1))
 			closeErr := f.Close()
 			if copyErr != nil || closeErr != nil || n > s.maxUpload {
 				part.Close()
@@ -544,9 +557,12 @@ func (s *Server) upsertEntry(w http.ResponseWriter, r *http.Request) {
 		entry.Size = contentSize
 	}
 	s.store.mu.Lock()
-	s.store.beginMutationLocked()
 	w, unlock := unlockBeforeResponse(w, s.store.mu.Unlock)
 	defer unlock()
+	if s.replayMutationLocked(w, r) {
+		return
+	}
+	s.store.beginMutationLocked()
 	if !s.requireInitializedLocked(w) {
 		return
 	}
@@ -645,7 +661,9 @@ func (s *Server) upsertEntry(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	next.Revision++
-	if err := s.store.persistLocked(next); err != nil {
+	result := entryResponse{Revision: next.Revision, Entry: entry}
+	responseBody, err := s.persistMutationLocked(next, r, http.StatusOK, result)
+	if err != nil {
 		if replacement != nil {
 			if rollbackErr := replacement.rollback(); rollbackErr != nil {
 				slog.Error("could not roll back failed content replacement", "path", target, "error", rollbackErr)
@@ -686,7 +704,7 @@ func (s *Server) upsertEntry(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.store.publishLocked(next.Revision)
-	writeJSON(w, http.StatusOK, entryResponse{Revision: next.Revision, Entry: entry})
+	writeJSONBody(w, http.StatusOK, responseBody)
 }
 
 func (s *Server) patchEntry(w http.ResponseWriter, r *http.Request) {
@@ -705,9 +723,12 @@ func (s *Server) patchEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.store.mu.Lock()
-	s.store.beginMutationLocked()
 	w, unlock := unlockBeforeResponse(w, s.store.mu.Unlock)
 	defer unlock()
+	if s.replayMutationLocked(w, r) {
+		return
+	}
+	s.store.beginMutationLocked()
 	if !s.requireInitializedLocked(w) {
 		return
 	}
@@ -753,7 +774,9 @@ func (s *Server) patchEntry(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	next.Revision++
-	if err := s.store.persistLocked(next); err != nil {
+	result := entryResponse{Revision: next.Revision, Entry: entry}
+	responseBody, err := s.persistMutationLocked(next, r, http.StatusOK, result)
+	if err != nil {
 		if oldPath != newPath {
 			if rollbackErr := os.Rename(newPath, oldPath); rollbackErr != nil {
 				slog.Error("could not roll back failed entry move", "from", newPath, "to", oldPath, "error", rollbackErr)
@@ -769,7 +792,7 @@ func (s *Server) patchEntry(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.store.publishLocked(next.Revision)
-	writeJSON(w, http.StatusOK, entryResponse{Revision: next.Revision, Entry: entry})
+	writeJSONBody(w, http.StatusOK, responseBody)
 }
 
 func (s *Server) putContent(w http.ResponseWriter, r *http.Request) {
@@ -797,9 +820,12 @@ func (s *Server) putContent(w http.ResponseWriter, r *http.Request) {
 		contentType = "application/octet-stream"
 	}
 	s.store.mu.Lock()
-	s.store.beginMutationLocked()
 	w, unlock := unlockBeforeResponse(w, s.store.mu.Unlock)
 	defer unlock()
+	if s.replayMutationLocked(w, r) {
+		return
+	}
+	s.store.beginMutationLocked()
 	if !s.requireInitializedLocked(w) {
 		return
 	}
@@ -835,7 +861,9 @@ func (s *Server) putContent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	next.Revision++
-	if err := s.store.persistLocked(next); err != nil {
+	result := entryResponse{Revision: next.Revision, Entry: entry}
+	responseBody, err := s.persistMutationLocked(next, r, http.StatusOK, result)
+	if err != nil {
 		if rollbackErr := replacement.rollback(); rollbackErr != nil {
 			slog.Error("could not roll back failed content update", "path", path, "error", rollbackErr)
 		}
@@ -852,7 +880,7 @@ func (s *Server) putContent(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("could not persist filesystem index", "error", err)
 	}
 	s.store.publishLocked(next.Revision)
-	writeJSON(w, http.StatusOK, entryResponse{Revision: next.Revision, Entry: entry})
+	writeJSONBody(w, http.StatusOK, responseBody)
 }
 
 func (s *Server) getContent(w http.ResponseWriter, r *http.Request) {
@@ -908,9 +936,12 @@ func (s *Server) deleteEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.store.mu.Lock()
-	s.store.beginMutationLocked()
 	w, unlock := unlockBeforeResponse(w, s.store.mu.Unlock)
 	defer unlock()
+	if s.replayMutationLocked(w, r) {
+		return
+	}
+	s.store.beginMutationLocked()
 	if !s.requireInitializedLocked(w) {
 		return
 	}
@@ -973,7 +1004,9 @@ func (s *Server) deleteEntry(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not inspect deleted entry")
 		return
 	}
-	if err := s.store.persistLocked(next); err != nil {
+	result := deleteResponse{Revision: next.Revision, DeletedIDs: deletedIDs}
+	responseBody, err := s.persistMutationLocked(next, r, http.StatusOK, result)
+	if err != nil {
 		if quarantinedPath != "" {
 			if rollbackErr := os.Rename(quarantinedPath, deletePath); rollbackErr != nil {
 				slog.Error("could not roll back failed entry deletion", "from", quarantinedPath, "to", deletePath, "error", rollbackErr)
@@ -992,7 +1025,7 @@ func (s *Server) deleteEntry(w http.ResponseWriter, r *http.Request) {
 			slog.Warn("could not clean up quarantined entry", "path", quarantinedPath, "error", err)
 		}
 	}
-	writeJSON(w, http.StatusOK, deleteResponse{Revision: next.Revision, DeletedIDs: deletedIDs})
+	writeJSONBody(w, http.StatusOK, responseBody)
 }
 
 func (s *Server) putLayout(w http.ResponseWriter, r *http.Request) {
@@ -1006,9 +1039,12 @@ func (s *Server) putLayout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.store.mu.Lock()
-	s.store.beginMutationLocked()
 	w, unlock := unlockBeforeResponse(w, s.store.mu.Unlock)
 	defer unlock()
+	if s.replayMutationLocked(w, r) {
+		return
+	}
+	s.store.beginMutationLocked()
 	if !s.requireInitializedLocked(w) {
 		return
 	}
@@ -1020,12 +1056,14 @@ func (s *Server) putLayout(w http.ResponseWriter, r *http.Request) {
 	next.Revision++
 	next.Layout = layout
 	next.LayoutRevision = next.Revision
-	if err := s.store.persistLocked(next); err != nil {
+	result := layoutResponse{Revision: next.Revision, Layout: layout, LayoutRevision: next.LayoutRevision}
+	responseBody, err := s.persistMutationLocked(next, r, http.StatusOK, result)
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	s.store.publishLocked(next.Revision)
-	writeJSON(w, http.StatusOK, layoutResponse{Revision: next.Revision, Layout: layout, LayoutRevision: next.LayoutRevision})
+	writeJSONBody(w, http.StatusOK, responseBody)
 }
 
 func (s *Server) putDesktopPositions(w http.ResponseWriter, r *http.Request) {
@@ -1052,9 +1090,12 @@ func (s *Server) putDesktopPositions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.store.mu.Lock()
-	s.store.beginMutationLocked()
 	w, unlock := unlockBeforeResponse(w, s.store.mu.Unlock)
 	defer unlock()
+	if s.replayMutationLocked(w, r) {
+		return
+	}
+	s.store.beginMutationLocked()
 	if !s.requireInitializedLocked(w) {
 		return
 	}
@@ -1083,12 +1124,14 @@ func (s *Server) putDesktopPositions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
-	if err := s.store.persistLocked(next); err != nil {
+	result := desktopPositionsResponse{Revision: revision, Entries: entries}
+	responseBody, err := s.persistMutationLocked(next, r, http.StatusOK, result)
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	s.store.publishLocked(revision)
-	writeJSON(w, http.StatusOK, desktopPositionsResponse{Revision: revision, Entries: entries})
+	writeJSONBody(w, http.StatusOK, responseBody)
 }
 
 func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
@@ -1102,9 +1145,12 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.store.mu.Lock()
-	s.store.beginMutationLocked()
 	w, unlock := unlockBeforeResponse(w, s.store.mu.Unlock)
 	defer unlock()
+	if s.replayMutationLocked(w, r) {
+		return
+	}
+	s.store.beginMutationLocked()
 	if !s.requireInitializedLocked(w) {
 		return
 	}
@@ -1112,12 +1158,14 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	next.Revision++
 	next.EditorSettings = settings
 	next.SettingsRevision = next.Revision
-	if err := s.store.persistLocked(next); err != nil {
+	result := settingsResponse{Revision: next.Revision, EditorSettings: settings, SettingsRevision: next.SettingsRevision}
+	responseBody, err := s.persistMutationLocked(next, r, http.StatusOK, result)
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	s.store.publishLocked(next.Revision)
-	writeJSON(w, http.StatusOK, settingsResponse{Revision: next.Revision, EditorSettings: settings, SettingsRevision: next.SettingsRevision})
+	writeJSONBody(w, http.StatusOK, responseBody)
 }
 
 func (s *Server) events(w http.ResponseWriter, r *http.Request) {

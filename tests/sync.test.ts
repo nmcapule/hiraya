@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { SyncEngine, type SyncEngineOptions } from "../src/lib/sync";
 import type { DesktopSnapshot } from "../src/lib/opfs";
 import { desktopSnapshot, remoteWorkspace } from "./fixtures";
+import { applyOutboxOperation, type OutboxRecord } from "../src/lib/outbox";
 
 class FakeEventSource {
   onopen: (() => void) | null = null;
@@ -11,15 +12,36 @@ class FakeEventSource {
 }
 
 function remoteOptions(snapshot: DesktopSnapshot, fetchImpl: typeof fetch) {
+  let current = snapshot;
+  let sequence = 0;
+  let outbox: OutboxRecord[] = [];
   return {
     fetch: fetchImpl,
     eventSource: FakeEventSource as unknown as typeof EventSource,
     setInterval: (() => 1) as unknown as typeof globalThis.setInterval,
     clearInterval: (() => undefined) as typeof globalThis.clearInterval,
     storage: {
-      loadDesktop: async () => snapshot,
-      readDesktopSnapshot: async () => ({ ...snapshot, contents: new Map() }),
-      applyRemoteDesktop: async (next: DesktopSnapshot) => next,
+      loadDesktop: async () => current,
+      readDesktopSnapshot: async () => ({ ...current, contents: new Map() }),
+      applyRemoteDesktop: async (next: DesktopSnapshot, _contents: Map<string, Blob>, acknowledgedOperationId?: string) => {
+        let manifest = { version: 12 as const, entries: next.entries, snapToGrid: next.layout.snapToGrid, wallpaper: next.layout.wallpaper, editorSettings: next.editorSettings, sync: next.sync };
+        for (const record of outbox) if (record.operationId !== acknowledgedOperationId) manifest = applyOutboxOperation(manifest, record.operation);
+        current = { entries: manifest.entries, layout: { snapToGrid: manifest.snapToGrid, wallpaper: manifest.wallpaper }, editorSettings: manifest.editorSettings, sync: manifest.sync };
+        return current;
+      },
+      enqueueMutation: async (operation: OutboxRecord["operation"]) => {
+        sequence += 1;
+        const record: OutboxRecord = { operationId: sequence.toString().padStart(16, "0"), sequence, clientId: "client-1", workspaceId: current.sync.workspaceId, operation, status: "pending", error: null };
+        outbox.push(record);
+        const manifest = applyOutboxOperation({ version: 12, entries: current.entries, snapToGrid: current.layout.snapToGrid, wallpaper: current.layout.wallpaper, editorSettings: current.editorSettings, sync: current.sync }, operation);
+        current = { entries: manifest.entries, layout: { snapToGrid: manifest.snapToGrid, wallpaper: manifest.wallpaper }, editorSettings: manifest.editorSettings, sync: manifest.sync };
+        return { desktop: current, record };
+      },
+      readOutbox: async () => outbox,
+      bindOutboxWorkspace: async (workspaceId: string) => { outbox = outbox.map((record) => ({ ...record, workspaceId: record.workspaceId ?? workspaceId })); },
+      acknowledgeMutation: async (operationId: string) => { outbox = outbox.filter((record) => record.operationId !== operationId); },
+      blockMutation: async (operationId: string, error: string) => { outbox = outbox.map((record) => record.operationId === operationId ? { ...record, status: "blocked", error } : record); },
+      readPendingContent: async () => new Blob(),
     } as unknown as NonNullable<SyncEngineOptions["storage"]>,
   };
 }
@@ -257,6 +279,7 @@ describe("SyncEngine remote reconciliation", () => {
     next.entries[0].position = { x: -80, y: 90 };
     let workspaceReads = 0;
     let placementBody: unknown;
+    let placementHeaders: Headers | undefined;
     const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === "/api/workspace") {
@@ -266,6 +289,7 @@ describe("SyncEngine remote reconciliation", () => {
       if (url === "/api/files/file-1/content") return new Response("note");
       if (url === "/api/desktop-positions") {
         placementBody = JSON.parse(String(init?.body));
+        placementHeaders = new Headers(init?.headers);
         return Response.json({});
       }
       throw new Error(`Unexpected request: ${url}`);
@@ -276,6 +300,8 @@ describe("SyncEngine remote reconciliation", () => {
     const moved = await engine.updateDesktopPositions([{ entryId: "file-1", position: { x: -80, y: 90 } }]);
 
     expect(placementBody).toEqual([{ entryId: "file-1", position: { x: -80, y: 90 } }]);
+    expect(placementHeaders?.get("X-Hiraya-Client-ID")).toBe("client-1");
+    expect(placementHeaders?.get("X-Hiraya-Operation-ID")).toBe("0000000000000001");
     expect(moved[0].position).toEqual({ x: -80, y: 90 });
     expect(workspaceReads).toBe(2);
     engine.stop();
@@ -321,6 +347,43 @@ describe("SyncEngine remote reconciliation", () => {
     await moving;
     expect(activities).toEqual([false, true, false]);
     expect(statuses.at(-1)).toBe("online");
+    engine.stop();
+  });
+
+  test("accepts and durably projects a mutation while offline", async () => {
+    const snapshot = desktopSnapshot();
+    const engine = new SyncEngine(remoteOptions(snapshot, (async () => { throw new Error("offline"); }) as typeof fetch));
+    const published: DesktopSnapshot[] = [];
+    engine.subscribe((next) => published.push(next), () => undefined);
+    const started = await engine.start({ x: 100, y: 100 });
+
+    const folder = await engine.createFolder("Offline", null, { x: 3, y: 4 });
+
+    expect(started.status).toBe("offline");
+    expect(folder.name).toBe("Offline");
+    expect(published.at(-1)?.entries).toContainEqual(folder);
+    expect(await engine.getOutboxStatus()).toMatchObject({ pending: 1, blocked: 0 });
+    engine.stop();
+  });
+
+  test("blocks a permanent conflict without dropping the optimistic operation", async () => {
+    const snapshot = desktopSnapshot();
+    const initial = remoteWorkspace();
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/workspace") return Response.json(initial);
+      if (url === "/api/files/file-1/content") return new Response("note");
+      if (url === "/api/entries") return Response.json({ error: "That name is already in use." }, { status: 409 });
+      throw new Error(`Unexpected request: ${url}`);
+    }) as typeof fetch;
+    const engine = new SyncEngine(remoteOptions(snapshot, fetchImpl));
+    await engine.start({ x: 100, y: 100 });
+
+    await expect(engine.createFolder("Conflict", null, { x: 0, y: 0 })).rejects.toThrow("That name is already in use.");
+
+    const status = await engine.getOutboxStatus();
+    expect(status).toMatchObject({ pending: 0, blocked: 1 });
+    expect(status.records[0].operation.kind).toBe("create");
     engine.stop();
   });
 });

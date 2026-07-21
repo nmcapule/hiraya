@@ -11,10 +11,13 @@ import {
   type PersistedManifestV12,
 } from "./manifest-codec";
 import { parseLayout, parsePosition, parseRootDesktopPositions } from "./contracts";
+import type { StorageDbMethod, StorageDbRequests, StorageDbResponse, StorageDbResponses } from "./opfs-db-protocol";
+import type { OutboxOperation, OutboxRecord } from "./outbox";
 
 const MANIFEST_NAME = ".hiraya-manifest.json";
 const PREFERENCES_NAME = ".hiraya-preferences.json";
 const FILES_DIRECTORY = "files";
+const PENDING_DIRECTORY = "pending";
 
 type Manifest = PersistedManifestV12;
 export type { DesktopSyncState } from "./manifest-codec";
@@ -50,16 +53,13 @@ async function getFilesDirectory() {
   return root.getDirectoryHandle(FILES_DIRECTORY, { create: true });
 }
 
-async function writeManifest(manifest: Manifest) {
+async function getPendingDirectory() {
   const root = await getRoot();
-  const handle = await root.getFileHandle(MANIFEST_NAME, { create: true });
-  const writable = await handle.createWritable();
+  return root.getDirectoryHandle(PENDING_DIRECTORY, { create: true });
+}
 
-  try {
-    await writable.write(JSON.stringify(manifest));
-  } finally {
-    await writable.close();
-  }
+async function writeManifest(manifest: Manifest) {
+  await callDatabase("replaceManifest", { manifest });
   desktopLoad = Promise.resolve(manifest);
 }
 
@@ -95,30 +95,86 @@ async function createManifestFromSeeded(seeded: SeededManifest): Promise<Manifes
   };
   assertValidManifest(created);
   for (const [index, file] of files.entries()) await writeContent(file.id, contents[index]);
-  await writeManifest(created);
   return created;
 }
 
-async function readManifest(
-  seeded: SeededManifest | null = null,
-): Promise<Manifest> {
-  const root = await getRoot();
+function isNotFound(error: unknown): error is DOMException {
+  return error instanceof DOMException && error.name === "NotFoundError";
+}
 
+async function readLegacyPreferences(root: FileSystemDirectoryHandle): Promise<LocalPreferences> {
   try {
-    const handle = await root.getFileHandle(MANIFEST_NAME);
-    const file = await handle.getFile();
-    const decoded = decodeManifest(JSON.parse(await file.text()));
-    if (decoded.migrated) await writeManifest(decoded.manifest);
-    return decoded.manifest;
-  } catch (error) {
-    if (error instanceof DOMException && error.name === "NotFoundError") {
-      if (seeded) return createManifestFromSeeded(seeded);
-       const created: Manifest = { version: 12, entries: [], snapToGrid: false, wallpaper: DEFAULT_WALLPAPER, editorSettings: DEFAULT_EDITOR_SETTINGS, sync: emptySyncState() };
-      await writeManifest(created);
-      return created;
+    const handle = await root.getFileHandle(PREFERENCES_NAME);
+    const value: unknown = JSON.parse(await (await handle.getFile()).text());
+    if (!value || typeof value !== "object" || (value as Record<string, unknown>).version !== 1 || typeof (value as Record<string, unknown>).autoUpdate !== "boolean") {
+      throw new Error("The local preferences have an unsupported format.");
     }
+    return { autoUpdate: (value as Record<string, unknown>).autoUpdate as boolean };
+  } catch (error) {
+    if (isNotFound(error)) return { autoUpdate: true };
     throw error;
   }
+}
+
+async function validateReferencedContents(manifest: Manifest) {
+  const directory = await getFilesDirectory();
+  for (const entry of manifest.entries) {
+    if (entry.kind !== "file") continue;
+    let stored: File;
+    try {
+      stored = await (await directory.getFileHandle(entry.id)).getFile();
+    } catch (error) {
+      if (isNotFound(error)) throw new Error(`The stored contents of “${entry.name}” are missing.`);
+      throw error;
+    }
+    if (stored.size !== entry.size) throw new Error(`The stored contents of “${entry.name}” do not match its metadata.`);
+  }
+}
+
+async function removeLegacyFile(root: FileSystemDirectoryHandle, name: string) {
+  try {
+    await root.removeEntry(name);
+  } catch (error) {
+    if (!isNotFound(error)) console.warn(`Hiraya could not remove migrated ${name}.`, error);
+  }
+}
+
+async function initializeDatabase(seeded: SeededManifest | null): Promise<Manifest> {
+  const root = await getRoot();
+  const status = await callDatabase("status", undefined);
+  if (!status.needsBootstrap) return parseManifestV12(await callDatabase("readManifest", undefined));
+
+  let legacyManifest: Manifest | null = null;
+  let hasLegacyManifest = false;
+  try {
+    const handle = await root.getFileHandle(MANIFEST_NAME);
+    hasLegacyManifest = true;
+    const file = await handle.getFile();
+    legacyManifest = decodeManifest(JSON.parse(await file.text())).manifest;
+    await validateReferencedContents(legacyManifest);
+  } catch (error) {
+    if (!isNotFound(error)) throw error;
+  }
+
+  const manifest = legacyManifest ?? (seeded && !status.existedBeforeOpen
+    ? await createManifestFromSeeded(seeded)
+    : { version: 12, entries: [], snapToGrid: false, wallpaper: DEFAULT_WALLPAPER, editorSettings: DEFAULT_EDITOR_SETTINGS, sync: emptySyncState() });
+  const preferences = hasLegacyManifest ? await readLegacyPreferences(root) : await callDatabase("readPreferences", undefined);
+  const bootstrapped = await callDatabase("bootstrap", { manifest, preferences });
+  if (hasLegacyManifest) {
+    await removeLegacyFile(root, MANIFEST_NAME);
+    await removeLegacyFile(root, PREFERENCES_NAME);
+  }
+  return bootstrapped.manifest;
+}
+
+async function readManifest(seeded: SeededManifest | null = null): Promise<Manifest> {
+  databaseInitialization ??= initializeDatabase(seeded).then(() => undefined).catch((error) => {
+    databaseInitialization = null;
+    throw error;
+  });
+  await databaseInitialization;
+  return parseManifestV12(await callDatabase("readManifest", undefined));
 }
 
 async function writeContent(id: string, content: Blob | string) {
@@ -130,6 +186,51 @@ async function writeContent(id: string, content: Blob | string) {
     await writable.write(content);
   } finally {
     await writable.close();
+  }
+}
+
+async function writeHandleContent(directory: FileSystemDirectoryHandle, name: string, content: Blob | string) {
+  const handle = await directory.getFileHandle(name, { create: true });
+  const writable = await handle.createWritable();
+  try {
+    await writable.write(content);
+  } finally {
+    await writable.close();
+  }
+}
+
+function operationContentIds(operation: OutboxOperation) {
+  if (operation.kind === "save-content") return [operation.entry.id];
+  if (operation.kind === "create") return operation.entries.filter((entry): entry is FileEntry => entry.kind === "file").map((entry) => entry.id);
+  return [];
+}
+
+async function stageOperationContents(operationId: string, contents: Map<string, Blob>) {
+  if (contents.size === 0) return;
+  const pending = await getPendingDirectory();
+  const operationDirectory = await pending.getDirectoryHandle(operationId, { create: true });
+  for (const [id, content] of contents) await writeHandleContent(operationDirectory, id, content);
+}
+
+async function readStagedContent(operationId: string, id: string) {
+  const pending = await getPendingDirectory();
+  return (await (await pending.getDirectoryHandle(operationId)).getFileHandle(id)).getFile();
+}
+
+async function materializeOutbox(records: OutboxRecord[]) {
+  for (const record of records) {
+    for (const id of operationContentIds(record.operation)) {
+      const content = await readStagedContent(record.operationId, id);
+      await writeContent(id, content);
+    }
+  }
+}
+
+async function removeStagedOperation(operationId: string) {
+  try {
+    await (await getPendingDirectory()).removeEntry(operationId, { recursive: true });
+  } catch (error) {
+    if (!isNotFound(error)) console.warn("Hiraya could not clean up acknowledged pending content.", error);
   }
 }
 
@@ -154,7 +255,68 @@ function getFileEntry(entries: DesktopEntry[], id: string): FileEntry {
 }
 
 let desktopLoad: Promise<Manifest> | null = null;
+let databaseInitialization: Promise<void> | null = null;
 let storageWork: Promise<void> = Promise.resolve();
+
+type RpcPort = {
+  postMessage(message: unknown, transfer?: Transferable[]): void;
+  addEventListener(type: "message", listener: (event: MessageEvent<StorageDbResponse>) => void): void;
+  start?: () => void;
+};
+
+let databasePort: Promise<RpcPort> | null = null;
+let hostedDatabaseWorker: Worker | null = null;
+let requestId = 0;
+const pendingRequests = new Map<number, { resolve(value: unknown): void; reject(error: Error): void }>();
+
+function openDatabasePort(): RpcPort {
+  let port: RpcPort;
+  if (typeof SharedWorker !== "undefined") {
+    const shared = new SharedWorker(new URL("./opfs-shared.worker.ts", import.meta.url), { type: "module", name: "hiraya-storage" });
+    port = shared.port;
+    shared.port.addEventListener("message", (event) => {
+      if ((event.data as { type?: string }).type !== "need-engine") return;
+      hostedDatabaseWorker?.terminate();
+      hostedDatabaseWorker = new Worker(new URL("./opfs-db.worker.ts", import.meta.url), { type: "module", name: "hiraya-sqlite-engine" });
+      const channel = new MessageChannel();
+      channel.port2.onmessage = (message: MessageEvent<{ type?: string; error?: string }>) => {
+        if (message.data.type === "engine-error") {
+          hostedDatabaseWorker?.terminate();
+          hostedDatabaseWorker = null;
+          return;
+        }
+        if (message.data.type !== "engine-ready") return;
+        channel.port2.onmessage = null;
+        shared.port.postMessage({ type: "attach-engine", port: channel.port2 }, [channel.port2]);
+      };
+      channel.port2.start();
+      hostedDatabaseWorker.postMessage({ type: "attach", port: channel.port1 }, [channel.port1]);
+    });
+  } else {
+    port = new Worker(new URL("./opfs-db.worker.ts", import.meta.url), { type: "module", name: "hiraya-storage-fallback" });
+  }
+  port.addEventListener("message", (event) => {
+    const response = event.data;
+    const pending = pendingRequests.get(response.id);
+    if (!pending) return;
+    pendingRequests.delete(response.id);
+    if (response.error) pending.reject(new Error(response.error));
+    else pending.resolve(response.result);
+  });
+  port.start?.();
+  return port;
+}
+
+async function callDatabase<M extends StorageDbMethod>(method: M, params: StorageDbRequests[M]): Promise<StorageDbResponses[M]> {
+  await getRoot();
+  databasePort ??= Promise.resolve().then(openDatabasePort);
+  const port = await databasePort;
+  const id = ++requestId;
+  return new Promise<StorageDbResponses[M]>((resolve, reject) => {
+    pendingRequests.set(id, { resolve: (value) => resolve(value as StorageDbResponses[M]), reject });
+    port.postMessage({ id, method, params });
+  });
+}
 
 function withCrossContextLock<T>(operation: () => Promise<T>) {
   if (!("locks" in navigator) || !navigator.locks) return operation();
@@ -169,30 +331,13 @@ function serializeStorage<T>(operation: () => Promise<T>): Promise<T> {
 }
 
 async function readLocalPreferencesUnsafe(): Promise<LocalPreferences> {
-  const root = await getRoot();
-  let handle: FileSystemFileHandle;
-  try {
-    handle = await root.getFileHandle(PREFERENCES_NAME);
-  } catch (error) {
-    if (error instanceof DOMException && error.name === "NotFoundError") return { autoUpdate: true };
-    throw error;
-  }
-  const value: unknown = JSON.parse(await (await handle.getFile()).text());
-  if (!value || typeof value !== "object" || (value as Record<string, unknown>).version !== 1 || typeof (value as Record<string, unknown>).autoUpdate !== "boolean") {
-    throw new Error("The local preferences have an unsupported format.");
-  }
-  return { autoUpdate: (value as Record<string, unknown>).autoUpdate as boolean };
+  await callDatabase("status", undefined);
+  return callDatabase("readPreferences", undefined);
 }
 
 async function saveLocalPreferencesUnsafe(preferences: LocalPreferences) {
-  const root = await getRoot();
-  const handle = await root.getFileHandle(PREFERENCES_NAME, { create: true });
-  const writable = await handle.createWritable();
-  try {
-    await writable.write(JSON.stringify({ version: 1, autoUpdate: preferences.autoUpdate }));
-  } finally {
-    await writable.close();
-  }
+  await callDatabase("status", undefined);
+  await callDatabase("writePreferences", { preferences });
 }
 
 async function loadDesktopUnsafe(_viewport: EntryPosition, seeded: SeededManifest | null = null): Promise<DesktopSnapshot> {
@@ -201,10 +346,11 @@ async function loadDesktopUnsafe(_viewport: EntryPosition, seeded: SeededManifes
     throw error;
   });
   const manifest = await desktopLoad;
+  await materializeOutbox(await callDatabase("readOutbox", undefined));
   return { entries: manifest.entries, layout: manifestLayout(manifest), editorSettings: manifest.editorSettings, sync: manifest.sync };
 }
 
-async function applyRemoteDesktopUnsafe(snapshot: DesktopSnapshot, contents: Map<string, Blob>) {
+async function applyRemoteDesktopUnsafe(snapshot: DesktopSnapshot, contents: Map<string, Blob>, acknowledgedOperationId?: string) {
   const current = await readManifest();
   if (current.sync.workspaceId === snapshot.sync.workspaceId && current.sync.revision >= snapshot.sync.revision) {
     return { entries: current.entries, layout: manifestLayout(current), editorSettings: current.editorSettings, sync: current.sync };
@@ -227,10 +373,12 @@ async function applyRemoteDesktopUnsafe(snapshot: DesktopSnapshot, contents: Map
     if (!content || content.size !== entry.size) throw new Error(`The server returned invalid contents for “${entry.name}”.`);
     await writeContent(entry.id, content.slice(0, content.size, entry.mimeType));
   }
-  await writeManifest(next);
-  desktopLoad = Promise.resolve(next);
+  const reconciled = await callDatabase("applyRemoteWithOutbox", { manifest: next, acknowledgedOperationId });
+  const projected = parseManifestV12(reconciled.manifest);
+  desktopLoad = Promise.resolve(projected);
+  await materializeOutbox(await callDatabase("readOutbox", undefined));
 
-  const retained = new Set(snapshot.entries.filter((entry) => entry.kind === "file").map((entry) => entry.id));
+  const retained = new Set(projected.entries.filter((entry) => entry.kind === "file").map((entry) => entry.id));
   const directory = await getFilesDirectory();
   for (const entry of current.entries) {
     if (entry.kind !== "file" || retained.has(entry.id)) continue;
@@ -240,7 +388,36 @@ async function applyRemoteDesktopUnsafe(snapshot: DesktopSnapshot, contents: Map
       if (!(error instanceof DOMException && error.name === "NotFoundError")) console.warn("Hiraya could not clean up stale file content.", error);
     }
   }
-  return snapshot;
+  return { entries: projected.entries, layout: manifestLayout(projected), editorSettings: projected.editorSettings, sync: projected.sync };
+}
+
+async function enqueueMutationUnsafe(operation: OutboxOperation, contents: Map<string, Blob> = new Map()) {
+  const reservation = await callDatabase("reserveOperation", undefined);
+  const required = operationContentIds(operation);
+  if (required.some((id) => !contents.has(id)) || contents.size !== required.length) throw new Error("Queued file content is incomplete.");
+  await stageOperationContents(reservation.operationId, contents);
+  try {
+    const result = await callDatabase("enqueueMutation", {
+      operationId: reservation.operationId,
+      workspaceId: (await readManifest()).sync.workspaceId,
+      operation,
+    });
+    const manifest = parseManifestV12(result.manifest);
+    desktopLoad = Promise.resolve(manifest);
+    await materializeOutbox([result.record]);
+    return {
+      desktop: { entries: manifest.entries, layout: manifestLayout(manifest), editorSettings: manifest.editorSettings, sync: manifest.sync },
+      record: result.record,
+    };
+  } catch (error) {
+    await removeStagedOperation(reservation.operationId);
+    throw error;
+  }
+}
+
+async function acknowledgeMutationUnsafe(operationId: string) {
+  await callDatabase("acknowledgeMutation", { operationId });
+  await removeStagedOperation(operationId);
 }
 
 async function saveEditorSettingsUnsafe(settings: EditorSettings) {
@@ -537,8 +714,8 @@ export function readCurrentDesktop(): Promise<DesktopSnapshot> {
   });
 }
 
-export function applyRemoteDesktop(snapshot: DesktopSnapshot, contents: Map<string, Blob>) {
-  return serializeStorage(() => applyRemoteDesktopUnsafe(snapshot, contents));
+export function applyRemoteDesktop(snapshot: DesktopSnapshot, contents: Map<string, Blob>, acknowledgedOperationId?: string) {
+  return serializeStorage(() => applyRemoteDesktopUnsafe(snapshot, contents, acknowledgedOperationId));
 }
 
 export function saveEditorSettings(settings: EditorSettings) { return serializeStorage(() => saveEditorSettingsUnsafe(settings)); }
@@ -557,3 +734,9 @@ export function readFileByRelativePath(fromFileId: FileEntry["id"], relativePath
 export function saveTextFile(id: FileEntry["id"], content: string) { return serializeStorage(() => saveTextFileUnsafe(id, content)); }
 export function readLocalPreferences() { return serializeStorage(() => readLocalPreferencesUnsafe()); }
 export function saveLocalPreferences(preferences: LocalPreferences) { return serializeStorage(() => saveLocalPreferencesUnsafe(preferences)); }
+export function enqueueMutation(operation: OutboxOperation, contents?: Map<string, Blob>) { return serializeStorage(() => enqueueMutationUnsafe(operation, contents)); }
+export function readOutbox() { return serializeStorage(() => callDatabase("readOutbox", undefined)); }
+export function bindOutboxWorkspace(workspaceId: string) { return serializeStorage(() => callDatabase("bindOutboxWorkspace", { workspaceId })); }
+export function acknowledgeMutation(operationId: string) { return serializeStorage(() => acknowledgeMutationUnsafe(operationId)); }
+export function blockMutation(operationId: string, error: string) { return serializeStorage(() => callDatabase("blockMutation", { operationId, error })); }
+export function readPendingContent(operationId: string, entryId: string) { return serializeStorage(() => readStagedContent(operationId, entryId)); }

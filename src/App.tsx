@@ -14,6 +14,7 @@ import {
   createFolder,
   createTextFile,
   deleteEntry,
+  getOutboxStatus,
   importFiles,
   initializeDesktop,
   moveEntry,
@@ -137,7 +138,7 @@ function App() {
   const activeSegment = { column: route?.column ?? 0, row: route?.row ?? 0 };
   const routeExplorerFolderId = route?.explorerFolderId;
   const routeFileId = route?.fileId;
-  const canMutate = syncStatus === "online" || syncStatus === "local";
+  const canMutate = syncStatus !== "connecting";
   const syncIndicatorStatus = syncStatus === "online" && isSyncing ? "syncing" : syncStatus;
   const workspace = useMemo(() => createWorkspaceIndex(entries), [entries]);
   const rootEntries = workspace.roots;
@@ -333,6 +334,17 @@ function App() {
       stopDesktopSync();
     };
   }, []);
+
+  useEffect(() => {
+    if (syncStatus !== "blocked") return;
+    let active = true;
+    void getOutboxStatus().then((status) => {
+      if (!active) return;
+      const blocked = status.records.find((record) => record.status === "blocked");
+      setError(blocked?.error ? `A queued change could not sync: ${blocked.error}` : "A queued change could not sync and needs attention.");
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, [syncStatus]);
 
   useEffect(() => {
     let active = true;
@@ -917,7 +929,7 @@ function App() {
     const saved = await saveTextFile(fileId, content);
     setEntries((current) => current.map((entry) => entry.id === saved.id ? saved : entry));
     updateRunningApps((current) => current.map((candidate) => candidate.id === appId && candidate.kind === "file" ? { ...candidate, file: saved, contentRevision: contentRevisionsRef.current[saved.id] ?? candidate.contentRevision, remoteChanged: false } : candidate));
-    setNotice(syncStatus === "local" ? "Changes saved locally" : "Changes synced");
+    setNotice(syncStatus === "local" ? "Changes saved locally" : syncStatus === "offline" ? "Changes queued for sync" : "Changes synced");
   }
 
   function goToSegment(segment: { column: number; row: number }, mode: "push" | "replace" = "push") {
@@ -1217,9 +1229,9 @@ function App() {
           <button type="button" aria-label="New folder" disabled={!canMutate} onClick={() => setDialog({ type: "create-folder", parentId: null })}><FolderPlus size={16} /> <span>New folder</span></button>
           <button type="button" aria-label="Upload files" disabled={!canMutate} onClick={() => chooseUpload(null)}><UploadSimple size={16} /> <span>Upload</span></button>
           <button type="button" aria-label="Open settings" title="Settings" onClick={openSettingsWindow}><GearSix size={16} /> <span>Settings</span></button>
-          <span className="menu-bar__sync" data-status={syncIndicatorStatus} role="status" title={syncIndicatorStatus === "local" ? "Changes are saved in this browser" : syncIndicatorStatus === "syncing" ? "Syncing changes" : syncIndicatorStatus === "online" ? "Changes are synced" : syncIndicatorStatus === "connecting" ? "Connecting to sync server" : "Sync server unavailable; editing is disabled"}>
-            {syncIndicatorStatus === "local" ? <HardDrive size={15} /> : syncIndicatorStatus === "online" ? <CloudCheck size={15} /> : syncIndicatorStatus === "connecting" || syncIndicatorStatus === "syncing" ? <SpinnerGap size={15} /> : <CloudSlash size={15} />}
-            <span>{syncIndicatorStatus === "local" ? "Saved locally" : syncIndicatorStatus === "syncing" ? "Syncing" : syncIndicatorStatus === "online" ? "Synced" : syncIndicatorStatus === "connecting" ? "Connecting" : "Offline"}</span>
+          <span className="menu-bar__sync" data-status={syncIndicatorStatus} role="status" title={syncIndicatorStatus === "local" ? "Changes are saved in this browser" : syncIndicatorStatus === "syncing" ? "Syncing changes" : syncIndicatorStatus === "online" ? "Changes are synced" : syncIndicatorStatus === "connecting" ? "Connecting to sync server" : syncIndicatorStatus === "blocked" ? "A queued change needs attention before synchronization can continue" : "Offline changes are saved and will sync after reconnecting"}>
+            {syncIndicatorStatus === "local" ? <HardDrive size={15} /> : syncIndicatorStatus === "online" ? <CloudCheck size={15} /> : syncIndicatorStatus === "blocked" ? <WarningCircle size={15} weight="fill" /> : syncIndicatorStatus === "connecting" || syncIndicatorStatus === "syncing" ? <SpinnerGap size={15} /> : <CloudSlash size={15} />}
+            <span>{syncIndicatorStatus === "local" ? "Saved locally" : syncIndicatorStatus === "syncing" ? "Syncing" : syncIndicatorStatus === "online" ? "Synced" : syncIndicatorStatus === "connecting" ? "Connecting" : syncIndicatorStatus === "blocked" ? "Sync blocked" : "Offline"}</span>
           </span>
           <span className="menu-bar__clock">{formatClock(clock)}</span>
         </div>

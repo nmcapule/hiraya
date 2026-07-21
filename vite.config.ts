@@ -34,7 +34,7 @@ export default defineConfig(({ mode }) => {
         },
         workbox: {
           cleanupOutdatedCaches: true,
-          globPatterns: ["**/*.{js,css,html,ico,png,svg,webmanifest}"],
+          globPatterns: ["**/*.{js,css,html,ico,png,svg,wasm,webmanifest}"],
           navigateFallbackDenylist: [/^\/api\//],
         },
       }),
@@ -47,6 +47,9 @@ export default defineConfig(({ mode }) => {
       proxy: {
         "/api": "http://127.0.0.1:8080",
       },
+    },
+    optimizeDeps: {
+      exclude: ["@sqlite.org/sqlite-wasm"],
     },
   };
 });

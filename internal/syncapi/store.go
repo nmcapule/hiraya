@@ -1,6 +1,7 @@
 package syncapi
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,7 +38,8 @@ type Store struct {
 	wg        sync.WaitGroup
 	// filesystemGeneration invalidates scans that overlap an API mutation.
 	filesystemGeneration uint64
-	writeMetadata        func(string, []byte, os.FileMode) error
+	db                   *sql.DB
+	persistWorkspace     func(Workspace, bool) error
 	scanFiles            func(string) (map[string]diskNode, error)
 }
 
@@ -75,76 +77,90 @@ func OpenStore(dir string) (*Store, error) {
 			}
 		}
 	}
-	s := &Store{dir: dir, filesDir: filesDir, subs: make(map[chan int64]struct{}), disk: make(map[string]diskFingerprint), done: make(chan struct{}), watched: make(map[string]bool), writeMetadata: atomicWrite, scanFiles: scanFilesystem}
+	s := &Store{dir: dir, filesDir: filesDir, subs: make(map[chan int64]struct{}), disk: make(map[string]diskFingerprint), done: make(chan struct{}), watched: make(map[string]bool), scanFiles: scanFilesystem}
 	s.workspace.Entries = []Entry{}
 	s.workspace.Layout.Wallpaper = "dusk"
 	s.workspace.EditorSettings = EditorSettings{AutoSave: true, FontSize: 13, Language: "auto"}
-	b, err := os.ReadFile(filepath.Join(dir, metadataName))
-	if errors.Is(err, os.ErrNotExist) {
-		s.workspace.SchemaVersion = workspaceSchemaVersion
-		s.workspace.WorkspaceID, err = newEntryID()
-		if err != nil {
-			return nil, err
-		}
-		if err := s.persistLocked(s.workspace); err != nil {
-			return nil, err
-		}
-		if err := s.initializeFilesystem(); err != nil {
-			return nil, err
-		}
-		return s, nil
+	if err := s.openDatabase(); err != nil {
+		return nil, err
 	}
+	s.persistWorkspace = s.persistDatabase
+	workspace, found, err := s.loadDatabaseWorkspace()
 	if err != nil {
-		return nil, fmt.Errorf("read workspace: %w", err)
+		_ = s.db.Close()
+		return nil, err
 	}
+	if found {
+		s.workspace = workspace
+	} else {
+		b, readErr := os.ReadFile(filepath.Join(dir, metadataName))
+		imported := readErr == nil
+		if errors.Is(readErr, os.ErrNotExist) {
+			s.workspace.SchemaVersion = workspaceSchemaVersion
+			s.workspace.WorkspaceID, err = newEntryID()
+			if err != nil {
+				_ = s.db.Close()
+				return nil, err
+			}
+		} else if readErr != nil {
+			_ = s.db.Close()
+			return nil, fmt.Errorf("read workspace: %w", readErr)
+		} else if err := decodeWorkspaceMetadata(b, &s.workspace); err != nil {
+			_ = s.db.Close()
+			return nil, err
+		}
+		if err := s.persistWorkspace(s.workspace, imported); err != nil {
+			_ = s.db.Close()
+			return nil, fmt.Errorf("persist workspace: %w", err)
+		}
+	}
+	if err := s.initializeFilesystem(); err != nil {
+		_ = s.Close()
+		return nil, err
+	}
+	return s, nil
+}
+
+func decodeWorkspaceMetadata(b []byte, workspace *Workspace) error {
 	var header struct {
 		SchemaVersion int `json:"schemaVersion"`
 	}
 	if err := json.Unmarshal(b, &header); err != nil {
-		return nil, fmt.Errorf("decode workspace: %w", err)
+		return fmt.Errorf("decode workspace: %w", err)
 	}
 	if header.SchemaVersion < 0 || header.SchemaVersion > workspaceSchemaVersion {
-		return nil, fmt.Errorf("unsupported workspace schema version %d", header.SchemaVersion)
+		return fmt.Errorf("unsupported workspace schema version %d", header.SchemaVersion)
 	}
-	migrateMetadata := header.SchemaVersion < workspaceSchemaVersion
 	if header.SchemaVersion < 2 {
-		if err := migrateWorkspaceV1(b, &s.workspace); err != nil {
-			return nil, fmt.Errorf("migrate workspace schema v1: %w", err)
+		if err := migrateWorkspaceV1(b, workspace); err != nil {
+			return fmt.Errorf("migrate workspace schema v1: %w", err)
 		}
-	} else if err := json.Unmarshal(b, &s.workspace); err != nil {
-		return nil, fmt.Errorf("decode workspace: %w", err)
+	} else if err := json.Unmarshal(b, workspace); err != nil {
+		return fmt.Errorf("decode workspace: %w", err)
 	}
-	migrateMetadata = migrateMetadata || s.workspace.WorkspaceID == ""
-	if s.workspace.WorkspaceID == "" {
-		s.workspace.WorkspaceID, err = newEntryID()
+	if workspace.WorkspaceID == "" {
+		var err error
+		workspace.WorkspaceID, err = newEntryID()
 		if err != nil {
-			return nil, err
+			return err
 		}
 	}
-	if !validID(s.workspace.WorkspaceID) {
-		return nil, fmt.Errorf("stored workspace has invalid workspace ID")
+	if !validID(workspace.WorkspaceID) {
+		return fmt.Errorf("stored workspace has invalid workspace ID")
 	}
-	s.workspace.SchemaVersion = workspaceSchemaVersion
-	if s.workspace.Entries == nil {
-		s.workspace.Entries = []Entry{}
+	workspace.SchemaVersion = workspaceSchemaVersion
+	if workspace.Entries == nil {
+		workspace.Entries = []Entry{}
 	}
-	if s.workspace.Initialized {
-		if err := validateSettings(s.workspace.EditorSettings); err != nil {
-			return nil, fmt.Errorf("stored workspace: %w", err)
+	if workspace.Initialized {
+		if err := validateSettings(workspace.EditorSettings); err != nil {
+			return fmt.Errorf("stored workspace: %w", err)
 		}
-		if err := validateWorkspace(s.workspace.Entries, s.workspace.Layout); err != nil {
-			return nil, fmt.Errorf("stored workspace: %w", err)
-		}
-	}
-	if migrateMetadata {
-		if err := s.persistLocked(s.workspace); err != nil {
-			return nil, fmt.Errorf("migrate workspace metadata: %w", err)
+		if err := validateWorkspace(workspace.Entries, workspace.Layout); err != nil {
+			return fmt.Errorf("stored workspace: %w", err)
 		}
 	}
-	if err := s.initializeFilesystem(); err != nil {
-		return nil, err
-	}
-	return s, nil
+	return nil
 }
 
 func (s *Store) initializeFilesystem() error {
@@ -195,7 +211,7 @@ func (s *Store) initializeFilesystem() error {
 	return nil
 }
 
-// Close releases filesystem watcher resources. It is safe to call more than once.
+// Close releases filesystem watcher and database resources. It is safe to call more than once.
 func (s *Store) Close() error {
 	var err error
 	s.closeOnce.Do(func() {
@@ -204,6 +220,9 @@ func (s *Store) Close() error {
 			err = s.watcher.Close()
 		}
 		s.wg.Wait()
+		if s.db != nil {
+			err = errors.Join(err, s.db.Close())
+		}
 	})
 	return err
 }
@@ -222,11 +241,16 @@ func cloneWorkspace(workspace Workspace) Workspace {
 
 func (s *Store) persistLocked(next Workspace) error {
 	next.Entries = nonNilEntries(next.Entries)
-	b, err := json.Marshal(next)
-	if err != nil {
-		return err
+	if err := s.persistWorkspace(next, false); err != nil {
+		return fmt.Errorf("persist workspace: %w", err)
 	}
-	if err := s.writeMetadata(filepath.Join(s.dir, metadataName), b, 0o600); err != nil {
+	s.workspace = next
+	return nil
+}
+
+func (s *Store) persistMutationLocked(next Workspace, receipt *mutationReceipt) error {
+	next.Entries = nonNilEntries(next.Entries)
+	if err := s.persistDatabaseWithReceipt(next, false, receipt); err != nil {
 		return fmt.Errorf("persist workspace: %w", err)
 	}
 	s.workspace = next

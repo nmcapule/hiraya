@@ -132,8 +132,8 @@ func TestWorkspaceSchemaV1MigrationPreservesCoordinatesAndPersistsV4(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bytes.Contains(persisted, []byte(`"views"`)) || bytes.Contains(persisted, []byte(`"viewId"`)) || bytes.Contains(persisted, []byte(`"rootOrder"`)) || bytes.Contains(persisted, []byte(`"workspaceBreaks"`)) || !bytes.Contains(persisted, []byte(`"schemaVersion":4`)) {
-		t.Fatalf("persisted migration is not topology-free schema v4: %s", persisted)
+	if !bytes.Equal(persisted, legacy) {
+		t.Fatal("workspace.json changed before or after its validated SQLite import")
 	}
 }
 
@@ -164,8 +164,8 @@ func TestWorkspaceSchemaV3MigrationDropsTopologyAndPreservesSignedCoordinates(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(persisted, []byte(`"schemaVersion":4`)) || bytes.Contains(persisted, []byte(`"rootOrder"`)) || bytes.Contains(persisted, []byte(`"workspaceBreaks"`)) {
-		t.Fatalf("persisted v3 migration = %s", persisted)
+	if !bytes.Equal(persisted, legacy) {
+		t.Fatal("workspace.json changed before or after its validated SQLite import")
 	}
 }
 
@@ -449,7 +449,7 @@ func TestFilesystemReconciliationRetriesAfterConcurrentMutation(t *testing.T) {
 func TestFailedBootstrapRemovesStagedLogicalTree(t *testing.T) {
 	dir := t.TempDir()
 	store, server := newTestServer(t, dir)
-	store.writeMetadata = func(string, []byte, os.FileMode) error { return errors.New("injected persistence failure") }
+	store.persistWorkspace = func(Workspace, bool) error { return errors.New("injected persistence failure") }
 	workspace := testBootstrap()
 	workspace.Entries = []Entry{file("file", "retry.txt", nil, ptr("view-1"), "text/plain", 5)}
 	response := bootstrapRequest(t, server, workspace, map[string]string{"file": "hello"})
@@ -471,7 +471,7 @@ func TestFailedContentPersistenceRestoresExistingBytes(t *testing.T) {
 		t.Fatal(created.Body.String())
 	}
 	before := store.snapshot()
-	store.writeMetadata = func(string, []byte, os.FileMode) error { return errors.New("injected persistence failure") }
+	store.persistWorkspace = func(Workspace, bool) error { return errors.New("injected persistence failure") }
 
 	request := httptest.NewRequest(http.MethodPut, "/api/files/file/content", strings.NewReader("new bytes"))
 	request.Header.Set("Content-Type", "text/plain")
@@ -498,7 +498,7 @@ func TestFailedMoveAndContentPersistenceRestoresPathAndBytes(t *testing.T) {
 	}
 	entry := findEntry(t, store.snapshot().Entries, "file")
 	entry.Name = "new.txt"
-	store.writeMetadata = func(string, []byte, os.FileMode) error { return errors.New("injected persistence failure") }
+	store.persistWorkspace = func(Workspace, bool) error { return errors.New("injected persistence failure") }
 
 	response := multipartEntryRequest(t, server, http.MethodPost, "/api/entries", entry, ptr("new bytes"))
 	if response.Code != http.StatusInternalServerError {
@@ -798,7 +798,7 @@ func TestDesktopPositionsValidateBatchAndFailureChangesNothing(t *testing.T) {
 	if duplicate.Code != http.StatusBadRequest || store.snapshot().Revision != before.Revision {
 		t.Fatalf("duplicate batch = %d %s", duplicate.Code, duplicate.Body.String())
 	}
-	store.writeMetadata = func(string, []byte, os.FileMode) error { return errors.New("injected persistence failure") }
+	store.persistWorkspace = func(Workspace, bool) error { return errors.New("injected persistence failure") }
 	response := jsonRequest(t, server, http.MethodPut, "/api/desktop-positions", []desktopPosition{{EntryID: "root", Position: Position{X: -9, Y: 10}}})
 	if response.Code != http.StatusInternalServerError {
 		t.Fatalf("positions failure status = %d, body = %s", response.Code, response.Body.String())
@@ -995,6 +995,96 @@ func TestUninitializedSnapshotAndUploadLimit(t *testing.T) {
 	}
 }
 
+func TestIdempotencyLostResponseRetryAndMismatch(t *testing.T) {
+	store, server := initializedTestServer(t)
+	body := []byte(`{"autoSave":false,"fontSize":17,"language":"typescript"}`)
+	first := idempotentRequest(server, http.MethodPut, "/api/editor-settings", "application/json", body, "browser-1", "settings-1")
+	if first.Code != http.StatusOK {
+		t.Fatalf("first mutation = %d %s", first.Code, first.Body.String())
+	}
+	firstBody := first.Body.String()
+	retry := idempotentRequest(server, http.MethodPut, "/api/editor-settings", "application/json", body, "browser-1", "settings-1")
+	if retry.Code != http.StatusOK || retry.Body.String() != firstBody || retry.Header().Get(replayHeader) != "true" {
+		t.Fatalf("retry = %d %q headers=%v", retry.Code, retry.Body.String(), retry.Header())
+	}
+	if got := store.snapshot().Revision; got != 2 {
+		t.Fatalf("retry advanced revision to %d", got)
+	}
+	different := []byte(`{"autoSave":true,"fontSize":13,"language":"auto"}`)
+	mismatch := idempotentRequest(server, http.MethodPut, "/api/editor-settings", "application/json", different, "browser-1", "settings-1")
+	if mismatch.Code != http.StatusConflict || store.snapshot().Revision != 2 {
+		t.Fatalf("mismatched reuse = %d, revision=%d", mismatch.Code, store.snapshot().Revision)
+	}
+}
+
+func TestIdempotencyDeleteRetry(t *testing.T) {
+	store, server := initializedTestServer(t)
+	created := multipartEntryRequest(t, server, http.MethodPost, "/api/entries", folder("folder", "Folder", nil, nil), nil)
+	if created.Code != http.StatusOK {
+		t.Fatalf("create = %d %s", created.Code, created.Body.String())
+	}
+	first := idempotentRequest(server, http.MethodDelete, "/api/entries/folder", "", nil, "browser-1", "delete-1")
+	retry := idempotentRequest(server, http.MethodDelete, "/api/entries/folder", "", nil, "browser-1", "delete-1")
+	if first.Code != http.StatusOK || retry.Code != first.Code || retry.Body.String() != first.Body.String() || retry.Header().Get(replayHeader) != "true" {
+		t.Fatalf("delete responses: first=%d %q retry=%d %q", first.Code, first.Body.String(), retry.Code, retry.Body.String())
+	}
+	if got := store.snapshot(); got.Revision != 3 || len(got.Entries) != 0 {
+		t.Fatalf("delete retry workspace = %+v", got)
+	}
+}
+
+func TestIdempotencyContentAndImportRetry(t *testing.T) {
+	store, server := initializedTestServer(t)
+	created := multipartEntryRequest(t, server, http.MethodPost, "/api/entries", file("file", "file.txt", nil, nil, "text/plain", 0), ptr("old"))
+	if created.Code != http.StatusOK {
+		t.Fatalf("create = %d %s", created.Code, created.Body.String())
+	}
+	content := []byte("new content")
+	firstContent := idempotentRequest(server, http.MethodPut, "/api/files/file/content", "text/plain", content, "browser-1", "content-1")
+	retryContent := idempotentRequest(server, http.MethodPut, "/api/files/file/content", "text/plain", content, "browser-1", "content-1")
+	if firstContent.Code != http.StatusOK || retryContent.Body.String() != firstContent.Body.String() || retryContent.Header().Get(replayHeader) != "true" {
+		t.Fatalf("content retry: first=%d retry=%d %s", firstContent.Code, retryContent.Code, retryContent.Body.String())
+	}
+	entry := file("imported", "imported.txt", nil, nil, "text/plain", 8)
+	firstImport := idempotentImportRequest(t, server, []Entry{entry}, map[string]string{"imported": "imported"}, "browser-1", "import-1")
+	retryImport := idempotentImportRequest(t, server, []Entry{entry}, map[string]string{"imported": "imported"}, "browser-1", "import-1")
+	if firstImport.Code != http.StatusOK || retryImport.Body.String() != firstImport.Body.String() || retryImport.Header().Get(replayHeader) != "true" {
+		t.Fatalf("import retry: first=%d %q retry=%d %q", firstImport.Code, firstImport.Body.String(), retryImport.Code, retryImport.Body.String())
+	}
+	if got := store.snapshot().Revision; got != 4 {
+		t.Fatalf("content/import retries advanced revision to %d", got)
+	}
+	bytesOnDisk, err := os.ReadFile(filepath.Join(store.filesDir, "file.txt"))
+	if err != nil || string(bytesOnDisk) != string(content) {
+		t.Fatalf("content on disk = %q, %v", bytesOnDisk, err)
+	}
+}
+
+func TestIdempotencyReceiptSurvivesRestart(t *testing.T) {
+	dir := t.TempDir()
+	store, server := newTestServer(t, dir)
+	if response := bootstrapRequest(t, server, testBootstrap(), nil); response.Code != http.StatusCreated {
+		t.Fatalf("bootstrap = %d %s", response.Code, response.Body.String())
+	}
+	body := []byte(`{"snapToGrid":true,"wallpaper":"grove"}`)
+	first := idempotentRequest(server, http.MethodPut, "/api/layout", "application/json", body, "browser-restart", "layout-1")
+	if first.Code != http.StatusOK {
+		t.Fatalf("first = %d %s", first.Code, first.Body.String())
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	retry := idempotentRequest(New(reopened, t.TempDir(), 10<<20), http.MethodPut, "/api/layout", "application/json", body, "browser-restart", "layout-1")
+	if retry.Code != http.StatusOK || retry.Body.String() != first.Body.String() || retry.Header().Get(replayHeader) != "true" || reopened.snapshot().Revision != 2 {
+		t.Fatalf("restart retry = %d %q revision=%d", retry.Code, retry.Body.String(), reopened.snapshot().Revision)
+	}
+}
+
 func newTestServer(t *testing.T, dir string) (*Store, *Server) {
 	t.Helper()
 	store, err := OpenStore(dir)
@@ -1114,6 +1204,42 @@ func importRequest(t *testing.T, handler http.Handler, entries []Entry, files ma
 	}
 	request := httptest.NewRequest(http.MethodPost, "/api/imports", &body)
 	request.Header.Set("Content-Type", w.FormDataContentType())
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	return response
+}
+
+func idempotentImportRequest(t *testing.T, handler http.Handler, entries []Entry, files map[string]string, clientID, operationID string) *httptest.ResponseRecorder {
+	t.Helper()
+	var body bytes.Buffer
+	w := multipart.NewWriter(&body)
+	part, err := w.CreateFormField("entries")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.NewEncoder(part).Encode(entries); err != nil {
+		t.Fatal(err)
+	}
+	for id, content := range files {
+		part, err := w.CreateFormFile("file-"+id, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.WriteString(part, content)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return idempotentRequest(handler, http.MethodPost, "/api/imports", w.FormDataContentType(), body.Bytes(), clientID, operationID)
+}
+
+func idempotentRequest(handler http.Handler, method, path, contentType string, body []byte, clientID, operationID string) *httptest.ResponseRecorder {
+	request := httptest.NewRequest(method, path, bytes.NewReader(body))
+	if contentType != "" {
+		request.Header.Set("Content-Type", contentType)
+	}
+	request.Header.Set(clientIDHeader, clientID)
+	request.Header.Set(operationIDHeader, operationID)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	return response

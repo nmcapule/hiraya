@@ -44,7 +44,7 @@ Prefer small changes within these existing modules. Do not introduce global stat
 - All browser storage operations go through `src/lib/opfs.ts`.
 - OPFS is a cache, not the shared authority. Normal mutations go through `src/lib/sync.ts` and must be accepted by the server before their authoritative result is applied locally.
 - User-facing names are metadata only. Physical files use stable UUIDs under the OPFS `files` directory.
-- `.hiraya-manifest.json` version 12 stores names, MIME types, sizes, timestamps, signed finite icon coordinates, the last server revision, and per-entry/content revisions.
+- A WAL-enabled SQLite database in OPFS stores names, MIME types, sizes, timestamps, signed finite icon coordinates, sync revisions, local preferences, and the durable mutation outbox. `.hiraya-manifest.json` versions 1 through 12 are legacy import sources only.
 - Renaming must update metadata only; never copy or rewrite file contents just to rename a file.
 - Write file contents before adding their metadata to the manifest.
 - During remote reconciliation, download and validate all changed blobs before publishing the new local manifest. Remove obsolete blobs only after metadata is updated.
@@ -83,7 +83,7 @@ If adding destructive operations, update file content and the manifest carefully
 - The seeded manifest is version 6 and accepts versions 1 through 5 for normalization. It is distinct from the persisted OPFS manifest version 12.
 - Keep the build loader and browser exporter on the same manifest schema and validation path. An exported package must be accepted directly by the build loader after extraction.
 - File `contentUrl` values are relative to the configured directory. Reject absolute paths, traversal outside the directory, queries, fragments, missing files, size mismatches, and symbolic links.
-- Seeded content populates OPFS only when `.hiraya-manifest.json` does not exist. Never merge it into, replace, or restore entries in an existing manifest, including an intentionally empty manifest.
+- Seeded content populates OPFS only when neither the SQLite database nor a legacy `.hiraya-manifest.json` exists. Never merge it into, replace, or restore entries in an existing desktop, including an intentionally empty one.
 - Fetch and validate all seeded assets, then write file contents before publishing the complete OPFS manifest. Failed seeding must not expose metadata that points to missing content.
 - If the server is uninitialized, the first browser bootstraps it from the resulting OPFS desktop, including seeded content when it initialized that browser. If the server is initialized, its workspace replaces the local cache.
 - Seeded entries become ordinary synchronized entries. User edits, moves, renames, and deletions must persist without being reset from the bundled package.
@@ -124,7 +124,7 @@ The interface is a focused desktop, not a dashboard. Preserve the established vi
 ## PWA And Offline Behavior
 
 - The service worker caches the application shell, not an independent source of workspace truth.
-- Offline startup may show the OPFS cache, but all mutation controls must remain disabled until the Go server reconnects.
+- Offline mutations must update the projected SQLite desktop and append an outbox operation atomically. Replay operations in order with stable idempotency headers after reconnecting; never silently discard blocked operations.
 - Keep API responses and SSE outside precached assets; synchronization must always use the live server.
 - Preserve installability, manifest icons, standalone display mode, and the Fullscreen API control when changing Vite or application-shell behavior.
 

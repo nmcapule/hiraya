@@ -215,7 +215,8 @@ textarea:focus-visible {
   color: #d9eadc;
 }
 
-.menu-bar__sync[data-status="offline"] {
+.menu-bar__sync[data-status="offline"],
+.menu-bar__sync[data-status="blocked"] {
   color: #ffd39e;
 }
 

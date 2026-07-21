@@ -4,14 +4,16 @@ import { assertUniqueName, namesMatch, validateEntryName } from "./entry-validat
 import { API_ROUTES } from "./api-routes";
 import { parseLayout, parsePosition, parseRemoteWorkspace, parseRootDesktopPositions, type InitializedRemoteWorkspace, type RemoteEntry, type RemoteWorkspace } from "./contracts";
 import type { DesktopEntry, DesktopLayout, DesktopPositionUpdate, EditorSettings, EntryPosition, FileEntry, FolderEntry } from "../types";
+import type { OutboxOperation, OutboxRecord } from "./outbox";
 
-export type SyncStatus = "connecting" | "online" | "offline" | "local";
+export type SyncStatus = "connecting" | "online" | "offline" | "blocked" | "local";
 
 type StorageBoundary = Pick<typeof storage,
   "applyRemoteDesktop" | "createFolder" | "createTextFile" | "deleteEntry" | "importFiles" | "loadDesktop" |
   "moveEntry" | "readCurrentDesktop" | "readDesktopSnapshot" | "readFile" | "readFileByRelativePath" |
   "renameEntry" | "saveDesktopLayout" | "saveEditorSettings" | "saveTextFile" | "updateEntryPosition"
-  | "updateDesktopPositions"
+  | "updateDesktopPositions" | "enqueueMutation" | "readOutbox" | "bindOutboxWorkspace" |
+  "acknowledgeMutation" | "blockMutation" | "readPendingContent"
 >;
 
 export type SyncEngineOptions = {
@@ -22,6 +24,12 @@ export type SyncEngineOptions = {
   clearInterval?: typeof globalThis.clearInterval;
   storage?: StorageBoundary;
 };
+
+class SyncRequestError extends Error {
+  constructor(message: string, readonly status: number | null, readonly permanent: boolean) {
+    super(message);
+  }
+}
 
 function localEntry(entry: RemoteEntry): DesktopEntry {
   const { revision: _revision, contentRevision: _contentRevision, ...local } = entry;
@@ -60,7 +68,6 @@ export class SyncEngine {
   private readonly clearIntervalImpl: typeof globalThis.clearInterval;
   private readonly storage: StorageBoundary;
   private desktop: storage.DesktopSnapshot | null = null;
-  private initialized = false;
   private status: SyncStatus = "connecting";
   private events: EventSource | null = null;
   private healthTimer: ReturnType<typeof globalThis.setInterval> | null = null;
@@ -98,7 +105,6 @@ export class SyncEngine {
     if (!this.running || this.generation !== generation) throw new DOMException("Desktop synchronization was stopped.", "AbortError");
     this.publish(this.desktop);
     if (this.frontendOnly) {
-      this.initialized = true;
       this.setStatus("local");
       return { desktop: this.desktop, status: this.status };
     }
@@ -106,6 +112,10 @@ export class SyncEngine {
     try {
       await this.ensureServer(generation);
       this.setStatus("online");
+      await this.replayOutbox(generation).catch((error) => {
+        if (error instanceof SyncRequestError && error.permanent) this.setStatus("blocked");
+        else throw error;
+      });
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") throw error;
       this.setStatus("offline");
@@ -184,11 +194,11 @@ export class SyncEngine {
       response = await this.fetchImpl(input, init);
     } catch {
       this.setStatus("offline");
-      throw new Error("The sync server is unavailable. Changes are disabled until it reconnects.");
+      throw new SyncRequestError("The sync server is unavailable. The change remains queued.", null, false);
     }
     if (!response.ok) {
       const body = await response.json().catch(() => null) as { error?: string } | null;
-      throw new Error(body?.error || `The sync server rejected the request (${response.status}).`);
+      throw new SyncRequestError(body?.error || `The sync server rejected the request (${response.status}).`, response.status, response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429);
     }
     return response.json();
   }
@@ -201,10 +211,9 @@ export class SyncEngine {
     return this.requestWorkspace(API_ROUTES.workspace, { cache: "no-store" });
   }
 
-  private async applyWorkspace(workspace: RemoteWorkspace, generation = this.generation) {
+  private async applyWorkspace(workspace: RemoteWorkspace, generation = this.generation, acknowledgedOperationId?: string) {
     this.assertActive(generation);
     const desktop = this.current();
-    this.initialized = workspace.initialized;
     if (!workspace.initialized) return desktop;
     const identityChanged = desktop.sync.workspaceId !== workspace.workspaceId;
     if (!identityChanged && workspace.revision <= desktop.sync.revision) return desktop;
@@ -219,7 +228,7 @@ export class SyncEngine {
       contents.set(entry.id, blob);
     }));
     this.assertActive(generation);
-    const applied = await this.storage.applyRemoteDesktop(next, contents);
+    const applied = await this.storage.applyRemoteDesktop(next, contents, acknowledgedOperationId);
     this.assertActive(generation);
     this.publish(applied);
     return applied;
@@ -228,6 +237,7 @@ export class SyncEngine {
   private async bootstrap(generation = this.generation) {
     this.assertActive(generation);
     const snapshot = await this.storage.readDesktopSnapshot();
+    const pending = await this.storage.readOutbox();
     const form = new FormData();
     form.append("workspace", JSON.stringify({ entries: snapshot.entries, layout: snapshot.layout, editorSettings: snapshot.editorSettings }));
     for (const entry of snapshot.entries) {
@@ -236,10 +246,15 @@ export class SyncEngine {
       if (!content) throw new Error(`The contents of “${entry.name}” could not be read for initial sync.`);
       form.append(`file-${entry.id}`, content, entry.name);
     }
-    const workspace = await this.requestWorkspace(API_ROUTES.bootstrap, { method: "POST", body: form });
+    const lastPending = pending.at(-1);
+    const workspace = await this.requestWorkspace(API_ROUTES.bootstrap, {
+      method: "POST",
+      headers: lastPending ? this.idempotencyHeaders(lastPending) : undefined,
+      body: form,
+    });
     this.assertActive(generation);
     if (!workspace.initialized) throw new Error("The sync server did not initialize the workspace.");
-    this.initialized = true;
+    for (const record of pending) await this.storage.acknowledgeMutation(record.operationId);
     return this.applyWorkspace(workspace, generation);
   }
 
@@ -247,16 +262,78 @@ export class SyncEngine {
     const workspace = await this.fetchWorkspace();
     this.assertActive(generation);
     if (!workspace.initialized) return this.bootstrap(generation);
-    this.initialized = true;
+    await this.storage.bindOutboxWorkspace(workspace.workspaceId);
     return this.applyWorkspace(workspace, generation);
   }
 
-  private async reconcile() {
+  private async reconcile(acknowledgedOperationId?: string) {
     const generation = this.generation;
     const workspace = await this.fetchWorkspace();
     this.assertActive(generation);
     if (!workspace.initialized) return this.bootstrap(generation);
-    return this.applyWorkspace(workspace, generation);
+    await this.storage.bindOutboxWorkspace(workspace.workspaceId);
+    return this.applyWorkspace(workspace, generation, acknowledgedOperationId);
+  }
+
+  private idempotencyHeaders(record: OutboxRecord, headers?: HeadersInit) {
+    const result = new Headers(headers);
+    result.set("X-Hiraya-Client-ID", record.clientId);
+    result.set("X-Hiraya-Operation-ID", record.operationId);
+    return result;
+  }
+
+  private async sendOutboxOperation(record: OutboxRecord) {
+    const operation = record.operation;
+    const headers = (value?: HeadersInit) => this.idempotencyHeaders(record, value);
+    switch (operation.kind) {
+      case "create": {
+        if (operation.entries.length === 1) {
+          const entry = operation.entries[0];
+          const form = new FormData();
+          form.append("entry", JSON.stringify(entry));
+          if (entry.kind === "file") form.append("content", await this.storage.readPendingContent(record.operationId, entry.id), entry.name);
+          await this.requestJson(API_ROUTES.entries, { method: "POST", headers: headers(), body: form });
+        } else {
+          const form = new FormData();
+          form.append("entries", JSON.stringify(operation.entries));
+          for (const entry of operation.entries) if (entry.kind === "file") form.append(`file-${entry.id}`, await this.storage.readPendingContent(record.operationId, entry.id), entry.name);
+          await this.requestJson(API_ROUTES.imports, { method: "POST", headers: headers(), body: form });
+        }
+        return;
+      }
+      case "update-entry":
+        await this.requestJson(API_ROUTES.entry(operation.entry.id), { method: "PATCH", headers: headers({ "Content-Type": "application/json" }), body: JSON.stringify(operation.entry) });
+        return;
+      case "delete":
+        await this.requestJson(API_ROUTES.entry(operation.entryId), { method: "DELETE", headers: headers() });
+        return;
+      case "save-content":
+        await this.requestJson(API_ROUTES.content(operation.entry.id), { method: "PUT", headers: headers({ "Content-Type": operation.entry.mimeType }), body: await this.storage.readPendingContent(record.operationId, operation.entry.id) });
+        return;
+      case "desktop-positions":
+        await this.requestJson(API_ROUTES.desktopPositions, { method: "PUT", headers: headers({ "Content-Type": "application/json" }), body: JSON.stringify(operation.positions) });
+        return;
+      case "layout":
+        await this.requestJson(API_ROUTES.layout, { method: "PUT", headers: headers({ "Content-Type": "application/json" }), body: JSON.stringify(operation.layout) });
+        return;
+      case "editor-settings":
+        await this.requestJson(API_ROUTES.editorSettings, { method: "PUT", headers: headers({ "Content-Type": "application/json" }), body: JSON.stringify(operation.settings) });
+    }
+  }
+
+  private async replayOutbox(generation = this.generation) {
+    for (const record of await this.storage.readOutbox()) {
+      this.assertActive(generation);
+      if (record.status === "blocked") throw new SyncRequestError(record.error ?? "A pending change is blocked.", 409, true);
+      try {
+        await this.sendOutboxOperation(record);
+        await this.reconcile(record.operationId);
+        await this.storage.acknowledgeMutation(record.operationId);
+      } catch (error) {
+        if (error instanceof SyncRequestError && error.permanent) await this.storage.blockMutation(record.operationId, error.message);
+        throw error;
+      }
+    }
   }
 
   private startEvents() {
@@ -266,16 +343,20 @@ export class SyncEngine {
     this.events = events;
     events.onopen = () => {
       if (!this.running) return;
+      if (this.status === "blocked") return;
       if (this.status !== "online") this.setStatus("connecting");
       void this.queue(() => this.reconcile()).then(() => {
+        return this.replayOutbox();
+      }).then(() => {
         if (this.running) this.setStatus("online");
-      }).catch(() => {
-        if (this.running) this.setStatus("offline");
+      }).catch((error) => {
+        if (this.running) this.setStatus(error instanceof SyncRequestError && error.permanent ? "blocked" : "offline");
       });
     };
-    events.onerror = () => { if (this.running) this.setStatus("offline"); };
+    events.onerror = () => { if (this.running && this.status !== "blocked") this.setStatus("offline"); };
     events.addEventListener("workspace", (event) => {
       if (!this.running) return;
+      if (this.status === "blocked") return;
       let revision = Number.NaN;
       let workspaceId = "";
       try {
@@ -305,25 +386,33 @@ export class SyncEngine {
       const revision = typeof health === "object" && health !== null && "revision" in health ? Number((health as { revision: unknown }).revision) : Number.NaN;
       const workspaceId = typeof health === "object" && health !== null && "workspaceId" in health && typeof health.workspaceId === "string" ? health.workspaceId : "";
       if (!Number.isSafeInteger(revision) || revision < 0) throw new Error("invalid health response");
+      if (this.status === "blocked") return;
       const wasOffline = this.status === "offline";
       if (wasOffline) this.setStatus("connecting");
-      if (wasOffline || workspaceId !== this.current().sync.workspaceId || revision > this.current().sync.revision) await this.queue(() => this.reconcile());
+      if (wasOffline || workspaceId !== this.current().sync.workspaceId || revision > this.current().sync.revision) await this.queue(async () => {
+        await this.reconcile();
+        await this.replayOutbox();
+      });
       if (this.running) this.setStatus("online");
-    } catch {
-      if (this.running) this.setStatus("offline");
+    } catch (error) {
+      if (this.running) this.setStatus(error instanceof SyncRequestError && error.permanent ? "blocked" : "offline");
     }
   }
 
-  private async mutate<T>(operation: () => Promise<void>, select: (next: storage.DesktopSnapshot) => T) {
+  private async mutate<T>(operation: OutboxOperation, select: (next: storage.DesktopSnapshot) => T, contents?: Map<string, Blob>) {
     return this.queue(async () => {
-      if (!this.initialized) await this.ensureServer();
-      try {
-        await operation();
-      } catch (error) {
-        await this.reconcile().catch(() => undefined);
-        throw error;
+      const queued = await this.storage.enqueueMutation(operation, contents);
+      this.publish(queued.desktop);
+      if (this.status === "online") {
+        try {
+          await this.replayOutbox();
+        } catch (error) {
+          if (error instanceof SyncRequestError && (error.status === null || !error.permanent)) return select(this.current());
+          if (error instanceof SyncRequestError && error.permanent) this.setStatus("blocked");
+          throw error;
+        }
       }
-      return select(await this.reconcile());
+      return select(this.current());
     });
   }
 
@@ -343,13 +432,6 @@ export class SyncEngine {
     if (!parent || parent.kind !== "folder") throw new Error("That parent folder no longer exists.");
   }
 
-  private async postEntry(entry: DesktopEntry, content?: Blob) {
-    const form = new FormData();
-    form.append("entry", JSON.stringify(entry));
-    if (content) form.append("content", content, entry.name);
-    await this.requestJson(API_ROUTES.entries, { method: "POST", body: form });
-  }
-
   createTextFile(nameValue: string, parentId: string | null, position: EntryPosition) {
     if (this.frontendOnly) return this.localMutation(() => this.storage.createTextFile(nameValue, parentId, position));
     const parsedPosition = parsePosition(position);
@@ -357,7 +439,7 @@ export class SyncEngine {
     this.assertParent(parentId);
     assertUniqueName(this.current().entries, name, parentId);
     const entry: FileEntry = { kind: "file", id: crypto.randomUUID(), name, parentId, mimeType: "text/plain", size: 0, modifiedAt: Date.now(), position: parsedPosition };
-    return this.mutate(() => this.postEntry(entry, new Blob([], { type: entry.mimeType })), (next) => next.entries.find((item) => item.id === entry.id) as FileEntry);
+    return this.mutate({ kind: "create", entries: [entry] }, (next) => next.entries.find((item) => item.id === entry.id) as FileEntry, new Map([[entry.id, new Blob([], { type: entry.mimeType })]]));
   }
 
   createFolder(nameValue: string, parentId: string | null, position: EntryPosition) {
@@ -367,7 +449,7 @@ export class SyncEngine {
     this.assertParent(parentId);
     assertUniqueName(this.current().entries, name, parentId);
     const entry: FolderEntry = { kind: "folder", id: crypto.randomUUID(), name, parentId, modifiedAt: Date.now(), position: parsedPosition };
-    return this.mutate(() => this.postEntry(entry), (next) => next.entries.find((item) => item.id === entry.id) as FolderEntry);
+    return this.mutate({ kind: "create", entries: [entry] }, (next) => next.entries.find((item) => item.id === entry.id) as FolderEntry);
   }
 
   importFiles(files: File[], parentId: string | null, positions: EntryPosition[]) {
@@ -381,12 +463,7 @@ export class SyncEngine {
       if (names.slice(0, index).some((candidate) => namesMatch(candidate, name))) throw new Error(`The upload contains more than one file named “${name}”.`);
     }
     const entries: FileEntry[] = files.map((file, index) => ({ kind: "file", id: crypto.randomUUID(), name: names[index], parentId, mimeType: file.type || "application/octet-stream", size: file.size, modifiedAt: file.lastModified || Date.now(), position: parsedPositions[index] }));
-    return this.mutate(async () => {
-      const form = new FormData();
-      form.append("entries", JSON.stringify(entries));
-      for (const [index, entry] of entries.entries()) form.append(`file-${entry.id}`, files[index], entry.name);
-      await this.requestJson(API_ROUTES.imports, { method: "POST", body: form });
-    }, (next) => entries.map((entry) => next.entries.find((item) => item.id === entry.id) as FileEntry));
+    return this.mutate({ kind: "create", entries }, (next) => entries.map((entry) => next.entries.find((item) => item.id === entry.id) as FileEntry), new Map(entries.map((entry, index) => [entry.id, files[index]])));
   }
 
   renameEntry(id: string, nameValue: string) {
@@ -395,14 +472,14 @@ export class SyncEngine {
     if (!existing) throw new Error("That entry no longer exists.");
     const name = validateEntryName(nameValue);
     assertUniqueName(this.current().entries, name, existing.parentId, id);
-    return this.mutate(() => this.requestJson(API_ROUTES.entry(id), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...existing, name }) }).then(() => undefined), (next) => next.entries.find((item) => item.id === id) as DesktopEntry);
+    return this.mutate({ kind: "update-entry", entry: { ...existing, name, modifiedAt: Date.now() } }, (next) => next.entries.find((item) => item.id === id) as DesktopEntry);
   }
 
   deleteEntry(id: string) {
     if (this.frontendOnly) return this.localMutation(() => this.storage.deleteEntry(id));
     const before = this.current().entries;
     if (!before.some((entry) => entry.id === id)) throw new Error("That entry no longer exists.");
-    return this.mutate(() => this.requestJson(API_ROUTES.entry(id), { method: "DELETE" }).then(() => undefined), (next) => before.filter((entry) => !next.entries.some((item) => item.id === entry.id)));
+    return this.mutate({ kind: "delete", entryId: id }, (next) => before.filter((entry) => !next.entries.some((item) => item.id === entry.id)));
   }
 
   moveEntry(id: string, parentId: string | null, position: EntryPosition) {
@@ -412,7 +489,7 @@ export class SyncEngine {
     if (!existing) throw new Error("That entry no longer exists.");
     this.assertParent(parentId);
     const entry = { ...existing, parentId, position: parsedPosition };
-    return this.mutate(() => this.requestJson(API_ROUTES.entry(id), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(entry) }).then(() => undefined), (next) => next.entries.find((item) => item.id === id) as DesktopEntry);
+    return this.mutate({ kind: "update-entry", entry }, (next) => next.entries.find((item) => item.id === id) as DesktopEntry);
   }
 
   updateEntryPosition(id: string, position: EntryPosition) {
@@ -421,39 +498,44 @@ export class SyncEngine {
     const existing = this.current().entries.find((entry) => entry.id === id);
     if (!existing) throw new Error("That entry no longer exists.");
     const entry = { ...existing, position: parsedPosition };
-    return this.mutate(() => this.requestJson(API_ROUTES.entry(id), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(entry) }).then(() => undefined), (next) => next.entries.find((item) => item.id === id) as DesktopEntry);
+    return this.mutate({ kind: "update-entry", entry }, (next) => next.entries.find((item) => item.id === id) as DesktopEntry);
   }
 
   updateDesktopPositions(positionValues: DesktopPositionUpdate[]) {
     const positions = parseRootDesktopPositions(positionValues, this.current().entries);
     if (this.frontendOnly) return this.localMutation(() => this.storage.updateDesktopPositions(positions));
-    return this.mutate(() => this.requestJson(API_ROUTES.desktopPositions, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(positions),
-    }).then(() => undefined), (next) => positions.map(({ entryId }) => next.entries.find((entry) => entry.id === entryId) as DesktopEntry));
+    return this.mutate({ kind: "desktop-positions", positions }, (next) => positions.map(({ entryId }) => next.entries.find((entry) => entry.id === entryId) as DesktopEntry));
   }
 
   saveTextFile(id: string, content: string) {
     if (this.frontendOnly) return this.localMutation(() => this.storage.saveTextFile(id, content));
     const existing = this.current().entries.find((entry): entry is FileEntry => entry.id === id && entry.kind === "file");
     if (!existing) throw new Error("That file no longer exists.");
-    return this.mutate(() => this.requestJson(API_ROUTES.content(id), { method: "PUT", headers: { "Content-Type": existing.mimeType }, body: content }).then(() => undefined), (next) => next.entries.find((item) => item.id === id) as FileEntry);
+    const entry = { ...existing, size: new Blob([content]).size, modifiedAt: Date.now() };
+    return this.mutate({ kind: "save-content", entry }, (next) => next.entries.find((item) => item.id === id) as FileEntry, new Map([[id, new Blob([content], { type: existing.mimeType })]]));
   }
 
   saveDesktopLayout(layout: DesktopLayout) {
     const parsed = parseLayout(layout);
     if (this.frontendOnly) return this.localMutation(() => this.storage.saveDesktopLayout(parsed), false);
-    return this.mutate(() => this.requestJson(API_ROUTES.layout, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(parsed) }).then(() => undefined), () => undefined);
+    return this.mutate({ kind: "layout", layout: parsed }, () => undefined);
   }
 
   saveEditorSettings(settings: EditorSettings) {
     if (this.frontendOnly) return this.localMutation(() => this.storage.saveEditorSettings(settings), false);
-    return this.mutate(() => this.requestJson(API_ROUTES.editorSettings, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(settings) }).then(() => undefined), () => undefined);
+    return this.mutate({ kind: "editor-settings", settings }, () => undefined);
   }
 
   readFile(id: FileEntry["id"]) { return this.storage.readFile(id); }
   readFileByRelativePath(fromFileId: FileEntry["id"], relativePath: string) { return this.storage.readFileByRelativePath(fromFileId, relativePath); }
+  async getOutboxStatus() {
+    const records = await this.storage.readOutbox();
+    return {
+      pending: records.filter((record) => record.status === "pending").length,
+      blocked: records.filter((record) => record.status === "blocked").length,
+      records,
+    };
+  }
 }
 
 const defaultEngine = new SyncEngine({ frontendOnly: import.meta.env.HIRAYA_FRONTEND_ONLY === "true" });
@@ -474,3 +556,4 @@ export const saveDesktopLayout = defaultEngine.saveDesktopLayout.bind(defaultEng
 export const saveEditorSettings = defaultEngine.saveEditorSettings.bind(defaultEngine);
 export const readFile = defaultEngine.readFile.bind(defaultEngine);
 export const readFileByRelativePath = defaultEngine.readFileByRelativePath.bind(defaultEngine);
+export const getOutboxStatus = defaultEngine.getOutboxStatus.bind(defaultEngine);
