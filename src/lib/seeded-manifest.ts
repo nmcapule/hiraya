@@ -1,6 +1,5 @@
 import { DEFAULT_WALLPAPER, type DesktopEntry, type DesktopLayout, type EditorSettings, type FileEntry, type FolderEntry } from "../types";
 import { isRecord, parseEditorSettings, parseEntries, parseLayout } from "./contracts";
-import { decodeManifest, emptySyncState, manifestLayout } from "./manifest-codec";
 
 declare const portableContentUrl: unique symbol;
 declare const bundledContentUrl: unique symbol;
@@ -9,7 +8,7 @@ export type BundledContentUrl = string & { readonly [bundledContentUrl]: true };
 
 export type PortableSeededFileEntry = FileEntry & { contentUrl: PortableContentUrl };
 export type PortableSeededManifest = {
-  version: 5;
+  version: 6;
   layout: DesktopLayout;
   editorSettings: EditorSettings;
   entries: Array<FolderEntry | PortableSeededFileEntry>;
@@ -26,7 +25,7 @@ export type SeededFileEntry = BundledSeededFileEntry;
 export type SeededManifest = BundledSeededManifest;
 
 function readSeeded(value: unknown, portable: boolean): PortableSeededManifest {
-  if (!isRecord(value) || (value.version !== 1 && value.version !== 2 && value.version !== 3 && value.version !== 4 && value.version !== 5) || !Array.isArray(value.entries)) {
+  if (!isRecord(value) || !Number.isInteger(value.version) || (value.version as number) < 1 || (value.version as number) > 6 || !Array.isArray(value.entries)) {
     throw new Error("The seeded desktop manifest has an unsupported format.");
   }
   if (!isRecord(value.layout)) throw new Error("The seeded desktop layout has an unsupported format.");
@@ -43,29 +42,15 @@ function readSeeded(value: unknown, portable: boolean): PortableSeededManifest {
     void _contentUrl;
     return entry;
   });
-  let layout: DesktopLayout;
-  let parsedEntries: DesktopEntry[];
-  if (value.version === 4 || value.version === 5) {
-    layout = parseLayout(value.version === 4 ? { ...value.layout, workspaceBreaks: [] } : value.layout);
-    parsedEntries = parseEntries(plainEntries, layout);
-  } else {
-    const migrated = decodeManifest({
-      version: 9,
-      entries: plainEntries,
-      views: value.layout.views,
-      viewColumns: value.layout.columns,
-      snapToGrid: value.version === 1 ? false : value.layout.snapToGrid,
-      wallpaper: value.version < 3 ? DEFAULT_WALLPAPER : value.layout.wallpaper,
-      editorSettings,
-      sync: emptySyncState(),
-    }, { x: 1, y: 1 }, () => "unused");
-    layout = manifestLayout(migrated.manifest);
-    parsedEntries = migrated.manifest.entries;
-  }
+  const layout: DesktopLayout = parseLayout({
+    snapToGrid: value.version === 1 ? false : value.layout.snapToGrid,
+    wallpaper: (value.version as number) < 3 ? DEFAULT_WALLPAPER : value.layout.wallpaper,
+  });
+  const parsedEntries = parseEntries(plainEntries);
   const entries = parsedEntries.map((entry) => entry.kind === "file"
     ? { ...entry, contentUrl: contentUrls.get(entry.id) as string }
     : entry) as Array<FolderEntry | PortableSeededFileEntry>;
-  return { version: 5, layout, editorSettings, entries };
+  return { version: 6, layout, editorSettings, entries };
 }
 
 export function assertPortableContentUrl(contentUrl: string) {
@@ -95,7 +80,7 @@ export function toPortableSeededManifest(
   contentUrlFor: (file: FileEntry) => string,
 ): PortableSeededManifest {
   return parsePortableSeededManifest({
-    version: 5,
+    version: 6,
     layout: desktop.layout,
     editorSettings: desktop.editorSettings,
     entries: desktop.entries.map((entry) => entry.kind === "file" ? { ...entry, contentUrl: contentUrlFor(entry) } : entry),

@@ -42,7 +42,7 @@ func New(store *Store, staticDir string, maxUpload int64) *Server {
 	mux.HandleFunc("GET /api/files/{id}/content", s.getContent)
 	mux.HandleFunc("PUT /api/files/{id}/content", s.putContent)
 	mux.HandleFunc("PUT /api/layout", s.putLayout)
-	mux.HandleFunc("PUT /api/desktop-placement", s.putDesktopPlacement)
+	mux.HandleFunc("PUT /api/desktop-positions", s.putDesktopPositions)
 	mux.HandleFunc("PUT /api/editor-settings", s.putSettings)
 	mux.HandleFunc("GET /api/events", s.events)
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
@@ -407,11 +407,6 @@ func (s *Server) importEntries(w http.ResponseWriter, r *http.Request) {
 		entries[i].ModifiedAt = modifiedAt
 	}
 	next.Entries = append(next.Entries, entries...)
-	for _, entry := range entries {
-		if entry.ParentID == nil {
-			next.Layout.RootOrder = append(next.Layout.RootOrder, entry.ID)
-		}
-	}
 	if err := validateWorkspace(next.Entries, next.Layout); err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
@@ -459,9 +454,6 @@ func (s *Server) importEntries(w http.ResponseWriter, r *http.Request) {
 		written = append(written, target)
 	}
 	next.Revision = revision
-	if len(next.Layout.RootOrder) != len(s.store.workspace.Layout.RootOrder) {
-		next.LayoutRevision = revision
-	}
 	if err := s.store.persistLocked(next); err != nil {
 		for _, path := range written {
 			_ = os.Remove(path)
@@ -593,16 +585,8 @@ func (s *Server) upsertEntry(w http.ResponseWriter, r *http.Request) {
 	}
 	if idx < 0 {
 		next.Entries = append(next.Entries, entry)
-		if entry.ParentID == nil {
-			next.Layout.RootOrder = append(next.Layout.RootOrder, entry.ID)
-		}
 	} else {
 		next.Entries[idx] = entry
-		if old.ParentID == nil && entry.ParentID != nil {
-			removeRoots(&next.Layout, map[string]bool{entry.ID: true})
-		} else if old.ParentID != nil && entry.ParentID == nil {
-			next.Layout.RootOrder = append(next.Layout.RootOrder, entry.ID)
-		}
 	}
 	if err := validateWorkspace(next.Entries, next.Layout); err != nil {
 		writeError(w, http.StatusConflict, err.Error())
@@ -661,9 +645,6 @@ func (s *Server) upsertEntry(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	next.Revision++
-	if idx < 0 && entry.ParentID == nil || idx >= 0 && (old.ParentID == nil) != (entry.ParentID == nil) {
-		next.LayoutRevision = next.Revision
-	}
 	if err := s.store.persistLocked(next); err != nil {
 		if replacement != nil {
 			if rollbackErr := replacement.rollback(); rollbackErr != nil {
@@ -752,11 +733,6 @@ func (s *Server) patchEntry(w http.ResponseWriter, r *http.Request) {
 	entry.ModifiedAt = s.now().UnixMilli()
 	entry.Revision = next.Revision + 1
 	next.Entries[idx] = entry
-	if old.ParentID == nil && entry.ParentID != nil {
-		removeRoots(&next.Layout, map[string]bool{id: true})
-	} else if old.ParentID != nil && entry.ParentID == nil {
-		next.Layout.RootOrder = append(next.Layout.RootOrder, id)
-	}
 	if err := validateWorkspace(next.Entries, next.Layout); err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
@@ -777,9 +753,6 @@ func (s *Server) patchEntry(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	next.Revision++
-	if (old.ParentID == nil) != (entry.ParentID == nil) {
-		next.LayoutRevision = next.Revision
-	}
 	if err := s.store.persistLocked(next); err != nil {
 		if oldPath != newPath {
 			if rollbackErr := os.Rename(newPath, oldPath); rollbackErr != nil {
@@ -946,7 +919,6 @@ func (s *Server) deleteEntry(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "entry not found")
 		return
 	}
-	deletedRoot := s.store.workspace.Entries[deletedIndex].ParentID == nil
 	deleted := map[string]bool{id: true}
 	for changed := true; changed; {
 		changed = false
@@ -969,11 +941,7 @@ func (s *Server) deleteEntry(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	next.Entries = kept
-	removeRoots(&next.Layout, deleted)
 	next.Revision++
-	if deletedRoot {
-		next.LayoutRevision = next.Revision
-	}
 	trashDir := filepath.Join(s.store.dir, ".trash")
 	var quarantinedPath string
 	if _, err := os.Lstat(deletePath); err == nil {
@@ -1033,8 +1001,6 @@ func (s *Server) putLayout(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	layout.RootOrder = nonNilStrings(layout.RootOrder)
-	layout.WorkspaceBreaks = nonNilWorkspaceBreaks(layout.WorkspaceBreaks)
 	if err := validateLayout(layout); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -1062,25 +1028,27 @@ func (s *Server) putLayout(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, layoutResponse{Revision: next.Revision, Layout: layout, LayoutRevision: next.LayoutRevision})
 }
 
-func (s *Server) putDesktopPlacement(w http.ResponseWriter, r *http.Request) {
-	var input desktopPlacementRequest
+func (s *Server) putDesktopPositions(w http.ResponseWriter, r *http.Request) {
+	var input []desktopPosition
 	if err := decodeJSON(w, r, &input, 1<<20); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	input.Layout.RootOrder = nonNilStrings(input.Layout.RootOrder)
-	input.Layout.WorkspaceBreaks = nonNilWorkspaceBreaks(input.Layout.WorkspaceBreaks)
-	if !validID(input.EntryID) {
-		writeError(w, http.StatusBadRequest, "invalid entry ID")
+	if len(input) == 0 {
+		writeError(w, http.StatusBadRequest, "at least one desktop position is required")
 		return
 	}
-	if err := validatePosition(input.Position); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if err := validateLayout(input.Layout); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
+	seen := make(map[string]bool, len(input))
+	for _, position := range input {
+		if !validID(position.EntryID) || seen[position.EntryID] {
+			writeError(w, http.StatusBadRequest, "invalid or duplicate entry ID")
+			return
+		}
+		if err := validatePosition(position.Position); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		seen[position.EntryID] = true
 	}
 
 	s.store.mu.Lock()
@@ -1091,31 +1059,36 @@ func (s *Server) putDesktopPlacement(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	next := cloneWorkspace(s.store.workspace)
-	idx := entryIndex(next.Entries, input.EntryID)
-	if idx < 0 {
-		writeError(w, http.StatusNotFound, "entry not found")
-		return
-	}
-	if next.Entries[idx].ParentID != nil {
-		writeError(w, http.StatusConflict, "desktop placement requires a root entry")
-		return
-	}
-	if err := validateWorkspace(next.Entries, input.Layout); err != nil {
-		writeError(w, http.StatusConflict, err.Error())
-		return
+	indexes := make([]int, len(input))
+	for i, position := range input {
+		indexes[i] = entryIndex(next.Entries, position.EntryID)
+		if indexes[i] < 0 {
+			writeError(w, http.StatusNotFound, "entry not found")
+			return
+		}
+		if next.Entries[indexes[i]].ParentID != nil {
+			writeError(w, http.StatusConflict, "desktop positions require root entries")
+			return
+		}
 	}
 	revision := next.Revision + 1
 	next.Revision = revision
-	next.Entries[idx].Position = input.Position
-	next.Entries[idx].Revision = revision
-	next.Layout = input.Layout
-	next.LayoutRevision = revision
+	entries := make([]Entry, len(input))
+	for i, position := range input {
+		next.Entries[indexes[i]].Position = position.Position
+		next.Entries[indexes[i]].Revision = revision
+		entries[i] = next.Entries[indexes[i]]
+	}
+	if err := validateWorkspace(next.Entries, next.Layout); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
 	if err := s.store.persistLocked(next); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	s.store.publishLocked(revision)
-	writeJSON(w, http.StatusOK, desktopPlacementResponse{Revision: revision, Entry: next.Entries[idx], Layout: next.Layout, LayoutRevision: revision})
+	writeJSON(w, http.StatusOK, desktopPositionsResponse{Revision: revision, Entries: entries})
 }
 
 func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
@@ -1212,16 +1185,6 @@ func entryIndex(entries []Entry, id string) int {
 	return -1
 }
 
-func removeRootIDs(order []string, removed map[string]bool) []string {
-	kept := order[:0]
-	for _, id := range order {
-		if !removed[id] {
-			kept = append(kept, id)
-		}
-	}
-	return kept
-}
-
 func decodeJSON(w http.ResponseWriter, r *http.Request, dst any, max int64) error {
 	r.Body = http.MaxBytesReader(w, r.Body, max)
 	return decodeJSONReader(r.Body, dst, max)
@@ -1268,17 +1231,14 @@ type layoutResponse struct {
 	LayoutRevision int64  `json:"layoutRevision"`
 }
 
-type desktopPlacementRequest struct {
+type desktopPosition struct {
 	EntryID  string   `json:"entryId"`
 	Position Position `json:"position"`
-	Layout   Layout   `json:"layout"`
 }
 
-type desktopPlacementResponse struct {
-	Revision       int64  `json:"revision"`
-	Entry          Entry  `json:"entry"`
-	Layout         Layout `json:"layout"`
-	LayoutRevision int64  `json:"layoutRevision"`
+type desktopPositionsResponse struct {
+	Revision int64   `json:"revision"`
+	Entries  []Entry `json:"entries"`
 }
 
 type settingsResponse struct {

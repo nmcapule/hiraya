@@ -1561,6 +1561,12 @@ textarea:focus-visible {
   outline: 0;
 }
 
+.context-menu .context-menu__separated {
+  margin-top: 5px;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 0 0 7px 7px;
+}
+
 .context-menu .context-menu__danger {
   color: #ffc5bd;
 }

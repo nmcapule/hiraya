@@ -2,15 +2,16 @@ import type { SeededManifest } from "./seeded-manifest";
 import * as storage from "./opfs";
 import { assertUniqueName, namesMatch, validateEntryName } from "./entry-validation";
 import { API_ROUTES } from "./api-routes";
-import { parseEntries, parseLayout, parsePosition, parseRemoteWorkspace, type InitializedRemoteWorkspace, type RemoteEntry, type RemoteWorkspace } from "./contracts";
-import type { DesktopEntry, DesktopLayout, EditorSettings, EntryPosition, FileEntry, FolderEntry } from "../types";
+import { parseLayout, parsePosition, parseRemoteWorkspace, parseRootDesktopPositions, type InitializedRemoteWorkspace, type RemoteEntry, type RemoteWorkspace } from "./contracts";
+import type { DesktopEntry, DesktopLayout, DesktopPositionUpdate, EditorSettings, EntryPosition, FileEntry, FolderEntry } from "../types";
 
 export type SyncStatus = "connecting" | "online" | "offline" | "local";
 
 type StorageBoundary = Pick<typeof storage,
   "applyRemoteDesktop" | "createFolder" | "createTextFile" | "deleteEntry" | "importFiles" | "loadDesktop" |
-  "moveDesktopEntry" | "moveEntry" | "readCurrentDesktop" | "readDesktopSnapshot" | "readFile" | "readFileByRelativePath" |
+  "moveEntry" | "readCurrentDesktop" | "readDesktopSnapshot" | "readFile" | "readFileByRelativePath" |
   "renameEntry" | "saveDesktopLayout" | "saveEditorSettings" | "saveTextFile" | "updateEntryPosition"
+  | "updateDesktopPositions"
 >;
 
 export type SyncEngineOptions = {
@@ -333,32 +334,35 @@ export class SyncEngine {
 
   createTextFile(nameValue: string, parentId: string | null, position: EntryPosition) {
     if (this.frontendOnly) return this.localMutation(() => this.storage.createTextFile(nameValue, parentId, position));
+    const parsedPosition = parsePosition(position);
     const name = validateEntryName(nameValue);
     this.assertParent(parentId);
     assertUniqueName(this.current().entries, name, parentId);
-    const entry: FileEntry = { kind: "file", id: crypto.randomUUID(), name, parentId, mimeType: "text/plain", size: 0, modifiedAt: Date.now(), position };
+    const entry: FileEntry = { kind: "file", id: crypto.randomUUID(), name, parentId, mimeType: "text/plain", size: 0, modifiedAt: Date.now(), position: parsedPosition };
     return this.mutate(() => this.postEntry(entry, new Blob([], { type: entry.mimeType })), (next) => next.entries.find((item) => item.id === entry.id) as FileEntry);
   }
 
   createFolder(nameValue: string, parentId: string | null, position: EntryPosition) {
     if (this.frontendOnly) return this.localMutation(() => this.storage.createFolder(nameValue, parentId, position));
+    const parsedPosition = parsePosition(position);
     const name = validateEntryName(nameValue);
     this.assertParent(parentId);
     assertUniqueName(this.current().entries, name, parentId);
-    const entry: FolderEntry = { kind: "folder", id: crypto.randomUUID(), name, parentId, modifiedAt: Date.now(), position };
+    const entry: FolderEntry = { kind: "folder", id: crypto.randomUUID(), name, parentId, modifiedAt: Date.now(), position: parsedPosition };
     return this.mutate(() => this.postEntry(entry), (next) => next.entries.find((item) => item.id === entry.id) as FolderEntry);
   }
 
   importFiles(files: File[], parentId: string | null, positions: EntryPosition[]) {
     if (this.frontendOnly) return this.localMutation(() => this.storage.importFiles(files, parentId, positions));
     if (files.length !== positions.length) throw new Error("Each imported file needs a desktop position.");
+    const parsedPositions = positions.map(parsePosition);
     this.assertParent(parentId);
     const names = files.map((file) => validateEntryName(file.name));
     for (const [index, name] of names.entries()) {
       assertUniqueName(this.current().entries, name, parentId);
       if (names.slice(0, index).some((candidate) => namesMatch(candidate, name))) throw new Error(`The upload contains more than one file named “${name}”.`);
     }
-    const entries: FileEntry[] = files.map((file, index) => ({ kind: "file", id: crypto.randomUUID(), name: names[index], parentId, mimeType: file.type || "application/octet-stream", size: file.size, modifiedAt: file.lastModified || Date.now(), position: positions[index] }));
+    const entries: FileEntry[] = files.map((file, index) => ({ kind: "file", id: crypto.randomUUID(), name: names[index], parentId, mimeType: file.type || "application/octet-stream", size: file.size, modifiedAt: file.lastModified || Date.now(), position: parsedPositions[index] }));
     return this.mutate(async () => {
       const form = new FormData();
       form.append("entries", JSON.stringify(entries));
@@ -385,34 +389,31 @@ export class SyncEngine {
 
   moveEntry(id: string, parentId: string | null, position: EntryPosition) {
     if (this.frontendOnly) return this.localMutation(() => this.storage.moveEntry(id, parentId, position));
+    const parsedPosition = parsePosition(position);
     const existing = this.current().entries.find((entry) => entry.id === id);
     if (!existing) throw new Error("That entry no longer exists.");
     this.assertParent(parentId);
-    const entry = { ...existing, parentId, position };
+    const entry = { ...existing, parentId, position: parsedPosition };
     return this.mutate(() => this.requestJson(API_ROUTES.entry(id), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(entry) }).then(() => undefined), (next) => next.entries.find((item) => item.id === id) as DesktopEntry);
   }
 
   updateEntryPosition(id: string, position: EntryPosition) {
+    const parsedPosition = parsePosition(position);
     if (this.frontendOnly) return this.localMutation(() => this.storage.updateEntryPosition(id, position));
     const existing = this.current().entries.find((entry) => entry.id === id);
     if (!existing) throw new Error("That entry no longer exists.");
-    const entry = { ...existing, position };
+    const entry = { ...existing, position: parsedPosition };
     return this.mutate(() => this.requestJson(API_ROUTES.entry(id), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(entry) }).then(() => undefined), (next) => next.entries.find((item) => item.id === id) as DesktopEntry);
   }
 
-  moveDesktopEntry(id: string, positionValue: EntryPosition, layoutValue: DesktopLayout) {
-    const position = parsePosition(positionValue);
-    const layout = parseLayout(layoutValue);
-    const existing = this.current().entries.find((entry) => entry.id === id);
-    if (!existing) throw new Error("That entry no longer exists.");
-    if (existing.parentId !== null) throw new Error("Desktop placement requires a root entry.");
-    parseEntries(this.current().entries.map((entry) => entry.id === id ? { ...entry, position } : entry), layout);
-    if (this.frontendOnly) return this.localMutation(() => this.storage.moveDesktopEntry(id, position, layout));
-    return this.mutate(() => this.requestJson(API_ROUTES.desktopPlacement, {
+  updateDesktopPositions(positionValues: DesktopPositionUpdate[]) {
+    const positions = parseRootDesktopPositions(positionValues, this.current().entries);
+    if (this.frontendOnly) return this.localMutation(() => this.storage.updateDesktopPositions(positions));
+    return this.mutate(() => this.requestJson(API_ROUTES.desktopPositions, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ entryId: id, position, layout }),
-    }).then(() => undefined), (next) => next.entries.find((entry) => entry.id === id) as DesktopEntry);
+      body: JSON.stringify(positions),
+    }).then(() => undefined), (next) => positions.map(({ entryId }) => next.entries.find((entry) => entry.id === entryId) as DesktopEntry));
   }
 
   saveTextFile(id: string, content: string) {
@@ -424,7 +425,6 @@ export class SyncEngine {
 
   saveDesktopLayout(layout: DesktopLayout) {
     const parsed = parseLayout(layout);
-    parseEntries(this.current().entries, parsed);
     if (this.frontendOnly) return this.localMutation(() => this.storage.saveDesktopLayout(parsed), false);
     return this.mutate(() => this.requestJson(API_ROUTES.layout, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(parsed) }).then(() => undefined), () => undefined);
   }
@@ -449,7 +449,7 @@ export const importFiles = defaultEngine.importFiles.bind(defaultEngine);
 export const renameEntry = defaultEngine.renameEntry.bind(defaultEngine);
 export const deleteEntry = defaultEngine.deleteEntry.bind(defaultEngine);
 export const moveEntry = defaultEngine.moveEntry.bind(defaultEngine);
-export const moveDesktopEntry = defaultEngine.moveDesktopEntry.bind(defaultEngine);
+export const updateDesktopPositions = defaultEngine.updateDesktopPositions.bind(defaultEngine);
 export const updateEntryPosition = defaultEngine.updateEntryPosition.bind(defaultEngine);
 export const saveTextFile = defaultEngine.saveTextFile.bind(defaultEngine);
 export const saveDesktopLayout = defaultEngine.saveDesktopLayout.bind(defaultEngine);

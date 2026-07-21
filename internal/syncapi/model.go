@@ -14,16 +14,9 @@ type Position struct {
 	Y float64 `json:"y"`
 }
 
-type WorkspaceBreak struct {
-	EntryID     string `json:"entryId"`
-	MaxCapacity int    `json:"maxCapacity"`
-}
-
 type Layout struct {
-	RootOrder       []string         `json:"rootOrder"`
-	WorkspaceBreaks []WorkspaceBreak `json:"workspaceBreaks"`
-	SnapToGrid      bool             `json:"snapToGrid"`
-	Wallpaper       string           `json:"wallpaper"`
+	SnapToGrid bool   `json:"snapToGrid"`
+	Wallpaper  string `json:"wallpaper"`
 }
 
 type EditorSettings struct {
@@ -124,39 +117,11 @@ func validateLayout(layout Layout) error {
 	if !wallpapers[layout.Wallpaper] {
 		return fmt.Errorf("invalid desktop layout")
 	}
-	ids := make(map[string]bool, len(layout.RootOrder))
-	for _, id := range layout.RootOrder {
-		if !validID(id) || ids[id] {
-			return fmt.Errorf("invalid or duplicate root order ID")
-		}
-		ids[id] = true
-	}
-	breakIDs := make(map[string]bool, len(layout.WorkspaceBreaks))
-	for _, workspaceBreak := range layout.WorkspaceBreaks {
-		if !validID(workspaceBreak.EntryID) || breakIDs[workspaceBreak.EntryID] {
-			return fmt.Errorf("invalid or duplicate workspace break ID")
-		}
-		if workspaceBreak.MaxCapacity < 1 || workspaceBreak.MaxCapacity > 1_000_000 {
-			return fmt.Errorf("invalid workspace break capacity")
-		}
-		breakIDs[workspaceBreak.EntryID] = true
-	}
-	if len(layout.RootOrder) == 0 && len(layout.WorkspaceBreaks) != 0 {
-		return fmt.Errorf("empty root order cannot contain workspace breaks")
-	}
-	if len(layout.RootOrder) != 0 && breakIDs[layout.RootOrder[0]] {
-		return fmt.Errorf("first root cannot be a workspace break")
-	}
-	for id := range breakIDs {
-		if !ids[id] {
-			return fmt.Errorf("workspace break must reference a root order entry")
-		}
-	}
 	return nil
 }
 
 func validatePosition(position Position) error {
-	if math.IsNaN(position.X) || math.IsInf(position.X, 0) || position.X < 0 || math.IsNaN(position.Y) || math.IsInf(position.Y, 0) || position.Y < 0 {
+	if math.IsNaN(position.X) || math.IsInf(position.X, 0) || math.IsNaN(position.Y) || math.IsInf(position.Y, 0) {
 		return fmt.Errorf("invalid entry position")
 	}
 	return nil
@@ -229,71 +194,6 @@ func validateEntries(entries []Entry) error {
 	return nil
 }
 
-func validateRootOrder(entries []Entry, rootOrder []string) error {
-	roots := make(map[string]bool)
-	for _, entry := range entries {
-		if entry.ParentID == nil {
-			roots[entry.ID] = true
-		}
-	}
-	if len(rootOrder) != len(roots) {
-		return fmt.Errorf("root order must contain every root entry exactly once")
-	}
-	seen := make(map[string]bool, len(rootOrder))
-	for _, id := range rootOrder {
-		if !roots[id] || seen[id] {
-			return fmt.Errorf("root order must contain every root entry exactly once")
-		}
-		seen[id] = true
-	}
-	return nil
-}
-
-func sameRootOrder(left, right []string) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for i := range left {
-		if left[i] != right[i] {
-			return false
-		}
-	}
-	return true
-}
-
-// removeRoots promotes the next surviving icon when a workspace break's root
-// disappears, keeping the adaptive group boundary in place.
-func removeRoots(layout *Layout, removed map[string]bool) {
-	breaks := make(map[string]WorkspaceBreak, len(layout.WorkspaceBreaks))
-	for _, workspaceBreak := range layout.WorkspaceBreaks {
-		breaks[workspaceBreak.EntryID] = workspaceBreak
-	}
-	nextBreaks := make([]WorkspaceBreak, 0, len(layout.WorkspaceBreaks))
-	for i, id := range layout.RootOrder {
-		workspaceBreak, isBreak := breaks[id]
-		if !isBreak {
-			continue
-		}
-		if !removed[id] {
-			nextBreaks = append(nextBreaks, workspaceBreak)
-			continue
-		}
-		for j := i + 1; j < len(layout.RootOrder); j++ {
-			candidate := layout.RootOrder[j]
-			if _, startsNextGroup := breaks[candidate]; startsNextGroup {
-				break
-			}
-			if !removed[candidate] {
-				workspaceBreak.EntryID = candidate
-				nextBreaks = append(nextBreaks, workspaceBreak)
-				break
-			}
-		}
-	}
-	layout.RootOrder = removeRootIDs(layout.RootOrder, removed)
-	layout.WorkspaceBreaks = nextBreaks
-}
-
 func validateWorkspace(entries []Entry, layout Layout) error {
 	if err := validateLayout(layout); err != nil {
 		return err
@@ -301,5 +201,5 @@ func validateWorkspace(entries []Entry, layout Layout) error {
 	if err := validateEntries(entries); err != nil {
 		return err
 	}
-	return validateRootOrder(entries, layout.RootOrder)
+	return nil
 }

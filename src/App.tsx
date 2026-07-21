@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, CloudCheck, CloudSlash, FolderPlus, GearSix, HardDrive, Plus, SpinnerGap, UploadSimple, WarningCircle } from "@phosphor-icons/react";
 import seededDesktop from "virtual:hiraya-seeded";
-import { ContextMenu } from "./components/ContextMenu";
+import { ContextMenu, DesktopContextMenu } from "./components/ContextMenu";
 import { FileDialog } from "./components/FileDialog";
 import { FileIcon } from "./components/FileIcon";
 import { FileWindow } from "./components/FileWindow";
@@ -15,13 +15,13 @@ import {
   importFiles,
   initializeDesktop,
   moveEntry,
-  moveDesktopEntry,
   readFile,
   readFileByRelativePath,
   renameEntry,
   saveDesktopLayout,
   saveEditorSettings,
   saveTextFile,
+  updateDesktopPositions,
   updateEntryPosition,
   subscribeToSync,
   stopDesktopSync,
@@ -31,7 +31,7 @@ import { DEFAULT_EDITOR_SETTINGS } from "./lib/opfs";
 import { exportSeededDesktop } from "./lib/seeded";
 import { formatDesktopRoute, normalizeDesktopRoute, parseDesktopRoute, type DesktopRoute } from "./lib/routes";
 import { DEFAULT_WALLPAPER, type ContextMenuState, type DesktopEntry, type DesktopLayout, type DialogState, type EditorSettings, type EntryPosition, type FileEntry } from "./types";
-import { createEdgeWorkspaceLayout, destinationSurfaceSegment, FILE_ICON_SIZE, GRID_ORIGIN, GRID_STEP, layoutForPageOrder, moveEntryToWorkspaceLayout, nextAvailableDesktopSlot, nextDesktopPosition, pagePositionTarget, responsiveDesktop, restoreLogicalPosition, snapAxis } from "./ui/desktop-geometry";
+import { FILE_ICON_SIZE, GRID_ORIGIN, GRID_STEP, nextAvailableDesktopSlot, nextDesktopPosition, projectLogicalPosition, reorderDesktopPages, responsiveDesktop, restoreLogicalPosition, segmentKey, snapAxis } from "./ui/desktop-geometry";
 import { fileCapabilities } from "./ui/file-capabilities";
 import { topOverlay } from "./ui/overlay";
 import { createWorkspaceIndex } from "./ui/workspace-index";
@@ -39,6 +39,7 @@ import { createWorkspaceIndex } from "./ui/workspace-index";
 type OpenFile = { file: FileEntry; blob: File; editable: boolean; contentRevision: number; remoteChanged: boolean } | null;
 type RouteHistoryState = { hiraya: true; parentHash?: string };
 const MINIMAP_LONG_PRESS_MS = 500;
+const DESKTOP_LONG_PRESS_MS = 500;
 
 function formatClock(date: Date) {
   return new Intl.DateTimeFormat(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" }).format(date);
@@ -58,7 +59,7 @@ function App() {
   const [route, setRoute] = useState<DesktopRoute | null>(null);
   const [clock, setClock] = useState(() => new Date());
   const [desktopSize, setDesktopSize] = useState(() => ({ width: window.innerWidth, height: Math.max(1, window.innerHeight - 44) }));
-  const [layout, setLayout] = useState<DesktopLayout>(() => ({ rootOrder: [], workspaceBreaks: [], snapToGrid: false, wallpaper: DEFAULT_WALLPAPER }));
+  const [layout, setLayout] = useState<DesktopLayout>(() => ({ snapToGrid: false, wallpaper: DEFAULT_WALLPAPER }));
   const [editorSettings, setEditorSettings] = useState<EditorSettings>(DEFAULT_EDITOR_SETTINGS);
   const [exporting, setExporting] = useState(false);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("connecting");
@@ -70,7 +71,8 @@ function App() {
   const canvasRef = useRef<HTMLDivElement>(null);
   const uploadRef = useRef<HTMLInputElement>(null);
   const uploadParentRef = useRef<string | null>(null);
-  const swipeRef = useRef<{ axis: "x" | "y" | null; pointerId: number; startIndex: number; startTime: number; startX: number; startY: number; x: number; y: number } | null>(null);
+  const uploadPositionRef = useRef<EntryPosition | undefined>(undefined);
+  const swipeRef = useRef<{ axis: "x" | "y" | null; pointerId: number; startSegment: { column: number; row: number }; startTime: number; startX: number; startY: number; x: number; y: number } | null>(null);
   const minimapPointerRef = useRef<{
     activated: boolean;
     pointerId: number;
@@ -78,14 +80,20 @@ function App() {
     startY: number;
     timer: number;
     pageKey: string;
-    initialLayout: DesktopLayout;
+    initialPositions: Array<{ entryId: string; position: EntryPosition }>;
+  } | null>(null);
+  const desktopPressRef = useRef<{
+    activated: boolean;
+    pointerId: number;
+    startX: number;
+    startY: number;
+    timer: number;
   } | null>(null);
   const suppressClickRef = useRef(false);
   const edgeDragRef = useRef({ direction: "", time: 0 });
   const edgeNavigationRef = useRef<{
     route: DesktopRoute;
     historyState: unknown;
-    originalLayout?: DesktopLayout;
     draftEntryId?: string;
     targetSegment?: { column: number; row: number };
   } | null>(null);
@@ -102,17 +110,26 @@ function App() {
   const editorSettingsSaveRef = useRef<Promise<void>>(Promise.resolve());
   const contentRevisionsRef = useRef<Record<string, number>>({});
   const openFileDirtyRef = useRef(false);
-  const activePageIndex = route?.pageIndex ?? 0;
+  const activeSegment = { column: route?.column ?? 0, row: route?.row ?? 0 };
   const explorerFolderId = route?.explorerFolderId;
   const canMutate = syncStatus === "online" || syncStatus === "local";
   const workspace = useMemo(() => createWorkspaceIndex(entries), [entries]);
   const rootEntries = workspace.roots;
-  const responsive = useMemo(() => responsiveDesktop(entries, layout.rootOrder, desktopSize, layout.workspaceBreaks), [desktopSize, entries, layout.rootOrder, layout.workspaceBreaks]);
-  const pages = responsive.pages.length ? responsive.pages : [{ entries: [], key: "empty", segment: { column: 0, row: 0 } }];
-  const pageColumns = responsive.columns;
-  const pageRows = responsive.rows;
-  const page = { column: activePageIndex % pageColumns, row: Math.floor(activePageIndex / pageColumns) };
-  const activeDesktopPage = pages[activePageIndex] ?? pages[0];
+  const responsive = useMemo(() => responsiveDesktop(entries, desktopSize), [desktopSize, entries]);
+  const activePageKey = segmentKey(activeSegment);
+  const actualActivePage = responsive.pages.find((candidate) => candidate.key === activePageKey);
+  const pages = actualActivePage
+    ? responsive.pages
+    : [...responsive.pages, { entries: [], key: activePageKey, segment: activeSegment }]
+      .sort((a, b) => a.segment.row - b.segment.row || a.segment.column - b.segment.column);
+  const minColumn = Math.min(responsive.minColumn, activeSegment.column);
+  const minRow = Math.min(responsive.minRow, activeSegment.row);
+  const maxColumn = Math.max(responsive.maxColumn, activeSegment.column);
+  const maxRow = Math.max(responsive.maxRow, activeSegment.row);
+  const pageColumns = maxColumn - minColumn + 1;
+  const pageRows = maxRow - minRow + 1;
+  const page = { column: activeSegment.column - minColumn, row: activeSegment.row - minRow };
+  const activeDesktopPage = actualActivePage ?? { entries: [], key: activePageKey, segment: activeSegment };
   const minimapWidth = Math.min(112, Math.max(42, pageColumns * 24)) + 26;
   const minimapHeight = Math.min(84, Math.max(30, pageRows * 20)) + 27;
   const minimapObscured = !editingViews && activeDesktopPage.entries.some((entry) => {
@@ -126,7 +143,7 @@ function App() {
   const explorerChildren = explorerFolderId === undefined ? [] : workspace.children.get(explorerFolder?.id ?? null) ?? [];
   const breadcrumbs = explorerFolder ? workspace.ancestors(explorerFolder.id) : [];
   const dialogEntry = dialog && (dialog.type === "rename" || dialog.type === "delete") ? workspace.byId.get(dialog.entryId) ?? null : null;
-  const contextMenuEntry = contextMenu ? workspace.byId.get(contextMenu.entryId) ?? null : null;
+  const contextMenuEntry = contextMenu?.type === "entry" ? workspace.byId.get(contextMenu.entryId) ?? null : null;
   const moveDialogEntry = moveDialogEntryId ? workspace.byId.get(moveDialogEntryId) ?? null : null;
   function setCurrentRoute(next: DesktopRoute) {
     routeRef.current = next;
@@ -148,8 +165,8 @@ function App() {
 
   function applyLocationRoute(entriesValue = entriesRef.current, layoutValue = layoutRef.current) {
     if (!navigationReadyRef.current) return;
-    const pageCount = Math.max(1, responsiveDesktop(entriesValue, layoutValue.rootOrder, desktopSize, layoutValue.workspaceBreaks).pages.length);
-    const normalized = normalizeDesktopRoute(parseDesktopRoute(window.location.hash), entriesValue, pageCount);
+    void layoutValue;
+    const normalized = normalizeDesktopRoute(parseDesktopRoute(window.location.hash), entriesValue);
     if (!normalized) return;
     const canonicalHash = formatDesktopRoute(normalized);
     if (canonicalHash !== window.location.hash) writeRoute(normalized, "replace");
@@ -157,8 +174,7 @@ function App() {
   }
 
   function navigateRoute(next: DesktopRoute, mode: "push" | "replace" = "push") {
-    const pageCount = Math.max(1, responsiveDesktop(entriesRef.current, layoutRef.current.rootOrder, desktopSize, layoutRef.current.workspaceBreaks).pages.length);
-    const normalized = normalizeDesktopRoute(next, entriesRef.current, pageCount);
+    const normalized = normalizeDesktopRoute(next, entriesRef.current);
     if (normalized) writeRoute(normalized, mode);
   }
 
@@ -190,7 +206,7 @@ function App() {
       setLoading(false);
       setSelectedId((current) => current && !synced.entries.some((entry) => entry.id === current) ? null : current);
       const syncedIds = new Set(synced.entries.map((entry) => entry.id));
-      setContextMenu((current) => current && !syncedIds.has(current.entryId) ? null : current);
+      setContextMenu((current) => current?.type === "entry" && !syncedIds.has(current.entryId) ? null : current);
       setMoveDialogEntryId((current) => current && !syncedIds.has(current) ? null : current);
       setDialog((current) => {
         if (!current) return null;
@@ -308,9 +324,22 @@ function App() {
     return () => observer.disconnect();
   }, []);
 
+  const previousDesktopSizeRef = useRef(desktopSize);
+  useEffect(() => {
+    const previous = previousDesktopSizeRef.current;
+    previousDesktopSizeRef.current = desktopSize;
+    const current = routeRef.current;
+    if (!current || (previous.width === desktopSize.width && previous.height === desktopSize.height)) return;
+    navigateRouteRef.current({
+      ...current,
+      column: Math.floor((current.column * previous.width + previous.width / 2) / desktopSize.width),
+      row: Math.floor((current.row * previous.height + previous.height / 2) / desktopSize.height),
+    }, "replace");
+  }, [desktopSize]);
+
   useEffect(() => {
     applyLocationRouteRef.current();
-  }, [pages.length]);
+  }, [responsive.pages.length]);
 
   useEffect(() => {
     function onPointerDown(event: PointerEvent) {
@@ -323,8 +352,12 @@ function App() {
     return () => window.removeEventListener("pointerdown", onPointerDown);
   }, [editingViews]);
 
+  useEffect(() => () => {
+    if (desktopPressRef.current) window.clearTimeout(desktopPressRef.current.timer);
+  }, []);
+
   useEffect(() => {
-    function closeMenu(event: MouseEvent) {
+    function closeMenu(event: PointerEvent) {
       if (!(event.target as Element).closest?.(".context-menu")) setContextMenu(null);
     }
     function onKeyDown(event: KeyboardEvent) {
@@ -333,10 +366,10 @@ function App() {
         setContextMenu(null);
       }
     }
-    window.addEventListener("mousedown", closeMenu);
+    window.addEventListener("pointerdown", closeMenu);
     window.addEventListener("keydown", onKeyDown);
     return () => {
-      window.removeEventListener("mousedown", closeMenu);
+      window.removeEventListener("pointerdown", closeMenu);
       window.removeEventListener("keydown", onKeyDown);
     };
   }, [canMutate, contextMenuEntry]);
@@ -348,7 +381,7 @@ function App() {
         dialog: Boolean(dialog),
         moveDialog: Boolean(moveDialogEntry),
         settings: settingsOpen,
-        contextMenu: Boolean(contextMenuEntry),
+        contextMenu: Boolean(contextMenu),
         file: Boolean(openFile),
         explorer: explorerFolderId !== undefined,
         viewEditor: editingViews,
@@ -365,15 +398,16 @@ function App() {
         const current = routeRef.current;
         if (!current) return;
         if (owner === "file") closeToRouteRef.current({
-          pageIndex: current.pageIndex,
+          column: current.column,
+          row: current.row,
           ...(current.explorerFolderId !== undefined ? { explorerFolderId: current.explorerFolderId } : {}),
         });
-        else closeToRouteRef.current({ pageIndex: current.pageIndex });
+        else closeToRouteRef.current({ column: current.column, row: current.row });
       }
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [contextMenuEntry, dialog, editingViews, explorerFolderId, moveDialogEntry, moveDialogSubmitting, openFile, settingsOpen]);
+  }, [contextMenu, dialog, editingViews, explorerFolderId, moveDialogEntry, moveDialogSubmitting, openFile, settingsOpen]);
 
   useEffect(() => {
     if (!notice) return;
@@ -382,17 +416,15 @@ function App() {
   }, [notice]);
 
   function childrenCount(parentId: string | null) {
-    return parentId !== null ? workspace.children.get(parentId)?.length ?? 0 : pages[activePageIndex]?.entries.length ?? 0;
+    return parentId !== null ? workspace.children.get(parentId)?.length ?? 0 : activeDesktopPage.entries.length;
   }
 
   function positionFor(parentId: string | null) {
     if (parentId === null) {
       const pageCount = childrenCount(null);
-      const occupied = pageCount >= responsive.capacity
-        ? []
-        : activeDesktopPage.entries.map((entry) => responsive.positions.get(entry.id) ?? entry.position);
-      const localPosition = nextAvailableDesktopSlot(desktopSize, occupied, pages.length > 1, pageCount);
-      return restoreLogicalPosition(localPosition, activeDesktopPage.segment, desktopSize);
+      const occupied = activeDesktopPage.entries.map((entry) => responsive.positions.get(entry.id) ?? projectLogicalPosition(entry.position, desktopSize).local);
+      const localPosition = nextAvailableDesktopSlot(desktopSize, occupied, responsive.pages.length > 1, pageCount);
+      return restoreLogicalPosition(localPosition, activeSegment, desktopSize);
     }
     const position = nextDesktopPosition(childrenCount(parentId), window.innerHeight);
     return position;
@@ -406,34 +438,31 @@ function App() {
   }
 
   function snapDesktopPosition(position: EntryPosition) {
-    const { column, row } = pagePositionTarget(pages.length, pageColumns, { x: desktopSize.width, y: desktopSize.height }, position);
-    const local = snapPositionInView({
-      x: position.x - column * desktopSize.width,
-      y: position.y - row * desktopSize.height,
-    });
-    return {
-      x: column * desktopSize.width + local.x,
-      y: row * desktopSize.height + local.y,
+    const logical = { x: position.x + minColumn * desktopSize.width, y: position.y + minRow * desktopSize.height };
+    const projection = projectLogicalPosition(logical, desktopSize);
+    const snapped = restoreLogicalPosition(snapPositionInView(projection.local), projection.segment, desktopSize);
+    return { x: snapped.x - minColumn * desktopSize.width, y: snapped.y - minRow * desktopSize.height };
+  }
+
+  function positionAtDesktopPoint(clientX: number, clientY: number) {
+    const bounds = desktopRef.current?.getBoundingClientRect();
+    if (!bounds) return { x: 8, y: 8 };
+    const position = {
+      x: Math.min(Math.max(8, desktopSize.width - FILE_ICON_SIZE.width), Math.max(8, clientX - bounds.left - FILE_ICON_SIZE.width / 2)),
+      y: Math.min(Math.max(8, desktopSize.height - FILE_ICON_SIZE.height), Math.max(8, clientY - bounds.top - FILE_ICON_SIZE.height / 2)),
     };
+    return layoutRef.current.snapToGrid ? snapPositionInView(position) : position;
   }
 
-  function placeRootIds(ids: string[]) {
-    const added = new Set(ids);
-    const current = layoutRef.current;
-    const remaining = current.rootOrder.filter((id) => !added.has(id));
-    const pageIds = new Set(activeDesktopPage.entries.map((entry) => entry.id));
-    const insertionIndex = remaining.reduce((last, id, index) => pageIds.has(id) ? index + 1 : last, remaining.length);
-    applyLayout({ ...current, rootOrder: [...remaining.slice(0, insertionIndex), ...ids, ...remaining.slice(insertionIndex)] });
+  function openDesktopContextMenu(clientX: number, clientY: number) {
+    setSelectedId(null);
+    setContextMenu({ type: "desktop", x: clientX, y: clientY, position: positionAtDesktopPoint(clientX, clientY) });
   }
 
-  function pageIndexForRoot(id: string) {
-    const current = responsiveDesktop(entriesRef.current, layoutRef.current.rootOrder, desktopSize, layoutRef.current.workspaceBreaks);
-    return Math.max(0, current.pages.findIndex((candidate) => candidate.entries.some((entry) => entry.id === id)));
-  }
-
-  function chooseUpload(parentId: string | null) {
+  function chooseUpload(parentId: string | null, position?: EntryPosition) {
     if (!canMutate) return;
     uploadParentRef.current = parentId;
+    uploadPositionRef.current = position;
     uploadRef.current?.click();
   }
 
@@ -460,12 +489,10 @@ function App() {
     if (dialog.type === "create-file" || dialog.type === "create-folder") {
       const parentId = dialog.parentId;
       const created = dialog.type === "create-file"
-        ? await createTextFile(name, parentId, positionFor(parentId))
-        : await createFolder(name, parentId, positionFor(parentId));
+        ? await createTextFile(name, parentId, dialog.position ?? positionFor(parentId))
+        : await createFolder(name, parentId, dialog.position ?? positionFor(parentId));
       setEntries((current) => current.some((entry) => entry.id === created.id) ? current : [...current, created]);
-      if (parentId === null) placeRootIds([created.id]);
       setSelectedId(created.id);
-      if (parentId === null) goToPage(pageIndexForRoot(created.id));
       setNotice(`${created.name} created`);
     } else if (dialog.type === "rename") {
       if (!dialogEntry) { setDialog(null); return; }
@@ -489,32 +516,23 @@ function App() {
     setError("");
     try {
       const offset = childrenCount(parentId);
-      let rootPageCount = offset;
-      let occupied = parentId === null && rootPageCount < responsive.capacity
-        ? activeDesktopPage.entries.map((entry) => responsive.positions.get(entry.id) ?? entry.position)
+      const occupied = parentId === null
+        ? activeDesktopPage.entries.map((entry) => responsive.positions.get(entry.id) ?? projectLogicalPosition(entry.position, desktopSize).local)
         : [];
       const positions = sources.map((_, index) => {
         if (parentId !== null) return nextDesktopPosition(offset + index, window.innerHeight, base);
-        if (rootPageCount >= responsive.capacity) {
-          rootPageCount = 0;
-          occupied = [];
-        }
         const localPosition = base && index === 0
-          ? snapPositionInView(base)
-          : nextAvailableDesktopSlot(desktopSize, occupied, pages.length > 1 || offset + sources.length > responsive.capacity, rootPageCount);
+          ? layoutRef.current.snapToGrid ? snapPositionInView(base) : base
+          : nextAvailableDesktopSlot(desktopSize, occupied, responsive.pages.length > 1, offset + index);
         occupied.push(localPosition);
-        rootPageCount += 1;
-        return restoreLogicalPosition(localPosition, activeDesktopPage.segment, desktopSize);
+        return restoreLogicalPosition(localPosition, activeSegment, desktopSize);
       });
       const imported = await importFiles(sources, parentId, positions);
       setEntries((current) => {
         const existingIds = new Set(current.map((entry) => entry.id));
         return [...current, ...imported.filter((entry) => !existingIds.has(entry.id))];
       });
-      if (parentId === null) placeRootIds(imported.map((entry) => entry.id));
       setSelectedId(imported.at(-1)?.id ?? null);
-      const lastImported = imported.at(-1);
-      if (lastImported && parentId === null) goToPage(pageIndexForRoot(lastImported.id));
       setNotice(`${imported.length} ${imported.length === 1 ? "file" : "files"} added`);
     } catch (importError) {
       setError(importError instanceof Error ? importError.message : "The upload could not be completed.");
@@ -524,38 +542,25 @@ function App() {
   async function handleDesktopMove(entry: DesktopEntry, position: EntryPosition, targetParentId: string | null) {
     if (!canMutate) return false;
     if (targetParentId) {
-      const pending = edgeNavigationRef.current;
-      if (pending?.originalLayout) applyLayout(pending.originalLayout, false);
       return handleMoveTo(entry, targetParentId, true);
     }
     const finalPosition = layoutRef.current.snapToGrid ? snapDesktopPosition(position) : position;
-    const currentDesktop = responsiveDesktop(entriesRef.current, layoutRef.current.rootOrder, desktopSize, layoutRef.current.workspaceBreaks);
-    const currentPages = currentDesktop.pages.length ? currentDesktop.pages : [{ entries: [], key: "empty", segment: { column: 0, row: 0 } }];
-    const target = pagePositionTarget(currentPages.length, currentDesktop.columns, { x: desktopSize.width, y: desktopSize.height }, finalPosition);
-    const targetPage = currentPages[target.index];
-    const localPosition = {
-      x: Math.min(Math.max(8, desktopSize.width - FILE_ICON_SIZE.width), Math.max(8, finalPosition.x - target.column * desktopSize.width)),
-      y: Math.min(Math.max(8, desktopSize.height - FILE_ICON_SIZE.height), Math.max(8, finalPosition.y - target.row * desktopSize.height)),
+    const logicalCanvasPosition = {
+      x: finalPosition.x + minColumn * desktopSize.width,
+      y: finalPosition.y + minRow * desktopSize.height,
     };
-    const logicalPosition = restoreLogicalPosition(localPosition, edgeNavigationRef.current?.targetSegment ?? targetPage.segment, desktopSize);
+    const projected = projectLogicalPosition(logicalCanvasPosition, desktopSize);
+    const targetSegment = edgeNavigationRef.current?.targetSegment ?? projected.segment;
+    const localPosition = {
+      x: Math.min(Math.max(8, desktopSize.width - FILE_ICON_SIZE.width), Math.max(8, logicalCanvasPosition.x - targetSegment.column * desktopSize.width)),
+      y: Math.min(Math.max(8, desktopSize.height - FILE_ICON_SIZE.height), Math.max(8, logicalCanvasPosition.y - targetSegment.row * desktopSize.height)),
+    };
+    const logicalPosition = restoreLogicalPosition(localPosition, targetSegment, desktopSize);
     setEntries((current) => current.map((item) => item.id === entry.id ? { ...item, position: logicalPosition } : item));
     try {
-      const pending = edgeNavigationRef.current;
-      if (pending?.draftEntryId === entry.id) {
-        await moveDesktopEntry(entry.id, logicalPosition, layoutRef.current);
-        return true;
-      }
-      const nextLayout = moveEntryToWorkspaceLayout(layoutRef.current, currentPages, entry.id, target.index, currentDesktop.breakCapacity);
-      if (nextLayout !== layoutRef.current) {
-        applyLayout(nextLayout, false);
-        await moveDesktopEntry(entry.id, logicalPosition, nextLayout);
-        return true;
-      }
       await updateEntryPosition(entry.id, logicalPosition);
       return true;
     } catch {
-      const pending = edgeNavigationRef.current;
-      if (pending?.originalLayout) applyLayout(pending.originalLayout, false);
       setEntries((current) => current.map((item) => item.id === entry.id ? { ...item, position: entry.position } : item));
       setError("The new icon position could not be saved.");
       return false;
@@ -569,7 +574,6 @@ function App() {
       if (entry.parentId === parentId) return true;
       const moved = await moveEntry(entry.id, parentId, positionFor(parentId));
       setEntries((current) => current.map((item) => item.id === moved.id ? moved : item));
-      if (entry.parentId !== null && parentId === null) placeRootIds([moved.id]);
       setSelectedId(null);
       setContextMenu(null);
       setNotice(`${entry.name} moved`);
@@ -640,16 +644,15 @@ function App() {
     setNotice(syncStatus === "local" ? "Changes saved locally" : "Changes synced");
   }
 
-  function goToPage(pageIndex: number, mode: "push" | "replace" = "push") {
-    const current = responsiveDesktop(entriesRef.current, layoutRef.current.rootOrder, desktopSize, layoutRef.current.workspaceBreaks);
-    const pageCount = Math.max(1, current.pages.length);
-    const index = Math.max(0, Math.min(pageCount - 1, pageIndex));
+  function goToSegment(segment: { column: number; row: number }, mode: "push" | "replace" = "push") {
     const currentRoute = routeRef.current;
     if (!currentRoute) return;
-    const column = index % current.columns;
-    const row = Math.floor(index / current.columns);
-    if (canvasRef.current) canvasRef.current.style.transform = `translate3d(${-column * desktopSize.width}px, ${-row * desktopSize.height}px, 0)`;
-    navigateRoute({ ...currentRoute, pageIndex: index }, mode);
+    if (canvasRef.current) {
+      const nextMinColumn = Math.min(responsive.minColumn, segment.column);
+      const nextMinRow = Math.min(responsive.minRow, segment.row);
+      canvasRef.current.style.transform = `translate3d(${-(segment.column - nextMinColumn) * desktopSize.width}px, ${-(segment.row - nextMinRow) * desktopSize.height}px, 0)`;
+    }
+    navigateRoute({ ...currentRoute, ...segment }, mode);
   }
 
   function handleDesktopPointerDown(event: React.PointerEvent<HTMLElement>) {
@@ -657,7 +660,24 @@ function App() {
     const target = event.target as Element;
     if (target.closest(".file-icon, .empty-state__actions")) return;
     event.preventDefault();
-    swipeRef.current = { axis: null, pointerId: event.pointerId, startIndex: activePageIndex, startTime: performance.now(), startX: event.clientX, startY: event.clientY, x: event.clientX, y: event.clientY };
+    swipeRef.current = { axis: null, pointerId: event.pointerId, startSegment: activeSegment, startTime: performance.now(), startX: event.clientX, startY: event.clientY, x: event.clientX, y: event.clientY };
+    if (event.pointerType !== "touch") return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const press = {
+      activated: false,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      timer: 0,
+    };
+    press.timer = window.setTimeout(() => {
+      if (desktopPressRef.current !== press) return;
+      press.activated = true;
+      swipeRef.current = null;
+      suppressClickRef.current = true;
+      openDesktopContextMenu(press.startX, press.startY);
+    }, DESKTOP_LONG_PRESS_MS);
+    desktopPressRef.current = press;
   }
 
   function handleIconDragAtEdge(entry: DesktopEntry, clientX: number, clientY: number) {
@@ -678,62 +698,32 @@ function App() {
     }
     const now = performance.now();
     if (edgeDragRef.current.direction === edge.direction && now - edgeDragRef.current.time < 520) return null;
-    const previousIndex = activePageIndex;
-    const previousColumn = previousIndex % pageColumns;
-    const previousRow = Math.floor(previousIndex / pageColumns);
-    const neighborIndex = edge.direction === "left" ? previousIndex - 1
-      : edge.direction === "right" ? previousIndex + 1
-        : edge.direction === "up" ? previousIndex - pageColumns
-          : previousIndex + pageColumns;
-    const hasNeighbor = edge.direction === "left" ? page.column > 0
-      : edge.direction === "right" ? page.column < pageColumns - 1 && neighborIndex < pages.length
-        : edge.direction === "up" ? neighborIndex >= 0
-          : neighborIndex < pages.length;
-    let targetIndex = neighborIndex;
-    let targetColumns = pageColumns;
-    let targetRows = pageRows;
-    let targetPages = pages;
-    if (!hasNeighbor) {
-      const pending = edgeNavigationRef.current;
-      if (pending?.draftEntryId) return null;
-      const originalLayout = layoutRef.current;
-      const draftLayout = createEdgeWorkspaceLayout(originalLayout, pages, entry.id, activePageIndex, edge.direction === "left" || edge.direction === "up", responsive.breakCapacity);
-      const draftDesktop = responsiveDesktop(entriesRef.current, draftLayout.rootOrder, desktopSize, draftLayout.workspaceBreaks);
-      targetPages = draftDesktop.pages;
-      targetIndex = draftDesktop.pages.findIndex((candidate) => candidate.entries.some((item) => item.id === entry.id));
-      if (targetIndex < 0 || draftDesktop.pages.length <= responsive.pages.length) return null;
-      if (!edgeNavigationRef.current && routeRef.current) edgeNavigationRef.current = { route: routeRef.current, historyState: window.history.state };
-      if (edgeNavigationRef.current) {
-        edgeNavigationRef.current.originalLayout = originalLayout;
-        edgeNavigationRef.current.draftEntryId = entry.id;
-      }
-      applyLayout(draftLayout, false);
-      targetColumns = draftDesktop.columns;
-      targetRows = draftDesktop.rows;
-    } else if (!edgeNavigationRef.current && routeRef.current) {
-      edgeNavigationRef.current = { route: routeRef.current, historyState: window.history.state };
+    const previousSegment = edgeNavigationRef.current?.targetSegment ?? activeSegment;
+    const targetSegment = {
+      column: previousSegment.column + (edge.direction === "left" ? -1 : edge.direction === "right" ? 1 : 0),
+      row: previousSegment.row + (edge.direction === "up" ? -1 : edge.direction === "down" ? 1 : 0),
+    };
+    if (!edgeNavigationRef.current && routeRef.current) {
+      edgeNavigationRef.current = { route: routeRef.current, historyState: window.history.state, draftEntryId: entry.id };
     }
-    targetIndex = Math.max(0, targetIndex);
-    const previousSegment = pages[previousIndex]?.segment ?? { column: 0, row: 0 };
-    const targetSegment = targetPages[targetIndex]?.segment ?? previousSegment;
     const pending = edgeNavigationRef.current;
-    if (pending) {
-      pending.targetSegment = destinationSurfaceSegment(
-        pending.targetSegment ?? previousSegment,
-        previousSegment,
-        targetSegment,
-        edge.direction,
-      );
-    }
-    const nextColumn = targetIndex % targetColumns;
-    const nextRow = Math.floor(targetIndex / targetColumns);
+    if (!pending || pending.draftEntryId !== entry.id) return null;
+    pending.targetSegment = targetSegment;
+    const targetMinColumn = Math.min(responsive.minColumn, targetSegment.column);
+    const targetMinRow = Math.min(responsive.minRow, targetSegment.row);
+    const targetMaxColumn = Math.max(responsive.maxColumn, targetSegment.column);
+    const targetMaxRow = Math.max(responsive.maxRow, targetSegment.row);
+    const previousViewColumn = previousSegment.column - minColumn;
+    const previousViewRow = previousSegment.row - minRow;
+    const targetViewColumn = targetSegment.column - targetMinColumn;
+    const targetViewRow = targetSegment.row - targetMinRow;
     edgeDragRef.current = { direction: edge.direction, time: now };
-    goToPage(targetIndex, "replace");
+    goToSegment(targetSegment, "replace");
     return {
-      deltaX: (nextColumn - previousColumn) * desktopSize.width,
-      deltaY: (nextRow - previousRow) * desktopSize.height,
-      maxX: Math.max(8, targetColumns * desktopSize.width - FILE_ICON_SIZE.width),
-      maxY: Math.max(8, targetRows * desktopSize.height - FILE_ICON_SIZE.height),
+      deltaX: (targetViewColumn - previousViewColumn) * desktopSize.width,
+      deltaY: (targetViewRow - previousViewRow) * desktopSize.height,
+      maxX: Math.max(8, (targetMaxColumn - targetMinColumn + 1) * desktopSize.width - FILE_ICON_SIZE.width),
+      maxY: Math.max(8, (targetMaxRow - targetMinRow + 1) * desktopSize.height - FILE_ICON_SIZE.height),
     };
   }
 
@@ -745,7 +735,6 @@ function App() {
     const finalRoute = routeRef.current;
     window.history.replaceState(pending.historyState, "", formatDesktopRoute(pending.route));
     if (cancelled || !finalRoute) {
-      if (pending.originalLayout) applyLayout(pending.originalLayout, false);
       setCurrentRoute(pending.route);
       return;
     }
@@ -753,6 +742,17 @@ function App() {
   }
 
   function handleDesktopPointerMove(event: React.PointerEvent<HTMLElement>) {
+    const press = desktopPressRef.current;
+    if (press?.pointerId === event.pointerId) {
+      if (press.activated) {
+        event.preventDefault();
+        return;
+      }
+      if (Math.hypot(event.clientX - press.startX, event.clientY - press.startY) >= 7) {
+        window.clearTimeout(press.timer);
+        desktopPressRef.current = null;
+      }
+    }
     const swipe = swipeRef.current;
     if (!swipe || swipe.pointerId !== event.pointerId || !canvasRef.current) return;
     swipe.x = event.clientX;
@@ -765,16 +765,25 @@ function App() {
       canvasRef.current.dataset.swiping = "true";
       event.currentTarget.setPointerCapture(event.pointerId);
     }
-    const startColumn = swipe.startIndex % pageColumns;
-    const startRow = Math.floor(swipe.startIndex / pageColumns);
+    const startColumn = swipe.startSegment.column - minColumn;
+    const startRow = swipe.startSegment.row - minRow;
     const x = -startColumn * desktopSize.width + (swipe.axis === "x" ? deltaX : 0);
     const y = -startRow * desktopSize.height + (swipe.axis === "y" ? deltaY : 0);
-    const clampedX = Math.max(-(pageColumns - 1) * desktopSize.width, Math.min(0, x));
-    const clampedY = Math.max(-(pageRows - 1) * desktopSize.height, Math.min(0, y));
-    canvasRef.current.style.transform = `translate3d(${clampedX}px, ${clampedY}px, 0)`;
+    canvasRef.current.style.transform = `translate3d(${x}px, ${y}px, 0)`;
   }
 
   function finishDesktopSwipe(event: React.PointerEvent<HTMLElement>) {
+    const press = desktopPressRef.current;
+    if (press?.pointerId === event.pointerId) {
+      window.clearTimeout(press.timer);
+      desktopPressRef.current = null;
+      if (press.activated) {
+        if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+        swipeRef.current = null;
+        window.setTimeout(() => { suppressClickRef.current = false; }, 0);
+        return;
+      }
+    }
     const swipe = swipeRef.current;
     if (!swipe || swipe.pointerId !== event.pointerId) return;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
@@ -782,27 +791,43 @@ function App() {
     const distance = swipe.axis === "x" ? desktopSize.width : desktopSize.height;
     const velocity = Math.abs(delta) / Math.max(1, performance.now() - swipe.startTime);
     const advance = swipe.axis && (Math.abs(delta) > distance * 0.16 || velocity > 0.45) ? (delta < 0 ? 1 : -1) : 0;
-    let nextIndex = swipe.startIndex;
-    if (swipe.axis === "x") nextIndex += advance;
-    if (swipe.axis === "y") nextIndex += advance * pageColumns;
+    const nextSegment = { ...swipe.startSegment };
+    if (swipe.axis === "x") nextSegment.column += advance;
+    if (swipe.axis === "y") nextSegment.row += advance;
     suppressClickRef.current = swipe.axis !== null;
     window.setTimeout(() => { suppressClickRef.current = false; }, 0);
     swipeRef.current = null;
     if (canvasRef.current) delete canvasRef.current.dataset.swiping;
-    nextIndex = Math.max(0, Math.min(pages.length - 1, nextIndex));
-    goToPage(nextIndex);
+    goToSegment(nextSegment);
   }
 
-  function movePage(pageKey: string, targetIndex: number, persist = true) {
-    const current = layoutRef.current;
-    const currentPages = responsiveDesktop(entriesRef.current, current.rootOrder, desktopSize, current.workspaceBreaks).pages;
-    const sourceIndex = currentPages.findIndex((candidate) => candidate.key === pageKey);
-    const boundedTarget = Math.max(0, Math.min(currentPages.length - 1, targetIndex));
-    if (sourceIndex < 0 || sourceIndex === boundedTarget) return;
-    const chunks = currentPages.map((candidate) => candidate.entries.map((entry) => entry.id));
-    const [moved] = chunks.splice(sourceIndex, 1);
-    chunks.splice(boundedTarget, 0, moved);
-    applyLayout(layoutForPageOrder(current, chunks, responsive.breakCapacity), persist);
+  function previewPageMove(pageKey: string, targetIndex: number) {
+    const currentPages = responsiveDesktop(entriesRef.current, desktopSize).pages;
+    const updates = reorderDesktopPages(currentPages, pageKey, targetIndex, desktopSize);
+    if (!updates.length) return null;
+    const positions = new Map(updates.map((update) => [update.entryId, update.position]));
+    const targetKey = currentPages[Math.max(0, Math.min(currentPages.length - 1, targetIndex))]?.key ?? pageKey;
+    const next = entriesRef.current.map((entry) => positions.has(entry.id) ? { ...entry, position: positions.get(entry.id)! } : entry);
+    entriesRef.current = next;
+    setEntries(next);
+    return targetKey;
+  }
+
+  function restoreArrangement(initialPositions: Array<{ entryId: string; position: EntryPosition }>) {
+    const initial = new Map(initialPositions.map((update) => [update.entryId, update.position]));
+    const next = entriesRef.current.map((entry) => initial.has(entry.id) ? { ...entry, position: initial.get(entry.id)! } : entry);
+    entriesRef.current = next;
+    setEntries(next);
+  }
+
+  function persistArrangement(initialPositions: Array<{ entryId: string; position: EntryPosition }>) {
+    const updates = entriesRef.current
+      .filter((entry) => entry.parentId === null)
+      .map((entry) => ({ entryId: entry.id, position: entry.position }));
+    void updateDesktopPositions(updates).catch(() => {
+      restoreArrangement(initialPositions);
+      setError("The workspace arrangement could not be saved.");
+    });
   }
 
   function startMinimapPress(event: React.PointerEvent<HTMLButtonElement>, pageKey: string) {
@@ -814,7 +839,9 @@ function App() {
       startY: event.clientY,
       timer: 0,
       pageKey,
-      initialLayout: structuredClone(layoutRef.current),
+      initialPositions: entriesRef.current
+        .filter((entry) => entry.parentId === null)
+        .map((entry) => ({ entryId: entry.id, position: { ...entry.position } })),
     };
     press.timer = window.setTimeout(() => {
       press.activated = true;
@@ -840,9 +867,13 @@ function App() {
       .map((element) => element.closest<HTMLElement>("[data-page-key]"))
       .find(Boolean);
     if (!target?.dataset.pageKey) return;
-    const currentPages = responsiveDesktop(entriesRef.current, layoutRef.current.rootOrder, desktopSize, layoutRef.current.workspaceBreaks).pages;
+    const currentPages = responsiveDesktop(entriesRef.current, desktopSize).pages;
     const targetIndex = currentPages.findIndex((candidate) => candidate.key === target.dataset.pageKey);
-    movePage(press.pageKey, targetIndex, false);
+    const targetKey = previewPageMove(press.pageKey, targetIndex);
+    if (targetKey) {
+      press.pageKey = targetKey;
+      setDraggedPageKey(targetKey);
+    }
   }
 
   function finishMinimapPress(event: React.PointerEvent<HTMLButtonElement>, cancelled = false) {
@@ -852,16 +883,16 @@ function App() {
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
     minimapPointerRef.current = null;
     if (press.activated && cancelled) {
-      applyLayout(press.initialLayout, false);
+      restoreArrangement(press.initialPositions);
       setDraggedPageKey(null);
     } else if (press.activated) {
-      applyLayout(layoutRef.current);
       setDraggedPageKey(null);
       suppressClickRef.current = true;
       window.setTimeout(() => { suppressClickRef.current = false; }, 0);
+      persistArrangement(press.initialPositions);
     } else if (!cancelled) {
-      const currentPages = responsiveDesktop(entriesRef.current, layoutRef.current.rootOrder, desktopSize, layoutRef.current.workspaceBreaks).pages;
-      goToPage(Math.max(0, currentPages.findIndex((candidate) => candidate.key === press.pageKey)));
+      const selectedPage = responsiveDesktop(entriesRef.current, desktopSize).pages.find((candidate) => candidate.key === press.pageKey);
+      if (selectedPage) goToSegment(selectedPage.segment);
     }
   }
 
@@ -908,7 +939,17 @@ function App() {
           event.stopPropagation();
         }}
         onClick={(event) => { if (!(event.target as Element).closest(".file-icon, .empty-state__actions")) setSelectedId(null); }}
-        onContextMenu={(event) => { if (event.target === event.currentTarget) event.preventDefault(); }}
+        onContextMenu={(event) => {
+          if ((event.target as Element).closest(".file-icon, .empty-state__actions")) return;
+          event.preventDefault();
+          const press = desktopPressRef.current;
+          if (press) {
+            window.clearTimeout(press.timer);
+            press.activated = true;
+          }
+          swipeRef.current = null;
+          openDesktopContextMenu(event.clientX, event.clientY);
+        }}
         onDragOver={(event) => { if (!canMutate) return; event.preventDefault(); event.currentTarget.dataset.dropActive = "true"; }}
         onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) delete event.currentTarget.dataset.dropActive; }}
         onDrop={(event) => {
@@ -928,9 +969,9 @@ function App() {
       >
         <div className="wallpaper-grain" aria-hidden="true" />
         <div className="desktop-canvas" ref={canvasRef} style={{ width: pageColumns * desktopSize.width, height: pageRows * desktopSize.height, transform: `translate3d(${-page.column * desktopSize.width}px, ${-page.row * desktopSize.height}px, 0)` }}>
-          {pages.flatMap((desktopPage, pageIndex) => desktopPage.entries.map((entry) => {
-            const viewColumn = pageIndex % pageColumns;
-            const viewRow = Math.floor(pageIndex / pageColumns);
+          {responsive.pages.flatMap((desktopPage) => desktopPage.entries.map((entry) => {
+            const viewColumn = desktopPage.segment.column - minColumn;
+            const viewRow = desktopPage.segment.row - minRow;
             const projectedPosition = responsive.positions.get(entry.id) ?? entry.position;
             const renderedEntry = {
               ...entry,
@@ -953,7 +994,7 @@ function App() {
               onContextMenu={(event) => {
                 event.preventDefault();
                 setSelectedId(entry.id);
-                setContextMenu({ entryId: entry.id, x: event.clientX, y: event.clientY });
+                setContextMenu({ type: "entry", entryId: entry.id, x: event.clientX, y: event.clientY });
               }}
             />;
           }))}
@@ -975,7 +1016,7 @@ function App() {
         <div className="drop-message" aria-hidden="true"><UploadSimple size={25} /> Drop files to store them privately</div>
       </section>
 
-      {(pageColumns > 1 || pageRows > 1) && (
+      {(pageColumns > 1 || pageRows > 1 || responsive.pages.length > 1) && (
         <nav className="desktop-minimap" data-editing={editingViews || undefined} data-obscured={minimapObscured || undefined} aria-label="Desktop workspaces">
           {editingViews && (
             <div className="desktop-minimap__toolbar">
@@ -984,21 +1025,23 @@ function App() {
             </div>
           )}
           <div className="desktop-minimap__grid" style={{ "--minimap-columns": pageColumns, "--minimap-rows": pageRows } as React.CSSProperties}>
-            {pages.map((desktopPage, index) => {
-              const column = index % pageColumns;
-              const row = Math.floor(index / pageColumns);
+            {pages.map((desktopPage) => {
+              const column = desktopPage.segment.column - minColumn;
+              const row = desktopPage.segment.row - minRow;
               const pageKey = desktopPage.key;
+              const actualIndex = responsive.pages.findIndex((candidate) => candidate.key === pageKey);
+              const isActualPage = actualIndex >= 0;
               return (
-                <div className="desktop-minimap__slot" data-page-key={pageKey} data-dragging={draggedPageKey === pageKey || undefined} key={pageKey}>
+                <div className="desktop-minimap__slot" data-page-key={isActualPage ? pageKey : undefined} data-dragging={draggedPageKey === pageKey || undefined} key={pageKey} style={{ gridColumn: column + 1, gridRow: row + 1 }}>
                   <button
                     className="desktop-minimap__page"
-                    data-active={index === activePageIndex || undefined}
+                    data-active={pageKey === activePageKey || undefined}
                     type="button"
-                    aria-label={`Workspace ${row + 1}, ${column + 1}${editingViews ? ", use arrow keys to move" : ", long press to arrange"}`}
-                    aria-current={index === activePageIndex ? "true" : undefined}
-                    onClick={(event) => { if (event.detail === 0 && !editingViews) goToPage(index); }}
-                    onContextMenu={(event) => { event.preventDefault(); setEditingViews(true); }}
-                    onPointerDown={(event) => startMinimapPress(event, pageKey)}
+                    aria-label={`Workspace ${desktopPage.segment.column}, ${desktopPage.segment.row}${editingViews && isActualPage ? ", use arrow keys to move" : isActualPage ? ", long press to arrange" : ""}`}
+                    aria-current={pageKey === activePageKey ? "true" : undefined}
+                    onClick={(event) => { if (event.detail === 0 && !editingViews) goToSegment(desktopPage.segment); }}
+                    onContextMenu={isActualPage ? (event) => { event.preventDefault(); setEditingViews(true); } : undefined}
+                    onPointerDown={isActualPage ? (event) => startMinimapPress(event, pageKey) : undefined}
                     onPointerMove={moveMinimapPress}
                     onPointerUp={(event) => finishMinimapPress(event)}
                     onPointerCancel={(event) => finishMinimapPress(event, true)}
@@ -1006,12 +1049,16 @@ function App() {
                       if ((event.shiftKey && event.key === "F10") || event.key === "ContextMenu") {
                         event.preventDefault();
                         setEditingViews(true);
-                      } else if (editingViews && (event.key === "ArrowLeft" || event.key === "ArrowUp")) {
+                      } else if (editingViews && isActualPage && (event.key === "ArrowLeft" || event.key === "ArrowUp")) {
                         event.preventDefault();
-                        movePage(pageKey, index - 1);
-                      } else if (editingViews && (event.key === "ArrowRight" || event.key === "ArrowDown")) {
+                        const initial = entriesRef.current.filter((entry) => entry.parentId === null).map((entry) => ({ entryId: entry.id, position: { ...entry.position } }));
+                        const targetKey = previewPageMove(pageKey, actualIndex - 1);
+                        if (targetKey) { setDraggedPageKey(targetKey); persistArrangement(initial); }
+                      } else if (editingViews && isActualPage && (event.key === "ArrowRight" || event.key === "ArrowDown")) {
                         event.preventDefault();
-                        movePage(pageKey, index + 1);
+                        const initial = entriesRef.current.filter((entry) => entry.parentId === null).map((entry) => ({ entryId: entry.id, position: { ...entry.position } }));
+                        const targetKey = previewPageMove(pageKey, actualIndex + 1);
+                        if (targetKey) { setDraggedPageKey(targetKey); persistArrangement(initial); }
                       }
                     }}
                   >
@@ -1024,12 +1071,14 @@ function App() {
               );
             })}
           </div>
-          <span className="visually-hidden" aria-live="polite">Desktop workspace row {page.row + 1} of {pageRows}, column {page.column + 1} of {pageColumns}</span>
+          <span className="visually-hidden" aria-live="polite">Desktop workspace column {activeSegment.column}, row {activeSegment.row}</span>
         </nav>
       )}
 
       <input ref={uploadRef} className="visually-hidden" type="file" multiple onChange={(event) => {
-        void handleImport(Array.from(event.target.files ?? []), uploadParentRef.current);
+        const position = uploadPositionRef.current;
+        uploadPositionRef.current = undefined;
+        void handleImport(Array.from(event.target.files ?? []), uploadParentRef.current, position);
         event.target.value = "";
       }} />
 
@@ -1041,19 +1090,19 @@ function App() {
           folder={explorerFolder}
           breadcrumbs={breadcrumbs}
           children={explorerChildren}
-          onClose={() => { const current = routeRef.current; if (current) closeToRoute({ pageIndex: current.pageIndex }); }}
+          onClose={() => { const current = routeRef.current; if (current) closeToRoute({ column: current.column, row: current.row }); }}
           onNavigate={(folder) => { const current = routeRef.current; if (current) navigateRoute({ ...current, explorerFolderId: folder?.id ?? null, fileId: undefined }); }}
           onOpen={handleOpen}
           onCreateFolder={(parentId) => setDialog({ type: "create-folder", parentId })}
           onCreateFile={(parentId) => setDialog({ type: "create-file", parentId })}
           onUpload={chooseUpload}
           onMove={(entry, parentId) => void handleMoveTo(entry, parentId)}
-          onContextMenu={(entry, x, y) => setContextMenu({ entryId: entry.id, x, y })}
+          onContextMenu={(entry, x, y) => setContextMenu({ type: "entry", entryId: entry.id, x, y })}
           readOnly={!canMutate}
         />
       )}
 
-      {contextMenu && contextMenuEntry && (
+      {contextMenu?.type === "entry" && contextMenuEntry && (
         <ContextMenu
           menu={contextMenu}
           entry={contextMenuEntry}
@@ -1062,6 +1111,28 @@ function App() {
           onDownload={contextMenuEntry.kind === "file" ? () => void download(contextMenuEntry) : undefined}
           onMove={() => { setMoveDialogSubmitting(false); setMoveDialogEntryId(contextMenuEntry.id); setContextMenu(null); }}
           onDelete={() => { setDialog({ type: "delete", entryId: contextMenuEntry.id }); setContextMenu(null); }}
+          readOnly={!canMutate}
+        />
+      )}
+      {contextMenu?.type === "desktop" && (
+        <DesktopContextMenu
+          menu={contextMenu}
+          onCreateFile={() => {
+            setDialog({ type: "create-file", parentId: null, position: restoreLogicalPosition(contextMenu.position, activeSegment, desktopSize) });
+            setContextMenu(null);
+          }}
+          onCreateFolder={() => {
+            setDialog({ type: "create-folder", parentId: null, position: restoreLogicalPosition(contextMenu.position, activeSegment, desktopSize) });
+            setContextMenu(null);
+          }}
+          onUpload={() => {
+            chooseUpload(null, contextMenu.position);
+            setContextMenu(null);
+          }}
+          onSettings={() => {
+            setSettingsOpen(true);
+            setContextMenu(null);
+          }}
           readOnly={!canMutate}
         />
       )}
@@ -1103,7 +1174,8 @@ function App() {
             const current = routeRef.current;
             if (!current) return;
             closeToRoute({
-              pageIndex: current.pageIndex,
+              column: current.column,
+              row: current.row,
               ...(current.explorerFolderId !== undefined ? { explorerFolderId: current.explorerFolderId } : {}),
             });
           }}

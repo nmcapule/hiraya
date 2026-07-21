@@ -1,4 +1,4 @@
-import { DEFAULT_WALLPAPER, type DesktopEntry, type DesktopLayout, type EditorSettings, type EntryPosition, type FileEntry, type FolderEntry } from "../types";
+import { DEFAULT_WALLPAPER, type DesktopEntry, type DesktopLayout, type DesktopPositionUpdate, type EditorSettings, type EntryPosition, type FileEntry, type FolderEntry } from "../types";
 import { assertUniqueName, namesMatch, validateEntryName } from "./entry-validation";
 import { parseBundledSeededManifest, type SeededManifest } from "./seeded-manifest";
 import {
@@ -6,17 +6,16 @@ import {
   decodeManifest,
   emptySyncState,
   manifestLayout,
-  parseManifestV11,
-  removeRootsFromLayout,
+  parseManifestV12,
   type DesktopSyncState,
-  type PersistedManifestV11,
+  type PersistedManifestV12,
 } from "./manifest-codec";
-import { parseLayout, parsePosition } from "./contracts";
+import { parseLayout, parsePosition, parseRootDesktopPositions } from "./contracts";
 
 const MANIFEST_NAME = ".hiraya-manifest.json";
 const FILES_DIRECTORY = "files";
 
-type Manifest = PersistedManifestV11;
+type Manifest = PersistedManifestV12;
 export type { DesktopSyncState } from "./manifest-codec";
 
 export type DesktopSnapshot = {
@@ -62,7 +61,7 @@ async function writeManifest(manifest: Manifest) {
 }
 
 function assertValidManifest(manifest: Manifest) {
-  parseManifestV11(manifest);
+  parseManifestV12(manifest);
 }
 
 async function createManifestFromSeeded(seeded: SeededManifest): Promise<Manifest> {
@@ -84,10 +83,8 @@ async function createManifestFromSeeded(seeded: SeededManifest): Promise<Manifes
     return file;
   });
   const created: Manifest = {
-    version: 11,
+    version: 12,
     entries,
-    rootOrder: parsedSeeded.layout.rootOrder,
-    workspaceBreaks: parsedSeeded.layout.workspaceBreaks,
     snapToGrid: parsedSeeded.layout.snapToGrid,
     wallpaper: parsedSeeded.layout.wallpaper,
     editorSettings: parsedSeeded.editorSettings,
@@ -100,7 +97,6 @@ async function createManifestFromSeeded(seeded: SeededManifest): Promise<Manifes
 }
 
 async function readManifest(
-  viewport: EntryPosition = { x: window.innerWidth, y: Math.max(1, window.innerHeight - 44) },
   seeded: SeededManifest | null = null,
 ): Promise<Manifest> {
   const root = await getRoot();
@@ -108,13 +104,13 @@ async function readManifest(
   try {
     const handle = await root.getFileHandle(MANIFEST_NAME);
     const file = await handle.getFile();
-    const decoded = decodeManifest(JSON.parse(await file.text()), viewport, () => crypto.randomUUID());
+    const decoded = decodeManifest(JSON.parse(await file.text()));
     if (decoded.migrated) await writeManifest(decoded.manifest);
     return decoded.manifest;
   } catch (error) {
     if (error instanceof DOMException && error.name === "NotFoundError") {
       if (seeded) return createManifestFromSeeded(seeded);
-       const created: Manifest = { version: 11, entries: [], rootOrder: [], workspaceBreaks: [], snapToGrid: false, wallpaper: DEFAULT_WALLPAPER, editorSettings: DEFAULT_EDITOR_SETTINGS, sync: emptySyncState() };
+       const created: Manifest = { version: 12, entries: [], snapToGrid: false, wallpaper: DEFAULT_WALLPAPER, editorSettings: DEFAULT_EDITOR_SETTINGS, sync: emptySyncState() };
       await writeManifest(created);
       return created;
     }
@@ -169,8 +165,8 @@ function serializeStorage<T>(operation: () => Promise<T>): Promise<T> {
   return next;
 }
 
-async function loadDesktopUnsafe(viewport: EntryPosition, seeded: SeededManifest | null = null): Promise<DesktopSnapshot> {
-  desktopLoad ??= readManifest(viewport, seeded).catch((error) => {
+async function loadDesktopUnsafe(_viewport: EntryPosition, seeded: SeededManifest | null = null): Promise<DesktopSnapshot> {
+  desktopLoad ??= readManifest(seeded).catch((error) => {
     desktopLoad = null;
     throw error;
   });
@@ -184,10 +180,8 @@ async function applyRemoteDesktopUnsafe(snapshot: DesktopSnapshot, contents: Map
     return { entries: current.entries, layout: manifestLayout(current), editorSettings: current.editorSettings, sync: current.sync };
   }
   const next: Manifest = {
-    version: 11,
+    version: 12,
     entries: snapshot.entries,
-    rootOrder: snapshot.layout.rootOrder,
-    workspaceBreaks: snapshot.layout.workspaceBreaks,
     snapToGrid: snapshot.layout.snapToGrid,
     wallpaper: snapshot.layout.wallpaper,
     editorSettings: snapshot.editorSettings,
@@ -227,7 +221,8 @@ async function saveEditorSettingsUnsafe(settings: EditorSettings) {
 
 async function saveDesktopLayoutUnsafe(layout: DesktopLayout) {
   const manifest = await readManifest();
-  const next = { ...manifest, rootOrder: layout.rootOrder, workspaceBreaks: layout.workspaceBreaks, snapToGrid: layout.snapToGrid, wallpaper: layout.wallpaper };
+  const parsed = parseLayout(layout);
+  const next = { ...manifest, snapToGrid: parsed.snapToGrid, wallpaper: parsed.wallpaper };
   assertValidManifest(next);
   await writeManifest(next);
 }
@@ -246,10 +241,10 @@ async function createTextFileUnsafe(nameValue: string, parentId: string | null, 
     mimeType: "text/plain",
     size: 0,
     modifiedAt: Date.now(),
-    position,
+    position: parsePosition(position),
   };
   await writeContent(file.id, "");
-  await writeManifest({ ...manifest, entries: [...manifest.entries, file], rootOrder: parentId === null ? [...manifest.rootOrder, file.id] : manifest.rootOrder });
+  await writeManifest({ ...manifest, entries: [...manifest.entries, file] });
   return file;
 }
 
@@ -265,9 +260,9 @@ async function createFolderUnsafe(nameValue: string, parentId: string | null, po
     name,
     parentId,
     modifiedAt: Date.now(),
-    position,
+    position: parsePosition(position),
   };
-  await writeManifest({ ...manifest, entries: [...manifest.entries, folder], rootOrder: parentId === null ? [...manifest.rootOrder, folder.id] : manifest.rootOrder });
+  await writeManifest({ ...manifest, entries: [...manifest.entries, folder] });
   return folder;
 }
 
@@ -277,6 +272,7 @@ async function importFilesUnsafe(
   positions: EntryPosition[],
 ): Promise<FileEntry[]> {
   if (files.length !== positions.length) throw new Error("Each imported file needs a desktop position.");
+  const parsedPositions = positions.map(parsePosition);
   const manifest = await readManifest();
   findParent(manifest.entries, parentId);
   const names = files.map((file) => validateEntryName(file.name));
@@ -296,13 +292,12 @@ async function importFilesUnsafe(
     mimeType: source.type || "application/octet-stream",
     size: source.size,
     modifiedAt: source.lastModified || Date.now(),
-    position: positions[index],
+    position: parsedPositions[index],
   }));
   for (const [index, file] of imported.entries()) await writeContent(file.id, files[index]);
   await writeManifest({
     ...manifest,
     entries: [...manifest.entries, ...imported],
-    rootOrder: parentId === null ? [...manifest.rootOrder, ...imported.map((entry) => entry.id)] : manifest.rootOrder,
   });
   return imported;
 }
@@ -335,13 +330,10 @@ async function deleteEntryUnsafe(id: string): Promise<DesktopEntry[]> {
     }
   }
   const deleted = manifest.entries.filter((entry) => deletedIds.has(entry.id));
-  const layout = removeRootsFromLayout(manifestLayout(manifest), deletedIds);
-
   // Remove visible metadata first; failed blob cleanup can then only leave invisible orphans.
   await writeManifest({
     ...manifest,
     entries: manifest.entries.filter((entry) => !deletedIds.has(entry.id)),
-    ...layout,
   });
   try {
     const directory = await getFilesDirectory();
@@ -374,47 +366,31 @@ async function moveEntryUnsafe(id: string, parentId: string | null, position: En
   }
   assertUniqueName(manifest.entries, existing.name, parentId, id);
 
-  const moved: DesktopEntry = { ...existing, parentId, position, modifiedAt: Date.now() };
-  const removedFromRoot = existing.parentId === null && parentId !== null;
-  const normalized = removedFromRoot ? removeRootsFromLayout(manifestLayout(manifest), new Set([id])) : {
-    rootOrder: manifest.rootOrder.filter((entryId) => entryId !== id),
-    workspaceBreaks: manifest.workspaceBreaks,
-  };
-  const rootOrder = normalized.rootOrder;
-  if (parentId === null) rootOrder.push(id);
+  const moved: DesktopEntry = { ...existing, parentId, position: parsePosition(position), modifiedAt: Date.now() };
   await writeManifest({
     ...manifest,
     entries: manifest.entries.map((entry) => (entry.id === id ? moved : entry)),
-    rootOrder,
-    workspaceBreaks: normalized.workspaceBreaks,
   });
   return moved;
 }
 
-async function moveDesktopEntryUnsafe(id: string, positionValue: EntryPosition, layout: DesktopLayout) {
+async function updateDesktopPositionsUnsafe(positionValues: DesktopPositionUpdate[]) {
   const manifest = await readManifest();
-  const existing = getEntry(manifest.entries, id);
-  if (existing.parentId !== null) throw new Error("Desktop placement requires a root entry.");
-  const position = parsePosition(positionValue);
-  const parsedLayout = parseLayout(layout);
-  const updated: DesktopEntry = { ...existing, position };
+  const positions = parseRootDesktopPositions(positionValues, manifest.entries);
+  const byId = new Map(positions.map(({ entryId, position }) => [entryId, position]));
   const next: Manifest = {
     ...manifest,
-    entries: manifest.entries.map((entry) => (entry.id === id ? updated : entry)),
-    rootOrder: parsedLayout.rootOrder,
-    workspaceBreaks: parsedLayout.workspaceBreaks,
-    snapToGrid: parsedLayout.snapToGrid,
-    wallpaper: parsedLayout.wallpaper,
+    entries: manifest.entries.map((entry) => byId.has(entry.id) ? { ...entry, position: byId.get(entry.id)! } : entry),
   };
   assertValidManifest(next);
   await writeManifest(next);
-  return updated;
+  return positions.map(({ entryId }) => getEntry(next.entries, entryId));
 }
 
 async function updateEntryPositionUnsafe(id: string, position: EntryPosition) {
   const manifest = await readManifest();
   const existing = getEntry(manifest.entries, id);
-  const updated: DesktopEntry = { ...existing, position };
+  const updated: DesktopEntry = { ...existing, position: parsePosition(position) };
   await writeManifest({
     ...manifest,
     entries: manifest.entries.map((entry) => (entry.id === id ? updated : entry)),
@@ -543,7 +519,7 @@ export function importFiles(files: File[], parentId: string | null, positions: E
 export function renameEntry(id: string, name: string) { return serializeStorage(() => renameEntryUnsafe(id, name)); }
 export function deleteEntry(id: string) { return serializeStorage(() => deleteEntryUnsafe(id)); }
 export function moveEntry(id: string, parentId: string | null, position: EntryPosition) { return serializeStorage(() => moveEntryUnsafe(id, parentId, position)); }
-export function moveDesktopEntry(id: string, position: EntryPosition, layout: DesktopLayout) { return serializeStorage(() => moveDesktopEntryUnsafe(id, position, layout)); }
+export function updateDesktopPositions(positions: DesktopPositionUpdate[]) { return serializeStorage(() => updateDesktopPositionsUnsafe(positions)); }
 export function updateEntryPosition(id: string, position: EntryPosition) { return serializeStorage(() => updateEntryPositionUnsafe(id, position)); }
 export function readFile(id: FileEntry["id"]) { return serializeStorage(() => readFileUnsafe(id)); }
 export function readDesktopSnapshot() { return serializeStorage(() => readDesktopSnapshotUnsafe()); }

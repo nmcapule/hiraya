@@ -1,8 +1,6 @@
 {
-  "version": 5,
+  "version": 6,
   "layout": {
-    "rootOrder": ["example-folder"],
-    "workspaceBreaks": [],
     "snapToGrid": false,
     "wallpaper": "dusk"
   },

@@ -529,7 +529,6 @@ func (s *Store) reconcileFilesystemLocked(nodes map[string]diskNode) error {
 	}
 	next := cloneWorkspace(s.workspace)
 	if len(deleted) != 0 {
-		removeRoots(&next.Layout, deleted)
 		kept := next.Entries[:0]
 		for _, entry := range next.Entries {
 			if !deleted[entry.ID] {
@@ -624,7 +623,6 @@ func (s *Store) reconcileFilesystemLocked(nodes map[string]diskNode) error {
 		if parentID == nil {
 			entry.Position = autoPosition(rootCount)
 			rootCount++
-			next.Layout.RootOrder = append(next.Layout.RootOrder, id)
 		}
 		if entry.Kind == "file" {
 			entry.Size = node.fingerprint.Size
@@ -638,9 +636,6 @@ func (s *Store) reconcileFilesystemLocked(nodes map[string]diskNode) error {
 	}
 	if changed {
 		next.Revision = revision
-		if !sameRootOrder(next.Layout.RootOrder, s.workspace.Layout.RootOrder) {
-			next.LayoutRevision = revision
-		}
 		if err := validateWorkspace(next.Entries, next.Layout); err != nil {
 			return fmt.Errorf("external filesystem state is invalid: %w", err)
 		}

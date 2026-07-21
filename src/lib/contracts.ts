@@ -2,6 +2,7 @@ import {
   WALLPAPERS,
   type DesktopEntry,
   type DesktopLayout,
+  type DesktopPositionUpdate,
   type EditorLanguage,
   type EditorSettings,
   type EntryPosition,
@@ -75,8 +76,8 @@ export function foldEntryName(value: string) {
   return value.toLowerCase();
 }
 
-function readNonNegativeNumber(value: unknown, message: string): number {
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) throw new Error(message);
+function readFiniteNumber(value: unknown, message: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) throw new Error(message);
   return value;
 }
 
@@ -93,37 +94,36 @@ export function readRevision(value: unknown, message = "A revision has an unsupp
 export function parsePosition(value: unknown): EntryPosition {
   if (!isRecord(value)) throw new Error("An entry has an invalid position.");
   return {
-    x: readNonNegativeNumber(value.x, "An entry has an invalid position."),
-    y: readNonNegativeNumber(value.y, "An entry has an invalid position."),
+    x: readFiniteNumber(value.x, "An entry has an invalid position."),
+    y: readFiniteNumber(value.y, "An entry has an invalid position."),
   };
 }
 
 export function parseLayout(value: unknown): DesktopLayout {
-  if (!isRecord(value) || !Array.isArray(value.rootOrder) || !Array.isArray(value.workspaceBreaks) || typeof value.snapToGrid !== "boolean" || typeof value.wallpaper !== "string" || !WALLPAPER_IDS.has(value.wallpaper)) {
+  if (!isRecord(value) || typeof value.snapToGrid !== "boolean" || typeof value.wallpaper !== "string" || !WALLPAPER_IDS.has(value.wallpaper)) {
     throw new Error("The desktop layout has an unsupported format.");
   }
+  return { snapToGrid: value.snapToGrid, wallpaper: value.wallpaper as DesktopLayout["wallpaper"] };
+}
+
+export function parseDesktopPositions(value: unknown): DesktopPositionUpdate[] {
+  if (!Array.isArray(value)) throw new Error("Desktop positions have an unsupported format.");
   const ids = new Set<string>();
-  const rootOrder = value.rootOrder.map((id) => {
-    assertValidId(id, "The desktop layout has an invalid root entry ID.");
-    if (ids.has(id)) throw new Error("The desktop layout contains duplicate root entry IDs.");
-    ids.add(id);
-    return id;
+  return value.map((candidate) => {
+    if (!isRecord(candidate)) throw new Error("A desktop position has an unsupported format.");
+    assertValidId(candidate.entryId, "A desktop position has an invalid entry ID.");
+    if (ids.has(candidate.entryId)) throw new Error("Desktop positions contain duplicate entry IDs.");
+    ids.add(candidate.entryId);
+    return { entryId: candidate.entryId, position: parsePosition(candidate.position) };
   });
-  const breakIds = new Set<string>();
-  const workspaceBreaks = value.workspaceBreaks.map((candidate) => {
-    if (!isRecord(candidate)) throw new Error("The desktop layout has an invalid workspace break.");
-    assertValidId(candidate.entryId, "The desktop layout has an invalid workspace break ID.");
-    if (breakIds.has(candidate.entryId)) throw new Error("The desktop layout contains duplicate workspace break IDs.");
-    if (!ids.has(candidate.entryId)) throw new Error("A workspace break must reference a root entry.");
-    if (!Number.isSafeInteger(candidate.maxCapacity) || (candidate.maxCapacity as number) < 1) {
-      throw new Error("A workspace break has an invalid capacity.");
-    }
-    breakIds.add(candidate.entryId);
-    return { entryId: candidate.entryId, maxCapacity: candidate.maxCapacity as number };
-  });
-  if (rootOrder.length === 0 && workspaceBreaks.length !== 0) throw new Error("An empty root order cannot contain workspace breaks.");
-  if (rootOrder.length !== 0 && breakIds.has(rootOrder[0])) throw new Error("The first root cannot be a workspace break.");
-  return { rootOrder, workspaceBreaks, snapToGrid: value.snapToGrid, wallpaper: value.wallpaper as DesktopLayout["wallpaper"] };
+}
+
+export function parseRootDesktopPositions(value: unknown, entries: DesktopEntry[]): DesktopPositionUpdate[] {
+  const positions = parseDesktopPositions(value);
+  if (positions.length === 0) throw new Error("At least one desktop position is required.");
+  const roots = new Set(entries.filter((entry) => entry.parentId === null).map((entry) => entry.id));
+  if (positions.some(({ entryId }) => !roots.has(entryId))) throw new Error("Desktop positions require root entries.");
+  return positions;
 }
 
 export function parseEditorSettings(value: unknown): EditorSettings {
@@ -163,17 +163,13 @@ function parseEntry(value: unknown, remote: boolean): ParsedEntry {
   return { ...base, kind: "file", mimeType, size: value.size as number, ...revisions };
 }
 
-export function parseEntries(value: unknown, layout: DesktopLayout, remote = false): ParsedEntry[] {
+export function parseEntries(value: unknown, remote = false): ParsedEntry[] {
   if (!Array.isArray(value)) throw new Error("The desktop entries have an unsupported format.");
   const entries = value.map((candidate) => parseEntry(candidate, remote));
   const byId = new Map<string, ParsedEntry>();
   for (const entry of entries) {
     if (byId.has(entry.id)) throw new Error("The desktop contains duplicate entry IDs.");
     byId.set(entry.id, entry);
-  }
-  const rootIds = new Set(entries.filter((entry) => entry.parentId === null).map((entry) => entry.id));
-  if (layout.rootOrder.length !== rootIds.size || layout.rootOrder.some((id) => !rootIds.has(id))) {
-    throw new Error("The desktop root order must contain every root entry exactly once.");
   }
   const siblingNames = new Map<string, Set<string>>();
   for (const entry of entries) {
@@ -202,7 +198,7 @@ export function parseEntries(value: unknown, layout: DesktopLayout, remote = fal
 export function parseRemoteWorkspace(value: unknown): RemoteWorkspace {
   if (!isRecord(value) || typeof value.initialized !== "boolean") throw new Error("The server workspace has an unsupported format.");
   const schemaVersion = readRevision(value.schemaVersion, "The server workspace has an unsupported schema version.");
-  if (schemaVersion !== 3) throw new Error("The server workspace uses an unsupported schema version.");
+  if (schemaVersion !== 4) throw new Error("The server workspace uses an unsupported schema version.");
   assertValidId(value.workspaceId, "The server workspace has an invalid identity.");
   const identity = {
     schemaVersion,
@@ -214,7 +210,7 @@ export function parseRemoteWorkspace(value: unknown): RemoteWorkspace {
   return {
     ...identity,
     initialized: value.initialized,
-    entries: parseEntries(value.entries, layout, true) as RemoteEntry[],
+    entries: parseEntries(value.entries, true) as RemoteEntry[],
     layout,
     layoutRevision: readRevision(value.layoutRevision),
     editorSettings: parseEditorSettings(value.editorSettings),

@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"sort"
 	"sync"
 	"time"
 
@@ -16,7 +15,7 @@ import (
 )
 
 const (
-	workspaceSchemaVersion = 3
+	workspaceSchemaVersion = 4
 	metadataName           = "workspace.json"
 	logicalMarker          = ".logical-path-storage"
 	diskIndexName          = ".filesystem.json"
@@ -78,8 +77,6 @@ func OpenStore(dir string) (*Store, error) {
 	}
 	s := &Store{dir: dir, filesDir: filesDir, subs: make(map[chan int64]struct{}), disk: make(map[string]diskFingerprint), done: make(chan struct{}), watched: make(map[string]bool), writeMetadata: atomicWrite, scanFiles: scanFilesystem}
 	s.workspace.Entries = []Entry{}
-	s.workspace.Layout.RootOrder = []string{}
-	s.workspace.Layout.WorkspaceBreaks = []WorkspaceBreak{}
 	s.workspace.Layout.Wallpaper = "dusk"
 	s.workspace.EditorSettings = EditorSettings{AutoSave: true, FontSize: 13, Language: "auto"}
 	b, err := os.ReadFile(filepath.Join(dir, metadataName))
@@ -130,12 +127,6 @@ func OpenStore(dir string) (*Store, error) {
 	s.workspace.SchemaVersion = workspaceSchemaVersion
 	if s.workspace.Entries == nil {
 		s.workspace.Entries = []Entry{}
-	}
-	if s.workspace.Layout.RootOrder == nil {
-		s.workspace.Layout.RootOrder = []string{}
-	}
-	if s.workspace.Layout.WorkspaceBreaks == nil {
-		s.workspace.Layout.WorkspaceBreaks = []WorkspaceBreak{}
 	}
 	if s.workspace.Initialized {
 		if err := validateSettings(s.workspace.EditorSettings); err != nil {
@@ -225,18 +216,12 @@ func (s *Store) snapshot() Workspace {
 
 func cloneWorkspace(workspace Workspace) Workspace {
 	workspace.Entries = append([]Entry(nil), workspace.Entries...)
-	workspace.Layout.RootOrder = append([]string(nil), workspace.Layout.RootOrder...)
-	workspace.Layout.WorkspaceBreaks = append([]WorkspaceBreak(nil), workspace.Layout.WorkspaceBreaks...)
 	workspace.Entries = nonNilEntries(workspace.Entries)
-	workspace.Layout.RootOrder = nonNilStrings(workspace.Layout.RootOrder)
-	workspace.Layout.WorkspaceBreaks = nonNilWorkspaceBreaks(workspace.Layout.WorkspaceBreaks)
 	return workspace
 }
 
 func (s *Store) persistLocked(next Workspace) error {
 	next.Entries = nonNilEntries(next.Entries)
-	next.Layout.RootOrder = nonNilStrings(next.Layout.RootOrder)
-	next.Layout.WorkspaceBreaks = nonNilWorkspaceBreaks(next.Layout.WorkspaceBreaks)
 	b, err := json.Marshal(next)
 	if err != nil {
 		return err
@@ -255,20 +240,6 @@ func (s *Store) beginMutationLocked() {
 func nonNilEntries(v []Entry) []Entry {
 	if v == nil {
 		return []Entry{}
-	}
-	return v
-}
-
-func nonNilStrings(v []string) []string {
-	if v == nil {
-		return []string{}
-	}
-	return v
-}
-
-func nonNilWorkspaceBreaks(v []WorkspaceBreak) []WorkspaceBreak {
-	if v == nil {
-		return []WorkspaceBreak{}
 	}
 	return v
 }
@@ -327,14 +298,12 @@ func migrateWorkspaceV1(data []byte, workspace *Workspace) error {
 		viewOrder[view.ID] = i + 1
 	}
 	entries := make([]Entry, len(legacy.Entries))
-	rootIndexes := make([]int, 0)
 	for i, entry := range legacy.Entries {
 		entries[i] = Entry{Kind: entry.Kind, ID: entry.ID, Name: entry.Name, ParentID: entry.ParentID, ModifiedAt: entry.ModifiedAt, Position: entry.Position, MimeType: entry.MimeType, Size: entry.Size, Revision: entry.Revision, ContentRevision: entry.ContentRevision}
 		if entry.ParentID == nil {
 			if entry.ViewID == nil || viewOrder[*entry.ViewID] == 0 {
 				return fmt.Errorf("root entry refers to a missing view")
 			}
-			rootIndexes = append(rootIndexes, i)
 		} else if entry.ViewID != nil {
 			return fmt.Errorf("nested entries cannot belong to a view")
 		}
@@ -342,21 +311,7 @@ func migrateWorkspaceV1(data []byte, workspace *Workspace) error {
 	if err := validateEntries(entries); err != nil {
 		return err
 	}
-	sort.SliceStable(rootIndexes, func(i, j int) bool {
-		left, right := legacy.Entries[rootIndexes[i]], legacy.Entries[rootIndexes[j]]
-		if viewOrder[*left.ViewID] != viewOrder[*right.ViewID] {
-			return viewOrder[*left.ViewID] < viewOrder[*right.ViewID]
-		}
-		if left.Position.X != right.Position.X {
-			return left.Position.X < right.Position.X
-		}
-		return left.Position.Y < right.Position.Y
-	})
-	rootOrder := make([]string, len(rootIndexes))
-	for i, index := range rootIndexes {
-		rootOrder[i] = entries[index].ID
-	}
-	*workspace = Workspace{SchemaVersion: workspaceSchemaVersion, WorkspaceID: legacy.WorkspaceID, Initialized: legacy.Initialized, Revision: legacy.Revision, Entries: entries, Layout: Layout{RootOrder: rootOrder, WorkspaceBreaks: []WorkspaceBreak{}, SnapToGrid: legacy.Layout.SnapToGrid, Wallpaper: legacy.Layout.Wallpaper}, LayoutRevision: legacy.LayoutRevision, EditorSettings: legacy.EditorSettings, SettingsRevision: legacy.SettingsRevision}
+	*workspace = Workspace{SchemaVersion: workspaceSchemaVersion, WorkspaceID: legacy.WorkspaceID, Initialized: legacy.Initialized, Revision: legacy.Revision, Entries: entries, Layout: Layout{SnapToGrid: legacy.Layout.SnapToGrid, Wallpaper: legacy.Layout.Wallpaper}, LayoutRevision: legacy.LayoutRevision, EditorSettings: legacy.EditorSettings, SettingsRevision: legacy.SettingsRevision}
 	return nil
 }
 

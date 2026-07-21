@@ -13,7 +13,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -30,8 +29,6 @@ func TestBootstrapAndPersistenceRestart(t *testing.T) {
 		folder("folder", "Docs", nil, ptr("view-1")),
 		file("file", "hello.txt", ptr("folder"), nil, "text/plain", 5),
 	}
-	workspace.Layout.RootOrder = []string{"folder"}
-
 	response := bootstrapRequest(t, server, workspace, map[string]string{"file": "hello"})
 	if response.Code != http.StatusCreated {
 		t.Fatalf("bootstrap status = %d, body = %s", response.Code, response.Body.String())
@@ -97,7 +94,7 @@ func TestPersistenceDefaultsLegacyWallpaper(t *testing.T) {
 	}
 }
 
-func TestWorkspaceSchemaV1MigrationOrdersRootsAndPersistsV3(t *testing.T) {
+func TestWorkspaceSchemaV1MigrationPreservesCoordinatesAndPersistsV4(t *testing.T) {
 	dir := t.TempDir()
 	filesDir := filepath.Join(dir, "files")
 	if err := os.MkdirAll(filesDir, 0o700); err != nil {
@@ -122,11 +119,11 @@ func TestWorkspaceSchemaV1MigrationOrdersRootsAndPersistsV3(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	workspace := store.snapshot()
-	if workspace.SchemaVersion != 3 || workspace.Revision != 12 || workspace.LayoutRevision != 7 || workspace.SettingsRevision != 8 {
+	if workspace.SchemaVersion != 4 || workspace.Revision != 12 || workspace.LayoutRevision != 7 || workspace.SettingsRevision != 8 {
 		t.Fatalf("migration changed revisions: %+v", workspace)
 	}
-	if got := strings.Join(workspace.Layout.RootOrder, ","); got != "earlier,later,tie-2,tie-1" {
-		t.Fatalf("migrated root order = %q", got)
+	if findEntry(t, workspace.Entries, "tie-2").Position != (Position{X: 8, Y: 4}) || findEntry(t, workspace.Entries, "later").Position != (Position{X: 20, Y: 1}) {
+		t.Fatalf("migration changed coordinates: %+v", workspace.Entries)
 	}
 	if !workspace.Layout.SnapToGrid || workspace.Layout.Wallpaper != "ember" || workspace.EditorSettings.FontSize != 17 {
 		t.Fatalf("migration changed layout or settings: %+v", workspace)
@@ -135,17 +132,18 @@ func TestWorkspaceSchemaV1MigrationOrdersRootsAndPersistsV3(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bytes.Contains(persisted, []byte(`"views"`)) || bytes.Contains(persisted, []byte(`"viewId"`)) || !bytes.Contains(persisted, []byte(`"schemaVersion":3`)) || !bytes.Contains(persisted, []byte(`"workspaceBreaks":[]`)) {
-		t.Fatalf("persisted migration is not schema v3: %s", persisted)
+	if bytes.Contains(persisted, []byte(`"views"`)) || bytes.Contains(persisted, []byte(`"viewId"`)) || bytes.Contains(persisted, []byte(`"rootOrder"`)) || bytes.Contains(persisted, []byte(`"workspaceBreaks"`)) || !bytes.Contains(persisted, []byte(`"schemaVersion":4`)) {
+		t.Fatalf("persisted migration is not topology-free schema v4: %s", persisted)
 	}
 }
 
-func TestWorkspaceSchemaV2MigrationAddsEmptyBreaks(t *testing.T) {
+func TestWorkspaceSchemaV3MigrationDropsTopologyAndPreservesSignedCoordinates(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dir, "files"), 0o700); err != nil {
+	filesDir := filepath.Join(dir, "files")
+	if err := os.MkdirAll(filepath.Join(filesDir, "Root"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	legacy := []byte(`{"schemaVersion":2,"workspaceId":"workspace","initialized":true,"revision":4,"entries":[],"layout":{"rootOrder":[],"snapToGrid":true,"wallpaper":"grove"},"layoutRevision":3,"editorSettings":{"autoSave":true,"fontSize":13,"language":"auto"},"settingsRevision":2}`)
+	legacy := []byte(`{"schemaVersion":3,"workspaceId":"workspace","initialized":true,"revision":4,"entries":[{"kind":"folder","id":"root","name":"Root","parentId":null,"modifiedAt":1,"position":{"x":-120.5,"y":44},"revision":4,"contentRevision":0}],"layout":{"rootOrder":["root"],"workspaceBreaks":[{"entryId":"root","maxCapacity":8}],"snapToGrid":true,"wallpaper":"grove"},"layoutRevision":3,"editorSettings":{"autoSave":true,"fontSize":13,"language":"auto"},"settingsRevision":2}`)
 	if err := os.WriteFile(filepath.Join(dir, metadataName), legacy, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -159,119 +157,15 @@ func TestWorkspaceSchemaV2MigrationAddsEmptyBreaks(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	workspace := store.snapshot()
-	if workspace.SchemaVersion != 3 || workspace.Revision != 4 || workspace.LayoutRevision != 3 || workspace.Layout.WorkspaceBreaks == nil || len(workspace.Layout.WorkspaceBreaks) != 0 {
-		t.Fatalf("v2 migration = %+v", workspace)
+	if workspace.SchemaVersion != 4 || workspace.Revision != 4 || workspace.LayoutRevision != 3 || findEntry(t, workspace.Entries, "root").Position != (Position{X: -120.5, Y: 44}) {
+		t.Fatalf("v3 migration = %+v", workspace)
 	}
 	persisted, err := os.ReadFile(filepath.Join(dir, metadataName))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(persisted, []byte(`"schemaVersion":3`)) || !bytes.Contains(persisted, []byte(`"workspaceBreaks":[]`)) {
-		t.Fatalf("persisted v2 migration = %s", persisted)
-	}
-}
-
-func TestRootOrderMaintainedByEntryMutations(t *testing.T) {
-	store, server := initializedTestServer(t)
-	for _, entry := range []Entry{
-		folder("a", "A", nil, nil),
-		folder("b", "B", nil, nil),
-		folder("c", "C", ptr("a"), nil),
-		folder("d", "D", nil, nil),
-	} {
-		response := multipartEntryRequest(t, server, http.MethodPost, "/api/entries", entry, nil)
-		if response.Code != http.StatusOK {
-			t.Fatalf("create %s: %d %s", entry.ID, response.Code, response.Body.String())
-		}
-	}
-	if got := strings.Join(store.snapshot().Layout.RootOrder, ","); got != "a,b,d" {
-		t.Fatalf("root order after creates = %q", got)
-	}
-
-	b := findEntry(t, store.snapshot().Entries, "b")
-	b.ParentID = ptr("a")
-	if response := jsonRequest(t, server, http.MethodPatch, "/api/entries/b", b); response.Code != http.StatusOK {
-		t.Fatalf("move root to nested: %d %s", response.Code, response.Body.String())
-	}
-	c := findEntry(t, store.snapshot().Entries, "c")
-	c.ParentID = nil
-	if response := jsonRequest(t, server, http.MethodPatch, "/api/entries/c", c); response.Code != http.StatusOK {
-		t.Fatalf("move nested to root: %d %s", response.Code, response.Body.String())
-	}
-	if got := strings.Join(store.snapshot().Layout.RootOrder, ","); got != "a,d,c" {
-		t.Fatalf("root order after moves = %q", got)
-	}
-
-	response := httptest.NewRecorder()
-	server.ServeHTTP(response, httptest.NewRequest(http.MethodDelete, "/api/entries/a", nil))
-	if response.Code != http.StatusOK {
-		t.Fatalf("delete root: %d %s", response.Code, response.Body.String())
-	}
-	if got := strings.Join(store.snapshot().Layout.RootOrder, ","); got != "d,c" {
-		t.Fatalf("root order after delete = %q", got)
-	}
-	reorder := jsonRequest(t, server, http.MethodPut, "/api/layout", Layout{RootOrder: []string{"c", "d"}, SnapToGrid: true, Wallpaper: "grove"})
-	if reorder.Code != http.StatusOK || strings.Join(store.snapshot().Layout.RootOrder, ",") != "c,d" {
-		t.Fatalf("layout reorder: %d %s", reorder.Code, reorder.Body.String())
-	}
-}
-
-func TestWorkspaceBreakValidationAndRootLifecycle(t *testing.T) {
-	store, server := initializedTestServer(t)
-	for _, entry := range []Entry{
-		folder("a", "A", nil, nil),
-		folder("b", "B", nil, nil),
-		folder("c", "C", nil, nil),
-		folder("d", "D", nil, nil),
-	} {
-		if response := multipartEntryRequest(t, server, http.MethodPost, "/api/entries", entry, nil); response.Code != http.StatusOK {
-			t.Fatalf("create %s: %d %s", entry.ID, response.Code, response.Body.String())
-		}
-	}
-
-	invalid := []Layout{
-		{RootOrder: []string{"a", "b", "c", "d"}, WorkspaceBreaks: []WorkspaceBreak{{EntryID: "a", MaxCapacity: 2}}, Wallpaper: "dusk"},
-		{RootOrder: []string{"a", "b", "c", "d"}, WorkspaceBreaks: []WorkspaceBreak{{EntryID: "b", MaxCapacity: 0}}, Wallpaper: "dusk"},
-		{RootOrder: []string{"a", "b", "c", "d"}, WorkspaceBreaks: []WorkspaceBreak{{EntryID: "missing", MaxCapacity: 2}}, Wallpaper: "dusk"},
-		{RootOrder: []string{"a", "b", "c", "d"}, WorkspaceBreaks: []WorkspaceBreak{{EntryID: "b", MaxCapacity: 2}, {EntryID: "b", MaxCapacity: 3}}, Wallpaper: "dusk"},
-	}
-	for i, layout := range invalid {
-		if response := jsonRequest(t, server, http.MethodPut, "/api/layout", layout); response.Code == http.StatusOK {
-			t.Fatalf("invalid layout %d accepted", i)
-		}
-	}
-
-	layout := Layout{RootOrder: []string{"a", "b", "c", "d"}, WorkspaceBreaks: []WorkspaceBreak{{EntryID: "b", MaxCapacity: 2}, {EntryID: "d", MaxCapacity: 7}}, SnapToGrid: true, Wallpaper: "grove"}
-	if response := jsonRequest(t, server, http.MethodPut, "/api/layout", layout); response.Code != http.StatusOK {
-		t.Fatalf("set breaks: %d %s", response.Code, response.Body.String())
-	}
-
-	b := findEntry(t, store.snapshot().Entries, "b")
-	b.ParentID = ptr("a")
-	if response := jsonRequest(t, server, http.MethodPatch, "/api/entries/b", b); response.Code != http.StatusOK {
-		t.Fatalf("nest break root: %d %s", response.Code, response.Body.String())
-	}
-	afterMove := store.snapshot().Layout
-	if got := strings.Join(afterMove.RootOrder, ","); got != "a,c,d" || len(afterMove.WorkspaceBreaks) != 2 || afterMove.WorkspaceBreaks[0] != (WorkspaceBreak{EntryID: "c", MaxCapacity: 2}) {
-		t.Fatalf("break promotion after nesting = %+v", afterMove)
-	}
-
-	response := httptest.NewRecorder()
-	server.ServeHTTP(response, httptest.NewRequest(http.MethodDelete, "/api/entries/c", nil))
-	if response.Code != http.StatusOK {
-		t.Fatalf("delete promoted break: %d %s", response.Code, response.Body.String())
-	}
-	afterDelete := store.snapshot().Layout
-	if got := strings.Join(afterDelete.RootOrder, ","); got != "a,d" || len(afterDelete.WorkspaceBreaks) != 1 || afterDelete.WorkspaceBreaks[0] != (WorkspaceBreak{EntryID: "d", MaxCapacity: 7}) {
-		t.Fatalf("empty group break removal = %+v", afterDelete)
-	}
-
-	if response := multipartEntryRequest(t, server, http.MethodPost, "/api/entries", folder("e", "E", nil, nil), nil); response.Code != http.StatusOK {
-		t.Fatal(response.Body.String())
-	}
-	appended := store.snapshot().Layout
-	if got := strings.Join(appended.RootOrder, ","); got != "a,d,e" || len(appended.WorkspaceBreaks) != 1 {
-		t.Fatalf("new root did not append without a break: %+v", appended)
+	if !bytes.Contains(persisted, []byte(`"schemaVersion":4`)) || bytes.Contains(persisted, []byte(`"rootOrder"`)) || bytes.Contains(persisted, []byte(`"workspaceBreaks"`)) {
+		t.Fatalf("persisted v3 migration = %s", persisted)
 	}
 }
 
@@ -409,7 +303,7 @@ func TestExternalFilesystemChangesReconcileLive(t *testing.T) {
 	first := store.snapshot()
 	folderEntry := findEntryByName(t, first.Entries, "External")
 	fileEntry := findEntryByName(t, first.Entries, "note.md")
-	if folderEntry.ParentID != nil || folderEntry.Position != (Position{X: 24, Y: 24}) || strings.Join(first.Layout.RootOrder, ",") != folderEntry.ID {
+	if folderEntry.ParentID != nil || folderEntry.Position != (Position{X: 24, Y: 24}) {
 		t.Fatalf("external root placement = %+v", folderEntry)
 	}
 	if fileEntry.ParentID == nil || *fileEntry.ParentID != folderEntry.ID || !strings.HasPrefix(fileEntry.MimeType, "text/markdown") {
@@ -496,59 +390,8 @@ func TestExternalAdditionDetectedAtStartupWithEmptyIndex(t *testing.T) {
 	t.Cleanup(func() { _ = reopened.Close() })
 	snapshot := reopened.snapshot()
 	entry := findEntryByName(t, snapshot.Entries, "outside.txt")
-	if snapshot.Revision != 2 || entry.ContentRevision != 2 || strings.Join(snapshot.Layout.RootOrder, ",") != entry.ID {
+	if snapshot.Revision != 2 || entry.ContentRevision != 2 {
 		t.Fatalf("startup addition reconciliation = %+v workspace=%+v", entry, snapshot)
-	}
-}
-
-func TestExternalRootsAppendAndDeletionRemovesOrder(t *testing.T) {
-	store, server := initializedTestServer(t)
-	created := multipartEntryRequest(t, server, http.MethodPost, "/api/entries", file("existing", "existing.txt", nil, nil, "text/plain", 0), ptr("existing"))
-	if created.Code != http.StatusOK {
-		t.Fatal(created.Body.String())
-	}
-	if err := os.WriteFile(filepath.Join(store.filesDir, "external.txt"), []byte("external"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	waitForRevision(t, store, 3)
-	added := store.snapshot()
-	external := findEntryByName(t, added.Entries, "external.txt")
-	if got := strings.Join(added.Layout.RootOrder, ","); got != "existing,"+external.ID || added.LayoutRevision != 3 {
-		t.Fatalf("root order after external addition = %q, layout revision = %d", got, added.LayoutRevision)
-	}
-	if err := os.Remove(filepath.Join(store.filesDir, "existing.txt")); err != nil {
-		t.Fatal(err)
-	}
-	waitForRevision(t, store, 4)
-	deleted := store.snapshot()
-	if got := strings.Join(deleted.Layout.RootOrder, ","); got != external.ID || deleted.LayoutRevision != 4 {
-		t.Fatalf("root order after external deletion = %q, layout revision = %d", got, deleted.LayoutRevision)
-	}
-}
-
-func TestExternalRootDeletionPromotesWorkspaceBreak(t *testing.T) {
-	store, server := initializedTestServer(t)
-	for _, entry := range []Entry{
-		file("a", "a.txt", nil, nil, "text/plain", 0),
-		file("b", "b.txt", nil, nil, "text/plain", 0),
-		file("c", "c.txt", nil, nil, "text/plain", 0),
-	} {
-		if response := multipartEntryRequest(t, server, http.MethodPost, "/api/entries", entry, ptr("")); response.Code != http.StatusOK {
-			t.Fatal(response.Body.String())
-		}
-	}
-	layout := Layout{RootOrder: []string{"a", "b", "c"}, WorkspaceBreaks: []WorkspaceBreak{{EntryID: "b", MaxCapacity: 8}}, Wallpaper: "dusk"}
-	if response := jsonRequest(t, server, http.MethodPut, "/api/layout", layout); response.Code != http.StatusOK {
-		t.Fatal(response.Body.String())
-	}
-	before := store.snapshot().Revision
-	if err := os.Remove(filepath.Join(store.filesDir, "b.txt")); err != nil {
-		t.Fatal(err)
-	}
-	waitForRevision(t, store, before+1)
-	after := store.snapshot().Layout
-	if len(after.WorkspaceBreaks) != 1 || after.WorkspaceBreaks[0] != (WorkspaceBreak{EntryID: "c", MaxCapacity: 8}) {
-		t.Fatalf("external deletion break normalization = %+v", after)
 	}
 }
 
@@ -609,7 +452,6 @@ func TestFailedBootstrapRemovesStagedLogicalTree(t *testing.T) {
 	store.writeMetadata = func(string, []byte, os.FileMode) error { return errors.New("injected persistence failure") }
 	workspace := testBootstrap()
 	workspace.Entries = []Entry{file("file", "retry.txt", nil, ptr("view-1"), "text/plain", 5)}
-	workspace.Layout.RootOrder = []string{"file"}
 	response := bootstrapRequest(t, server, workspace, map[string]string{"file": "hello"})
 	if response.Code != http.StatusInternalServerError {
 		t.Fatalf("failed bootstrap status = %d, body = %s", response.Code, response.Body.String())
@@ -866,7 +708,7 @@ func TestMutationsRevisionsAndLastRequestWins(t *testing.T) {
 	if settingsResult.Revision != 8 || settingsResult.SettingsRevision != 8 {
 		t.Fatalf("settings response = %+v", settingsResult)
 	}
-	layout := jsonRequest(t, server, http.MethodPut, "/api/layout", Layout{RootOrder: []string{"empty", "file"}, SnapToGrid: true, Wallpaper: "ember"})
+	layout := jsonRequest(t, server, http.MethodPut, "/api/layout", Layout{SnapToGrid: true, Wallpaper: "ember"})
 	var layoutResult layoutResponse
 	decodeResponse(t, layout, &layoutResult)
 	if layoutResult.Revision != 9 || layoutResult.LayoutRevision != 9 || !layoutResult.Layout.SnapToGrid || layoutResult.Layout.Wallpaper != "ember" {
@@ -880,38 +722,43 @@ func TestMutationsRevisionsAndLastRequestWins(t *testing.T) {
 	}
 }
 
-func TestDesktopPlacementIsAtomicDurableAndPublishesOnce(t *testing.T) {
+func TestDesktopPositionsAreAtomicDurableAndPublishOnce(t *testing.T) {
 	store, server := initializedTestServer(t)
-	created := multipartEntryRequest(t, server, http.MethodPost, "/api/entries", file("file", "file.txt", nil, nil, "text/plain", 0), ptr("content"))
-	if created.Code != http.StatusOK {
-		t.Fatal(created.Body.String())
+	for _, entry := range []Entry{file("first", "first.txt", nil, nil, "text/plain", 0), folder("second", "Second", nil, nil)} {
+		var content *string
+		if entry.Kind == "file" {
+			content = ptr("content")
+		}
+		if created := multipartEntryRequest(t, server, http.MethodPost, "/api/entries", entry, content); created.Code != http.StatusOK {
+			t.Fatal(created.Body.String())
+		}
 	}
 	before := store.snapshot()
-	contentRevision := findEntry(t, before.Entries, "file").ContentRevision
+	contentRevision := findEntry(t, before.Entries, "first").ContentRevision
+	layoutRevision := before.LayoutRevision
 	events, unsubscribe := store.subscribe()
 	defer unsubscribe()
 	<-events
-	input := desktopPlacementRequest{
-		EntryID:  "file",
-		Position: Position{X: 48, Y: 96},
-		Layout:   Layout{RootOrder: []string{"file"}, WorkspaceBreaks: []WorkspaceBreak{}, SnapToGrid: true, Wallpaper: "ember"},
+	input := []desktopPosition{
+		{EntryID: "first", Position: Position{X: -48, Y: 96}},
+		{EntryID: "second", Position: Position{X: 120, Y: -32}},
 	}
-	response := jsonRequest(t, server, http.MethodPut, "/api/desktop-placement", input)
+	response := jsonRequest(t, server, http.MethodPut, "/api/desktop-positions", input)
 	if response.Code != http.StatusOK {
-		t.Fatalf("placement status = %d, body = %s", response.Code, response.Body.String())
+		t.Fatalf("positions status = %d, body = %s", response.Code, response.Body.String())
 	}
-	var result desktopPlacementResponse
+	var result desktopPositionsResponse
 	decodeResponse(t, response, &result)
 	wantRevision := before.Revision + 1
-	if result.Revision != wantRevision || result.LayoutRevision != wantRevision || result.Entry.Revision != wantRevision || result.Entry.Position != input.Position || result.Entry.ContentRevision != contentRevision || !reflect.DeepEqual(result.Layout, input.Layout) {
-		t.Fatalf("placement response = %+v", result)
+	if result.Revision != wantRevision || len(result.Entries) != 2 || result.Entries[0].Revision != wantRevision || result.Entries[0].Position != input[0].Position || result.Entries[0].ContentRevision != contentRevision || result.Entries[1].Revision != wantRevision || result.Entries[1].Position != input[1].Position {
+		t.Fatalf("positions response = %+v", result)
 	}
 	if revision := <-events; revision != wantRevision {
-		t.Fatalf("placement SSE revision = %d", revision)
+		t.Fatalf("positions SSE revision = %d", revision)
 	}
 	select {
 	case revision := <-events:
-		t.Fatalf("unexpected second placement SSE event at revision %d", revision)
+		t.Fatalf("unexpected second positions SSE event at revision %d", revision)
 	default:
 	}
 
@@ -924,33 +771,45 @@ func TestDesktopPlacementIsAtomicDurableAndPublishesOnce(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = reopened.Close() })
 	after := reopened.snapshot()
-	entry := findEntry(t, after.Entries, "file")
-	if after.Revision != wantRevision || after.LayoutRevision != wantRevision || !reflect.DeepEqual(after.Layout, input.Layout) || entry.Position != input.Position || entry.Revision != wantRevision || entry.ContentRevision != contentRevision {
-		t.Fatalf("restarted placement = %+v", after)
+	first := findEntry(t, after.Entries, "first")
+	second := findEntry(t, after.Entries, "second")
+	if after.Revision != wantRevision || after.LayoutRevision != layoutRevision || first.Position != input[0].Position || first.Revision != wantRevision || first.ContentRevision != contentRevision || second.Position != input[1].Position || second.Revision != wantRevision {
+		t.Fatalf("restarted positions = %+v", after)
 	}
 }
 
-func TestDesktopPlacementFailureChangesNothing(t *testing.T) {
+func TestDesktopPositionsValidateBatchAndFailureChangesNothing(t *testing.T) {
 	store, server := initializedTestServer(t)
 	if response := multipartEntryRequest(t, server, http.MethodPost, "/api/entries", folder("root", "Root", nil, nil), nil); response.Code != http.StatusOK {
+		t.Fatal(response.Body.String())
+	}
+	if response := multipartEntryRequest(t, server, http.MethodPost, "/api/entries", folder("child", "Child", ptr("root"), nil), nil); response.Code != http.StatusOK {
 		t.Fatal(response.Body.String())
 	}
 	before := store.snapshot()
 	events, unsubscribe := store.subscribe()
 	defer unsubscribe()
 	<-events
+	invalid := jsonRequest(t, server, http.MethodPut, "/api/desktop-positions", []desktopPosition{{EntryID: "root", Position: Position{X: 9, Y: 10}}, {EntryID: "child", Position: Position{X: 3, Y: 4}}})
+	if invalid.Code != http.StatusConflict || store.snapshot().Revision != before.Revision {
+		t.Fatalf("invalid batch = %d %s", invalid.Code, invalid.Body.String())
+	}
+	duplicate := jsonRequest(t, server, http.MethodPut, "/api/desktop-positions", []desktopPosition{{EntryID: "root"}, {EntryID: "root"}})
+	if duplicate.Code != http.StatusBadRequest || store.snapshot().Revision != before.Revision {
+		t.Fatalf("duplicate batch = %d %s", duplicate.Code, duplicate.Body.String())
+	}
 	store.writeMetadata = func(string, []byte, os.FileMode) error { return errors.New("injected persistence failure") }
-	response := jsonRequest(t, server, http.MethodPut, "/api/desktop-placement", desktopPlacementRequest{EntryID: "root", Position: Position{X: 9, Y: 10}, Layout: Layout{RootOrder: []string{"root"}, Wallpaper: "dusk"}})
+	response := jsonRequest(t, server, http.MethodPut, "/api/desktop-positions", []desktopPosition{{EntryID: "root", Position: Position{X: -9, Y: 10}}})
 	if response.Code != http.StatusInternalServerError {
-		t.Fatalf("placement failure status = %d, body = %s", response.Code, response.Body.String())
+		t.Fatalf("positions failure status = %d, body = %s", response.Code, response.Body.String())
 	}
 	after := store.snapshot()
-	if after.Revision != before.Revision || findEntry(t, after.Entries, "root").Position != findEntry(t, before.Entries, "root").Position || !reflect.DeepEqual(after.Layout, before.Layout) {
-		t.Fatalf("failed placement changed workspace: before=%+v after=%+v", before, after)
+	if after.Revision != before.Revision || findEntry(t, after.Entries, "root").Position != findEntry(t, before.Entries, "root").Position || after.Layout != before.Layout {
+		t.Fatalf("failed positions changed workspace: before=%+v after=%+v", before, after)
 	}
 	select {
 	case revision := <-events:
-		t.Fatalf("failed placement published revision %d", revision)
+		t.Fatalf("failed positions published revision %d", revision)
 	default:
 	}
 }
@@ -1066,11 +925,7 @@ func TestValidationRejectsInvalidStructuresAndPayloads(t *testing.T) {
 	if badSettings.Code != http.StatusBadRequest {
 		t.Fatalf("bad settings status = %d", badSettings.Code)
 	}
-	invalidOrder := jsonRequest(t, server, http.MethodPut, "/api/layout", Layout{RootOrder: []string{"other"}, Wallpaper: "dusk"})
-	if invalidOrder.Code != http.StatusConflict {
-		t.Fatalf("invalid root order status = %d", invalidOrder.Code)
-	}
-	badWallpaper := jsonRequest(t, server, http.MethodPut, "/api/layout", Layout{RootOrder: []string{"one"}, Wallpaper: "ocean"})
+	badWallpaper := jsonRequest(t, server, http.MethodPut, "/api/layout", Layout{Wallpaper: "ocean"})
 	if badWallpaper.Code != http.StatusBadRequest {
 		t.Fatalf("bad wallpaper status = %d", badWallpaper.Code)
 	}
@@ -1094,7 +949,7 @@ func TestSSENotifiesAfterMutation(t *testing.T) {
 	defer response.Body.Close()
 	reader := bufio.NewReader(response.Body)
 	identity := store.snapshot()
-	if event := readSSEEvent(t, reader); event != fmt.Sprintf("id: 1\nevent: workspace\ndata: {\"revision\":1,\"schemaVersion\":3,\"workspaceId\":%q}\n", identity.WorkspaceID) {
+	if event := readSSEEvent(t, reader); event != fmt.Sprintf("id: 1\nevent: workspace\ndata: {\"revision\":1,\"schemaVersion\":4,\"workspaceId\":%q}\n", identity.WorkspaceID) {
 		t.Fatalf("initial SSE event = %q", event)
 	}
 
@@ -1102,7 +957,7 @@ func TestSSENotifiesAfterMutation(t *testing.T) {
 	if mutation.Code != http.StatusOK || store.snapshot().Revision != 2 {
 		t.Fatalf("mutation failed: %d %s", mutation.Code, mutation.Body.String())
 	}
-	if event := readSSEEvent(t, reader); event != fmt.Sprintf("id: 2\nevent: workspace\ndata: {\"revision\":2,\"schemaVersion\":3,\"workspaceId\":%q}\n", identity.WorkspaceID) {
+	if event := readSSEEvent(t, reader); event != fmt.Sprintf("id: 2\nevent: workspace\ndata: {\"revision\":2,\"schemaVersion\":4,\"workspaceId\":%q}\n", identity.WorkspaceID) {
 		t.Fatalf("mutation SSE event = %q", event)
 	}
 
@@ -1118,7 +973,7 @@ func TestSSENotifiesAfterMutation(t *testing.T) {
 func TestUninitializedSnapshotAndUploadLimit(t *testing.T) {
 	_, server := newTestServer(t, t.TempDir())
 	snapshot := getWorkspace(t, server)
-	if snapshot.Initialized || snapshot.Revision != 0 || snapshot.Entries == nil || snapshot.Layout.RootOrder == nil {
+	if snapshot.Initialized || snapshot.Revision != 0 || snapshot.Entries == nil {
 		t.Fatalf("uninitialized snapshot = %+v", snapshot)
 	}
 	mutation := jsonRequest(t, server, http.MethodPut, "/api/editor-settings", EditorSettings{AutoSave: true, FontSize: 13, Language: "auto"})
@@ -1134,7 +989,6 @@ func TestUninitializedSnapshotAndUploadLimit(t *testing.T) {
 	limited := New(store, t.TempDir(), 3)
 	workspace := testBootstrap()
 	workspace.Entries = []Entry{file("file", "large.txt", nil, ptr("view-1"), "text/plain", 4)}
-	workspace.Layout.RootOrder = []string{"file"}
 	response := bootstrapRequest(t, limited, workspace, map[string]string{"file": "four"})
 	if response.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("oversized bootstrap status = %d, body = %s", response.Code, response.Body.String())
@@ -1166,7 +1020,7 @@ func initializedTestServer(t *testing.T) (*Store, *Server) {
 func testBootstrap() bootstrapWorkspace {
 	return bootstrapWorkspace{
 		Entries:        []Entry{},
-		Layout:         Layout{RootOrder: []string{}, Wallpaper: "dusk"},
+		Layout:         Layout{Wallpaper: "dusk"},
 		EditorSettings: EditorSettings{AutoSave: true, FontSize: 13, Language: "auto"},
 	}
 }

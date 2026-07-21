@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { isValidId, parseLayout, parseRemoteWorkspace } from "../src/lib/contracts";
+import { isValidId, parseLayout, parsePosition, parseRemoteWorkspace, parseRootDesktopPositions } from "../src/lib/contracts";
 import { namesMatch, validateEntryName } from "../src/lib/entry-validation";
 import { remoteWorkspace } from "./fixtures";
 
@@ -14,34 +14,36 @@ describe("workspace contracts", () => {
   test("rejects malformed remote revisions and hierarchy", () => {
     expect(() => parseRemoteWorkspace({ ...remoteWorkspace(), revision: 1.5 })).toThrow("revision");
     const input = remoteWorkspace();
-    input.layout.rootOrder = [];
-    expect(() => parseRemoteWorkspace(input)).toThrow("root order");
+    input.entries[0].parentId = "missing";
+    expect(() => parseRemoteWorkspace(input)).toThrow("missing parent");
   });
 
   test("accepts the intentionally empty shape of an uninitialized server", () => {
     expect(parseRemoteWorkspace({
-      schemaVersion: 3,
+      schemaVersion: 4,
       workspaceId: "workspace-1",
       initialized: false,
       revision: 0,
       entries: [],
-      layout: { rootOrder: [], workspaceBreaks: [], snapToGrid: false, wallpaper: "dusk" },
+      layout: { snapToGrid: false, wallpaper: "dusk" },
       layoutRevision: 0,
       editorSettings: { autoSave: true, fontSize: 13, language: "auto" },
       settingsRevision: 0,
-    })).toEqual({ schemaVersion: 3, workspaceId: "workspace-1", initialized: false, revision: 0 });
+    })).toEqual({ schemaVersion: 4, workspaceId: "workspace-1", initialized: false, revision: 0 });
+    expect(() => parseRemoteWorkspace({ schemaVersion: 3, workspaceId: "workspace-1", initialized: false, revision: 0 })).toThrow("schema version");
   });
 
-  test("validates workspace breaks against root order", () => {
-    const layout = { rootOrder: ["a", "b", "c"], workspaceBreaks: [{ entryId: "b", maxCapacity: 8 }], snapToGrid: false, wallpaper: "dusk" };
-    expect(parseLayout(layout)).toEqual(layout);
-    expect(() => parseLayout({ ...layout, workspaceBreaks: [{ entryId: "a", maxCapacity: 1 }] })).toThrow("first root");
-    expect(() => parseLayout({ ...layout, workspaceBreaks: [{ entryId: "missing", maxCapacity: 1 }] })).toThrow("reference a root");
-    expect(() => parseLayout({ ...layout, workspaceBreaks: [{ entryId: "b", maxCapacity: 1 }, { entryId: "b", maxCapacity: 2 }] })).toThrow("duplicate");
-    for (const maxCapacity of [0, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
-      expect(() => parseLayout({ ...layout, workspaceBreaks: [{ entryId: "b", maxCapacity }] })).toThrow("capacity");
-    }
-    expect(() => parseLayout({ ...layout, rootOrder: [], workspaceBreaks: [{ entryId: "b", maxCapacity: 1 }] })).toThrow();
+  test("parses only coordinate-independent layout preferences", () => {
+    expect(parseLayout({ rootOrder: ["ignored"], workspaceBreaks: [{}], snapToGrid: true, wallpaper: "grove" })).toEqual({ snapToGrid: true, wallpaper: "grove" });
+  });
+
+  test("accepts signed finite positions and validates root batches", () => {
+    expect(parsePosition({ x: -120.5, y: 30 })).toEqual({ x: -120.5, y: 30 });
+    expect(() => parsePosition({ x: Number.POSITIVE_INFINITY, y: 0 })).toThrow("position");
+    const entries = [{ kind: "folder" as const, id: "a", name: "A", parentId: null, modifiedAt: 1, position: { x: 0, y: 0 } }];
+    expect(parseRootDesktopPositions([{ entryId: "a", position: { x: -1, y: -2 } }], entries)).toEqual([{ entryId: "a", position: { x: -1, y: -2 } }]);
+    expect(() => parseRootDesktopPositions([], entries)).toThrow("At least one");
+    expect(() => parseRootDesktopPositions([{ entryId: "a", position: { x: 0, y: 0 } }, { entryId: "a", position: { x: 1, y: 1 } }], entries)).toThrow("duplicate");
   });
 
   test("uses deterministic Go-aligned ID and sibling-name rules", () => {

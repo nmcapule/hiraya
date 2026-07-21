@@ -44,7 +44,7 @@ Prefer small changes within these existing modules. Do not introduce global stat
 - All browser storage operations go through `src/lib/opfs.ts`.
 - OPFS is a cache, not the shared authority. Normal mutations go through `src/lib/sync.ts` and must be accepted by the server before their authoritative result is applied locally.
 - User-facing names are metadata only. Physical files use stable UUIDs under the OPFS `files` directory.
-- `.hiraya-manifest.json` stores manifest version, names, MIME types, sizes, timestamps, icon positions, the last server revision, and per-entry/content revisions.
+- `.hiraya-manifest.json` version 12 stores names, MIME types, sizes, timestamps, signed finite icon coordinates, the last server revision, and per-entry/content revisions.
 - Renaming must update metadata only; never copy or rewrite file contents just to rename a file.
 - Write file contents before adding their metadata to the manifest.
 - During remote reconciliation, download and validate all changed blobs before publishing the new local manifest. Remove obsolete blobs only after metadata is updated.
@@ -67,9 +67,9 @@ If adding destructive operations, update file content and the manifest carefully
 - Multi-file imports are one server transaction: validate the full resulting workspace and all byte sizes before making any entry visible.
 - Persist file bytes before metadata that references them. Publish SSE only after the metadata commit is durable.
 - Recursive folder deletion commits metadata before best-effort blob cleanup so visible entries never point to deleted content.
-- Keep server validation equivalent to browser validation for IDs, names, sibling uniqueness, hierarchy, cycles, root ordering, MIME data, sizes, layout, and editor settings.
-- Workspace breaks reference root IDs and a creation capacity. Keep them unique, forbid a break on the first root, and promote or remove breaks when their root leaves the desktop.
-- Commit edge-created workspace layout and icon position atomically in one revision so failed drops cannot leave partial workspace state.
+- Keep server schema version 4 validation equivalent to browser validation for IDs, names, sibling uniqueness, hierarchy, cycles, signed finite coordinates, MIME data, sizes, layout, and editor settings.
+- Root coordinates are the only persisted arrangement. Do not add persisted tile, page, ordering, or break metadata.
+- Commit multi-entry desktop coordinate updates, including minimap arrangement changes, atomically in one revision.
 - SSE events carry only the current workspace revision. Clients pull authoritative metadata and selectively fetch changed content.
 - Keep the health revision fallback in addition to SSE; proxies can leave a dead event stream appearing open.
 - Mutations are disabled when the server is unavailable. Cached files remain viewable, and unsaved editor text must not be silently discarded.
@@ -80,7 +80,7 @@ If adding destructive operations, update file content and the manifest carefully
 
 - `HIRAYA_SEEDED_DIR` is an optional compile-time environment variable. It must point to a directory inside the repository containing `manifest.json` and its referenced content.
 - An unset or empty `HIRAYA_SEEDED_DIR` disables seeded content. Do not expose the source path to browser code or rename it with a `VITE_` prefix.
-- The seeded manifest has its own version in `src/lib/seeded-manifest.ts`; it is distinct from the persisted OPFS manifest version.
+- The seeded manifest is version 6 and accepts versions 1 through 5 for normalization. It is distinct from the persisted OPFS manifest version 12.
 - Keep the build loader and browser exporter on the same manifest schema and validation path. An exported package must be accepted directly by the build loader after extraction.
 - File `contentUrl` values are relative to the configured directory. Reject absolute paths, traversal outside the directory, queries, fragments, missing files, size mismatches, and symbolic links.
 - Seeded content populates OPFS only when `.hiraya-manifest.json` does not exist. Never merge it into, replace, or restore entries in an existing manifest, including an intentionally empty manifest.
@@ -88,8 +88,8 @@ If adding destructive operations, update file content and the manifest carefully
 - If the server is uninitialized, the first browser bootstraps it from the resulting OPFS desktop, including seeded content when it initialized that browser. If the server is initialized, its workspace replaces the local cache.
 - Seeded entries become ordinary synchronized entries. User edits, moves, renames, and deletions must persist without being reset from the bundled package.
 - The menu-bar Export action packages the entire saved desktop as `hiraya-seeded.zip`, with `hiraya-seeded/manifest.json` and a logical `content` tree.
-- Export includes persisted files, folders, empty folders, root ordering, positions, layout, metadata, and editor settings. It intentionally excludes unsaved editor changes.
-- Preserve stable entry IDs and root ordering during export. Keep file reads for export inside the OPFS persistence boundary.
+- Export includes persisted files, folders, empty folders, signed finite coordinates, layout, metadata, and editor settings. It intentionally excludes unsaved editor changes.
+- Preserve stable entry IDs and coordinates during export. Keep file reads for export inside the OPFS persistence boundary.
 - `examples/seeded` is the canonical checked-in package example. Update it and `README.md` when the seeded format or setup changes.
 
 ## Interaction Rules
@@ -97,9 +97,10 @@ If adding destructive operations, update file content and the manifest carefully
 - Dragging deliberately avoids React state updates during pointer movement. `FileIcon` applies a direct `translate3d` transform and commits the position through the sync boundary only on pointer release.
 - Use Pointer Events so dragging works with both mouse and touch.
 - Keep dragged icons clamped inside the desktop.
-- Compute workspace pages from the synchronized root order, continuous saved coordinates, and the current viewport. Project coordinate overflow into later virtual workspaces without rewriting or rearranging saved positions; enlarging the viewport must restore the exact arrangement.
-- Never persist empty workspace pages. The empty desktop is one implicit page; additional pages exist for capacity overflow or a non-empty adaptive break created by edge dragging.
-- Outer-edge icon drags create a draft workspace without persistence. Commit its adaptive break only on a successful drop; cancellation must restore the original layout and route.
+- Root entries use signed finite coordinates on one continuous logical surface. Derive workspace tiles only from those coordinates and the current viewport; resizing must not rewrite saved positions.
+- Workspace tiles are never persisted. Include the implicit origin tile in the rendered range, and derive other tiles only when root coordinates occupy them.
+- Minimap arrangement translates all affected root coordinates by whole viewport tiles while preserving each icon's local tile position; commit the entire coordinate batch atomically.
+- Outer-edge icon drags navigate to transient destination tiles. Persist only the dropped icon's final coordinates; cancellation must restore the original route and arrangement.
 - Do not replace the drag implementation with continuous `setState` calls.
 - External files can arrive through the hidden file input or desktop drag-and-drop. Both paths must call the same import function.
 - Text-like MIME types and known text extensions open in the editor. Images, PDFs, video, and audio use object-URL previews. Revoke every object URL after use.
