@@ -2461,8 +2461,8 @@ textarea:focus-visible {
 
 .app-window,
 .file-dialog,
-.file-window,
-.settings-window {
+.file-window:not(.file-window--embedded),
+.settings-window:not(.settings-window--embedded) {
   color: var(--theme-text);
   border: var(--theme-border-width) solid var(--theme-border);
   border-radius: var(--theme-radius);
