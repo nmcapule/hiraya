@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Check, DownloadSimple, FloppyDisk, X } from "@phosphor-icons/react";
+import { Check, DownloadSimple, FloppyDisk } from "@phosphor-icons/react";
 import type { EditorLanguage, EditorSettings, FileEntry } from "../types";
 import { fileCapabilities } from "../ui/file-capabilities";
 import { TextEditor } from "./TextEditor";
@@ -26,7 +26,6 @@ type Props = {
   readOnly?: boolean;
   remoteChanged?: boolean;
   editorSettings: EditorSettings;
-  onClose: () => void;
   onSave: (content: string) => Promise<void>;
   onDownload: () => void;
   onEditorSettingsChange: (settings: EditorSettings) => void;
@@ -35,7 +34,7 @@ type Props = {
   onDirtyChange?: (dirty: boolean) => void;
 };
 
-export function FileWindow({ file, blob, editable, readOnly = false, remoteChanged = false, editorSettings, onClose, onSave, onDownload, onEditorSettingsChange, onResolveLink, onOpenLinkedFile, onDirtyChange }: Props) {
+export function FileWindow({ file, blob, editable, readOnly = false, remoteChanged = false, editorSettings, onSave, onDownload, onEditorSettingsChange, onResolveLink, onOpenLinkedFile, onDirtyChange }: Props) {
   const [content, setContent] = useState("");
   const [savedContent, setSavedContent] = useState("");
   const [contentLoaded, setContentLoaded] = useState(false);
@@ -99,28 +98,21 @@ export function FileWindow({ file, blob, editable, readOnly = false, remoteChang
   }, [content, contentLoaded, dirty, editable, editorSettings.autoSave, readOnly, save, saving]);
 
   return (
-    <div className="modal-backdrop modal-backdrop--window" role="presentation">
-      <section className="file-window" role="dialog" aria-modal="true" aria-labelledby="file-window-title">
-        <header className="window-header file-window__header">
-          <div className="file-window__title">
-            <span className="window-kicker">{editable ? readOnly ? "Text preview" : "Text editor" : "Preview"}</span>
-            <h2 id="file-window-title">{file.name}{dirty ? " •" : ""}</h2>
-          </div>
-          <div className="window-controls">
-            <button className="icon-button icon-button--wide" type="button" onClick={onDownload} aria-label="Download file">
-              <DownloadSimple size={17} /> <span>Download</span>
+    <div className="file-window file-window--embedded">
+      <div className="file-window__actions">
+        <span className="file-window__mode">{editable ? readOnly ? "Text preview" : "Text editor" : "Preview"}{dirty ? " / Unsaved" : ""}</span>
+        <div className="window-controls">
+          <button className="icon-button icon-button--wide" type="button" onClick={onDownload} aria-label="Download file">
+            <DownloadSimple size={17} /> <span>Download</span>
+          </button>
+          {editable && !readOnly && (
+            <button className="button button--primary button--save" type="button" onClick={() => void save(content)} disabled={saving || !dirty}>
+              {saving ? <FloppyDisk size={17} /> : <Check size={17} />}
+              {saving ? "Saving" : dirty ? "Save" : "Saved"}
             </button>
-            {editable && !readOnly && (
-              <button className="button button--primary button--save" type="button" onClick={() => void save(content)} disabled={saving || !dirty}>
-                {saving ? <FloppyDisk size={17} /> : <Check size={17} />}
-                {saving ? "Saving" : dirty ? "Save" : "Saved"}
-              </button>
-            )}
-            <button className="icon-button" type="button" onClick={onClose} aria-label="Close file">
-              <X size={18} />
-            </button>
-          </div>
-        </header>
+          )}
+        </div>
+      </div>
         {saveError && <div className="window-error">{saveError}</div>}
         {remoteChanged && <div className="window-error">This file changed on the server. Your unsaved text is preserved; saving it will become the latest version.</div>}
         {editable && !readOnly && (
@@ -181,7 +173,6 @@ export function FileWindow({ file, blob, editable, readOnly = false, remoteChang
             </div>
           )}
         </div>
-      </section>
     </div>
   );
 }

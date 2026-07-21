@@ -7,7 +7,6 @@ import {
   Folder,
   FolderPlus,
   UploadSimple,
-  X,
 } from "@phosphor-icons/react";
 import type { DesktopEntry, FolderEntry } from "../types";
 
@@ -16,7 +15,6 @@ export interface FolderExplorerProps {
   /** Ordered ancestors of folder, starting immediately below Desktop. */
   breadcrumbs: readonly FolderEntry[];
   children: readonly DesktopEntry[];
-  onClose: () => void;
   onNavigate: (folder: FolderEntry | null) => void;
   onOpen: (entry: DesktopEntry) => void;
   onCreateFolder: (parentId: string | null) => void;
@@ -42,7 +40,6 @@ export function FolderExplorer({
   folder,
   breadcrumbs,
   children,
-  onClose,
   onNavigate,
   onOpen,
   onCreateFolder,
@@ -123,18 +120,7 @@ export function FolderExplorer({
   const previousFolder = trail.length > 1 ? trail.at(-2)! : null;
 
   return (
-    <div className="modal-backdrop modal-backdrop--window" role="presentation" onPointerDown={(event) => event.target === event.currentTarget && onClose()}>
-      <section className="file-window folder-explorer" role="dialog" aria-modal="true" aria-labelledby="folder-explorer-title">
-        <header className="window-header folder-explorer__header">
-          <div className="folder-explorer__title">
-            <span className="window-kicker">Folder</span>
-            <h2 id="folder-explorer-title">{folder?.name ?? "Desktop"}</h2>
-          </div>
-          <button className="icon-button" type="button" onClick={onClose} aria-label="Close folder explorer">
-            <X size={18} />
-          </button>
-        </header>
-
+    <div className="file-window folder-explorer folder-explorer--embedded">
         <div className="folder-explorer__toolbar" aria-label="Folder actions">
           <button className="icon-button icon-button--wide" type="button" aria-label="Back to parent folder" disabled={!folder} onClick={() => onNavigate(previousFolder)}>
             <ArrowLeft size={17} /> <span>Back</span>
@@ -198,7 +184,6 @@ export function FolderExplorer({
             </div>
           )}
         </div>
-      </section>
     </div>
   );
 }

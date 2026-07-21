@@ -1,4 +1,4 @@
-import { ArrowsOut, CornersIn, CornersOut, ExportIcon, GridFour, PaintBrush, X } from "@phosphor-icons/react";
+import { ArrowsOut, CornersIn, CornersOut, ExportIcon, GridFour, PaintBrush } from "@phosphor-icons/react";
 import { WALLPAPERS, type DesktopLayout, type Wallpaper } from "../types";
 
 const WALLPAPER_LABELS: Record<Wallpaper, { name: string; description: string }> = {
@@ -14,26 +14,14 @@ type Props = {
   exporting: boolean;
   fullscreenEnabled: boolean;
   isFullscreen: boolean;
-  onClose: () => void;
   onLayoutChange: (layout: DesktopLayout) => void;
   onExport: () => void;
   onToggleFullscreen: () => void;
 };
 
-export function SettingsWindow({ layout, canMutate, exportDisabled, exporting, fullscreenEnabled, isFullscreen, onClose, onLayoutChange, onExport, onToggleFullscreen }: Props) {
+export function SettingsWindow({ layout, canMutate, exportDisabled, exporting, fullscreenEnabled, isFullscreen, onLayoutChange, onExport, onToggleFullscreen }: Props) {
   return (
-    <div className="modal-backdrop modal-backdrop--window" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <section className="settings-window" role="dialog" aria-modal="true" aria-labelledby="settings-window-title">
-        <header className="window-header">
-          <div>
-            <span className="window-kicker">Hiraya desktop</span>
-            <h2 id="settings-window-title">Settings</h2>
-          </div>
-          <button className="icon-button" type="button" onClick={onClose} aria-label="Close settings">
-            <X size={18} />
-          </button>
-        </header>
-
+    <div className="settings-window settings-window--embedded">
         <div className="settings-window__content">
           <section className="settings-section" aria-labelledby="appearance-heading">
             <div className="settings-section__heading">
@@ -111,7 +99,6 @@ export function SettingsWindow({ layout, canMutate, exportDisabled, exporting, f
 
           {!canMutate && <p className="settings-window__offline" role="status">Shared appearance controls are unavailable until the sync server reconnects.</p>}
         </div>
-      </section>
     </div>
   );
 }

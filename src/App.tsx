@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, CloudCheck, CloudSlash, FolderPlus, GearSix, HardDrive, Plus, SpinnerGap, UploadSimple, WarningCircle } from "@phosphor-icons/react";
+import { Check, CloudCheck, CloudSlash, File as FileGlyph, Folder, FolderPlus, GearSix, HardDrive, Plus, SpinnerGap, UploadSimple, WarningCircle } from "@phosphor-icons/react";
 import seededDesktop from "virtual:hiraya-seeded";
 import { ContextMenu, DesktopContextMenu } from "./components/ContextMenu";
+import { AppWindow } from "./components/AppWindow";
 import { FileDialog } from "./components/FileDialog";
 import { FileIcon } from "./components/FileIcon";
 import { FileWindow } from "./components/FileWindow";
@@ -35,8 +36,13 @@ import { FILE_ICON_SIZE, GRID_ORIGIN, GRID_STEP, nextAvailableDesktopSlot, nextD
 import { fileCapabilities } from "./ui/file-capabilities";
 import { topOverlay } from "./ui/overlay";
 import { createWorkspaceIndex } from "./ui/workspace-index";
+import { clampWindowBounds, initialWindowBounds, type WindowBounds } from "./ui/window-manager";
 
-type OpenFile = { file: FileEntry; blob: File; editable: boolean; contentRevision: number; remoteChanged: boolean } | null;
+type BaseRunningApp = { id: string; bounds: WindowBounds; minimized: boolean; zIndex: number };
+type FileApp = BaseRunningApp & { kind: "file"; fileId: string; file?: FileEntry; blob?: File; editable?: boolean; contentRevision: number; remoteChanged: boolean };
+type ExplorerApp = BaseRunningApp & { kind: "explorer"; folderId: string | null };
+type SettingsApp = BaseRunningApp & { kind: "settings" };
+type RunningApp = FileApp | ExplorerApp | SettingsApp;
 type RouteHistoryState = { hiraya: true; parentHash?: string };
 const MINIMAP_LONG_PRESS_MS = 500;
 const DESKTOP_LONG_PRESS_MS = 500;
@@ -55,7 +61,8 @@ function App() {
   const [contextMenu, setContextMenu] = useState<ContextMenuState>(null);
   const [moveDialogEntryId, setMoveDialogEntryId] = useState<string | null>(null);
   const [moveDialogSubmitting, setMoveDialogSubmitting] = useState(false);
-  const [openFile, setOpenFile] = useState<OpenFile>(null);
+  const [runningApps, setRunningApps] = useState<RunningApp[]>([]);
+  const [focusedAppId, setFocusedAppId] = useState<string | null>(null);
   const [route, setRoute] = useState<DesktopRoute | null>(null);
   const [clock, setClock] = useState(() => new Date());
   const [desktopSize, setDesktopSize] = useState(() => ({ width: window.innerWidth, height: Math.max(1, window.innerHeight - 44) }));
@@ -66,7 +73,7 @@ function App() {
   const [editingViews, setEditingViews] = useState(false);
   const [draggedPageKey, setDraggedPageKey] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(() => Boolean(document.fullscreenElement));
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [isMobile, setIsMobile] = useState(() => window.matchMedia("(max-width: 620px)").matches);
   const desktopRef = useRef<HTMLElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
   const uploadRef = useRef<HTMLInputElement>(null);
@@ -103,15 +110,19 @@ function App() {
   const navigationReadyRef = useRef(false);
   const applyLocationRouteRef = useRef<(entriesValue?: DesktopEntry[], layoutValue?: DesktopLayout) => void>(() => undefined);
   const navigateRouteRef = useRef<(next: DesktopRoute, mode?: "push" | "replace") => void>(() => undefined);
-  const closeToRouteRef = useRef<(next: DesktopRoute) => void>(() => undefined);
-  const fileLoadGenerationRef = useRef(0);
-  const openFileRef = useRef<OpenFile>(null);
+  const openRouteAppsRef = useRef<(next: DesktopRoute) => void>(() => undefined);
+  const closeAppRef = useRef<(id: string) => void>(() => undefined);
+  const runningAppsRef = useRef<RunningApp[]>([]);
+  const focusedAppIdRef = useRef<string | null>(null);
+  const nextWindowZRef = useRef(1);
+  const fileLoadGenerationsRef = useRef<Record<string, number>>({});
   const layoutSaveRef = useRef<Promise<void>>(Promise.resolve());
   const editorSettingsSaveRef = useRef<Promise<void>>(Promise.resolve());
   const contentRevisionsRef = useRef<Record<string, number>>({});
-  const openFileDirtyRef = useRef(false);
+  const fileDirtyRef = useRef<Record<string, boolean>>({});
   const activeSegment = { column: route?.column ?? 0, row: route?.row ?? 0 };
-  const explorerFolderId = route?.explorerFolderId;
+  const routeExplorerFolderId = route?.explorerFolderId;
+  const routeFileId = route?.fileId;
   const canMutate = syncStatus === "online" || syncStatus === "local";
   const workspace = useMemo(() => createWorkspaceIndex(entries), [entries]);
   const rootEntries = workspace.roots;
@@ -138,10 +149,6 @@ function App() {
       && position.y + FILE_ICON_SIZE.height > desktopSize.height - minimapHeight;
   });
   const folders = workspace.folders;
-  const explorerFolderEntry = explorerFolderId ? workspace.byId.get(explorerFolderId) : null;
-  const explorerFolder = explorerFolderEntry?.kind === "folder" ? explorerFolderEntry : null;
-  const explorerChildren = explorerFolderId === undefined ? [] : workspace.children.get(explorerFolder?.id ?? null) ?? [];
-  const breadcrumbs = explorerFolder ? workspace.ancestors(explorerFolder.id) : [];
   const dialogEntry = dialog && (dialog.type === "rename" || dialog.type === "delete") ? workspace.byId.get(dialog.entryId) ?? null : null;
   const contextMenuEntry = contextMenu?.type === "entry" ? workspace.byId.get(contextMenu.entryId) ?? null : null;
   const moveDialogEntry = moveDialogEntryId ? workspace.byId.get(moveDialogEntryId) ?? null : null;
@@ -178,20 +185,81 @@ function App() {
     if (normalized) writeRoute(normalized, mode);
   }
 
-  function closeToRoute(next: DesktopRoute) {
-    const state = window.history.state as Partial<RouteHistoryState> | null;
-    if (state?.hiraya && state.parentHash === formatDesktopRoute(next)) window.history.back();
-    else navigateRoute(next, "replace");
+  function updateRunningApps(updater: RunningApp[] | ((current: RunningApp[]) => RunningApp[])) {
+    setRunningApps((current) => {
+      const next = typeof updater === "function" ? updater(current) : updater;
+      runningAppsRef.current = next;
+      return next;
+    });
   }
 
-  function updateOpenFile(next: OpenFile) {
-    openFileRef.current = next;
-    setOpenFile(next);
+  function setFocusedApp(id: string | null) {
+    focusedAppIdRef.current = id;
+    setFocusedAppId(id);
+  }
+
+  function focusApp(id: string) {
+    const target = runningAppsRef.current.find((app) => app.id === id);
+    const zIndex = ++nextWindowZRef.current;
+    updateRunningApps((current) => current.map((app) => app.id === id ? { ...app, minimized: false, zIndex } : app));
+    setFocusedApp(id);
+    const currentRoute = routeRef.current;
+    if (!target || !currentRoute) return;
+    if (target.kind === "file") navigateRoute({ column: currentRoute.column, row: currentRoute.row, fileId: target.fileId }, "replace");
+    else if (target.kind === "explorer") navigateRoute({ column: currentRoute.column, row: currentRoute.row, explorerFolderId: target.folderId }, "replace");
+    else navigateRoute({ column: currentRoute.column, row: currentRoute.row }, "replace");
+  }
+
+  function closeApp(id: string) {
+    const closing = runningAppsRef.current.find((app) => app.id === id);
+    delete fileDirtyRef.current[id];
+    delete fileLoadGenerationsRef.current[id];
+    const remaining = runningAppsRef.current.filter((app) => app.id !== id);
+    updateRunningApps(remaining);
+    if (focusedAppIdRef.current === id) {
+      const next = [...remaining].filter((app) => !app.minimized).sort((a, b) => b.zIndex - a.zIndex)[0] ?? null;
+      setFocusedApp(next?.id ?? null);
+    }
+    const currentRoute = routeRef.current;
+    if (!closing || !currentRoute) return;
+    if (closing.kind === "file" && currentRoute.fileId === closing.fileId) {
+      navigateRoute({ column: currentRoute.column, row: currentRoute.row, ...(currentRoute.explorerFolderId !== undefined ? { explorerFolderId: currentRoute.explorerFolderId } : {}) }, "replace");
+    } else if (closing.kind === "explorer" && currentRoute.explorerFolderId === closing.folderId) {
+      navigateRoute({ column: currentRoute.column, row: currentRoute.row, ...(currentRoute.fileId ? { fileId: currentRoute.fileId } : {}) }, "replace");
+    }
+  }
+
+  function minimizeApp(id: string) {
+    updateRunningApps((current) => current.map((app) => app.id === id ? { ...app, minimized: true } : app));
+    if (focusedAppIdRef.current === id) {
+      const next = [...runningAppsRef.current].filter((app) => app.id !== id && !app.minimized).sort((a, b) => b.zIndex - a.zIndex)[0] ?? null;
+      setFocusedApp(next?.id ?? null);
+    }
+  }
+
+  function updateAppBounds(id: string, bounds: WindowBounds) {
+    updateRunningApps((current) => current.map((app) => app.id === id ? { ...app, bounds } : app));
+  }
+
+  function createAppBase(id: string, width: number, height: number, minWidth: number, minHeight: number): BaseRunningApp {
+    return {
+      id,
+      bounds: initialWindowBounds(desktopSize, { width, height, minWidth, minHeight, index: runningAppsRef.current.length }),
+      minimized: false,
+      zIndex: ++nextWindowZRef.current,
+    };
   }
 
   applyLocationRouteRef.current = applyLocationRoute;
   navigateRouteRef.current = navigateRoute;
-  closeToRouteRef.current = closeToRoute;
+  openRouteAppsRef.current = (next) => {
+    if (next.explorerFolderId !== undefined) openExplorerWindow(next.explorerFolderId);
+    if (next.fileId) {
+      const entry = workspace.byId.get(next.fileId);
+      if (entry?.kind === "file") openFileWindow(entry);
+    }
+  };
+  closeAppRef.current = closeApp;
 
   useEffect(() => {
     let active = true;
@@ -215,6 +283,12 @@ function App() {
         }
         return syncedIds.has(current.entryId) ? current : null;
       });
+      const availableApps = runningAppsRef.current.filter((app) => app.kind === "settings" || app.kind === "explorer" && app.folderId === null || syncedIds.has(app.kind === "file" ? app.fileId : app.folderId!));
+      updateRunningApps(availableApps);
+      if (focusedAppIdRef.current && !availableApps.some((app) => app.id === focusedAppIdRef.current)) {
+        const next = [...availableApps].filter((app) => !app.minimized).sort((a, b) => b.zIndex - a.zIndex)[0] ?? null;
+        setFocusedApp(next?.id ?? null);
+      }
       navigationReadyRef.current = true;
       applyLocationRouteRef.current(synced.entries, synced.layout);
     }, (nextStatus) => { if (active) setSyncStatus(nextStatus); });
@@ -258,7 +332,6 @@ function App() {
       setMoveDialogEntryId(null);
       setEditingViews(false);
       setDraggedPageKey(null);
-      setSettingsOpen(false);
       applyLocationRouteRef.current();
     }
     window.addEventListener("popstate", restoreRoute);
@@ -270,39 +343,11 @@ function App() {
   }, []);
 
   useEffect(() => {
-    const generation = ++fileLoadGenerationRef.current;
-    const fileId = route?.fileId;
-    if (!fileId || loading) {
-      if (!fileId && openFileRef.current) updateOpenFile(null);
-      return;
-    }
-    const entry = workspace.byId.get(fileId);
-    const file = entry?.kind === "file" ? entry : null;
-    if (!file) return;
-    const expectedRevision = contentRevisionsRef.current[file.id] ?? 0;
-    const current = openFileRef.current;
-    if (current?.file.id === file.id && current.contentRevision === expectedRevision) {
-      if (current.file !== file) updateOpenFile({ ...current, file });
-      return;
-    }
-    if (current?.file.id === file.id && openFileDirtyRef.current) {
-      updateOpenFile({ ...current, file, contentRevision: expectedRevision, remoteChanged: true });
-      return;
-    }
-    void readFile(file.id).then((blob) => {
-      if (generation !== fileLoadGenerationRef.current || routeRef.current?.fileId !== file.id || (contentRevisionsRef.current[file.id] ?? 0) !== expectedRevision) return;
-      updateOpenFile({ file, blob, editable: fileCapabilities(file).editable, contentRevision: expectedRevision, remoteChanged: false });
-    }).catch((openError) => {
-      if (generation !== fileLoadGenerationRef.current || routeRef.current?.fileId !== file.id) return;
-      if (openFileRef.current?.file.id === file.id) {
-        setError("An open file changed on the server but could not be refreshed.");
-        return;
-      }
-      setError(openError instanceof Error ? openError.message : "The file could not be opened.");
-      const currentRoute = routeRef.current;
-      if (currentRoute) navigateRouteRef.current({ ...currentRoute, fileId: undefined }, "replace");
-    });
-  }, [loading, route?.fileId, workspace]);
+    const query = window.matchMedia("(max-width: 620px)");
+    const update = () => setIsMobile(query.matches);
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, []);
 
   useEffect(() => {
     function syncFullscreen() {
@@ -335,7 +380,64 @@ function App() {
       column: Math.floor((current.column * previous.width + previous.width / 2) / desktopSize.width),
       row: Math.floor((current.row * previous.height + previous.height / 2) / desktopSize.height),
     }, "replace");
+    updateRunningApps((currentApps) => currentApps.map((app) => ({
+      ...app,
+      bounds: clampWindowBounds(app.bounds, desktopSize, app.kind === "file" ? { minWidth: 420, minHeight: 320 } : { minWidth: 360, minHeight: 280 }),
+    })));
   }, [desktopSize]);
+
+  useEffect(() => {
+    if (loading) return;
+    openRouteAppsRef.current({
+      column: 0,
+      row: 0,
+      ...(routeExplorerFolderId !== undefined ? { explorerFolderId: routeExplorerFolderId } : {}),
+      ...(routeFileId ? { fileId: routeFileId } : {}),
+    });
+  }, [loading, routeExplorerFolderId, routeFileId]);
+
+  useEffect(() => {
+    if (loading) return;
+    const currentApps = runningAppsRef.current;
+    const reconciledApps = currentApps.flatMap((app): RunningApp[] => {
+      if (app.kind === "settings" || app.kind === "explorer" && app.folderId === null) return [app];
+      const entryId = app.kind === "file" ? app.fileId : app.folderId;
+      const entry = entryId ? workspace.byId.get(entryId) : null;
+      if (!entry || app.kind === "file" && entry.kind !== "file" || app.kind === "explorer" && entry.kind !== "folder") return [];
+      if (app.kind === "explorer") return [app];
+      if (entry.kind !== "file") return [];
+      const expectedRevision = contentRevisionsRef.current[app.fileId] ?? 0;
+      if (expectedRevision !== app.contentRevision && fileDirtyRef.current[app.id]) {
+        return [{ ...app, file: entry, contentRevision: expectedRevision, remoteChanged: true }];
+      }
+      return [{ ...app, file: entry }];
+    });
+    updateRunningApps(reconciledApps);
+    if (focusedAppIdRef.current && !reconciledApps.some((app) => app.id === focusedAppIdRef.current)) {
+      const next = [...reconciledApps].filter((app) => !app.minimized).sort((a, b) => b.zIndex - a.zIndex)[0] ?? null;
+      setFocusedApp(next?.id ?? null);
+    }
+
+    for (const app of currentApps) {
+      if (app.kind !== "file" || fileDirtyRef.current[app.id]) continue;
+      const entry = workspace.byId.get(app.fileId);
+      const expectedRevision = contentRevisionsRef.current[app.fileId] ?? 0;
+      if (entry?.kind !== "file" || app.contentRevision === expectedRevision) continue;
+      const generation = (fileLoadGenerationsRef.current[app.id] ?? 0) + 1;
+      fileLoadGenerationsRef.current[app.id] = generation;
+      void readFile(app.fileId).then((blob) => {
+        if (fileLoadGenerationsRef.current[app.id] !== generation) return;
+        updateRunningApps((current) => current.map((candidate) => candidate.id === app.id && candidate.kind === "file" ? {
+          ...candidate,
+          file: entry,
+          blob,
+          editable: fileCapabilities(entry).editable,
+          contentRevision: expectedRevision,
+          remoteChanged: false,
+        } : candidate));
+      }).catch(() => setError("An open file changed on the server but could not be refreshed."));
+    }
+  }, [loading, workspace]);
 
   useEffect(() => {
     applyLocationRouteRef.current();
@@ -380,34 +482,24 @@ function App() {
       const owner = topOverlay({
         dialog: Boolean(dialog),
         moveDialog: Boolean(moveDialogEntry),
-        settings: settingsOpen,
+        settings: false,
         contextMenu: Boolean(contextMenu),
-        file: Boolean(openFile),
-        explorer: explorerFolderId !== undefined,
+        file: false,
+        explorer: false,
         viewEditor: editingViews,
       });
-      if (!owner) return;
+      if (!owner && !focusedAppIdRef.current) return;
       if (owner === "moveDialog" && moveDialogSubmitting) return;
       event.preventDefault();
       if (owner === "dialog") setDialog(null);
       else if (owner === "moveDialog") setMoveDialogEntryId(null);
-      else if (owner === "settings") setSettingsOpen(false);
       else if (owner === "contextMenu") setContextMenu(null);
       else if (owner === "viewEditor") { setEditingViews(false); setDraggedPageKey(null); }
-      else {
-        const current = routeRef.current;
-        if (!current) return;
-        if (owner === "file") closeToRouteRef.current({
-          column: current.column,
-          row: current.row,
-          ...(current.explorerFolderId !== undefined ? { explorerFolderId: current.explorerFolderId } : {}),
-        });
-        else closeToRouteRef.current({ column: current.column, row: current.row });
-      }
+      else if (focusedAppIdRef.current) closeAppRef.current(focusedAppIdRef.current);
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [contextMenu, dialog, editingViews, explorerFolderId, moveDialogEntry, moveDialogSubmitting, openFile, settingsOpen]);
+  }, [contextMenu, dialog, editingViews, moveDialogEntry, moveDialogSubmitting]);
 
   useEffect(() => {
     if (!notice) return;
@@ -498,7 +590,7 @@ function App() {
       if (!dialogEntry) { setDialog(null); return; }
       const renamed = await renameEntry(dialogEntry.id, name);
       setEntries((current) => current.map((entry) => entry.id === renamed.id ? renamed : entry));
-      if (renamed.kind === "file" && openFileRef.current?.file.id === renamed.id) updateOpenFile({ ...openFileRef.current, file: renamed });
+      updateRunningApps((current) => current.map((app) => app.kind === "file" && app.fileId === renamed.id ? { ...app, file: renamed as FileEntry } : app));
       setNotice(`${renamed.kind === "folder" ? "Folder" : "File"} renamed`);
     } else {
       if (!dialogEntry) { setDialog(null); return; }
@@ -586,16 +678,91 @@ function App() {
     }
   }
 
+  function openExplorerWindow(folderId: string | null) {
+    const id = `explorer:${folderId ?? "root"}`;
+    if (runningAppsRef.current.some((app) => app.id === id)) {
+      focusApp(id);
+      return;
+    }
+    const app: ExplorerApp = { ...createAppBase(id, 760, 590, 360, 280), kind: "explorer", folderId };
+    updateRunningApps((current) => [...current, app]);
+    setFocusedApp(id);
+  }
+
+  function navigateExplorerWindow(appId: string, folderId: string | null) {
+    const nextId = `explorer:${folderId ?? "root"}`;
+    if (nextId === appId) return;
+    if (runningAppsRef.current.some((app) => app.id === nextId)) {
+      closeApp(appId);
+      focusApp(nextId);
+    } else {
+      const zIndex = ++nextWindowZRef.current;
+      updateRunningApps((current) => current.map((app) => app.id === appId && app.kind === "explorer" ? { ...app, id: nextId, folderId, zIndex } : app));
+      setFocusedApp(nextId);
+    }
+    const currentRoute = routeRef.current;
+    if (currentRoute) navigateRoute({ column: currentRoute.column, row: currentRoute.row, explorerFolderId: folderId });
+  }
+
+  function openSettingsWindow() {
+    const id = "settings";
+    if (runningAppsRef.current.some((app) => app.id === id)) {
+      focusApp(id);
+      return;
+    }
+    const app: SettingsApp = { ...createAppBase(id, 720, 700, 360, 280), kind: "settings" };
+    updateRunningApps((current) => [...current, app]);
+    setFocusedApp(id);
+    const currentRoute = routeRef.current;
+    if (currentRoute) navigateRoute({ column: currentRoute.column, row: currentRoute.row }, "replace");
+  }
+
+  function openFileWindow(file: FileEntry) {
+    const id = `file:${file.id}`;
+    if (runningAppsRef.current.some((app) => app.id === id)) {
+      focusApp(id);
+      return;
+    }
+    const expectedRevision = contentRevisionsRef.current[file.id] ?? 0;
+    const app: FileApp = {
+      ...createAppBase(id, 920, 680, 420, 320),
+      kind: "file",
+      fileId: file.id,
+      file,
+      contentRevision: expectedRevision,
+      remoteChanged: false,
+    };
+    updateRunningApps((current) => [...current, app]);
+    setFocusedApp(id);
+    const generation = (fileLoadGenerationsRef.current[id] ?? 0) + 1;
+    fileLoadGenerationsRef.current[id] = generation;
+    void readFile(file.id).then((blob) => {
+      if (fileLoadGenerationsRef.current[id] !== generation || !runningAppsRef.current.some((candidate) => candidate.id === id)) return;
+      updateRunningApps((current) => current.map((candidate) => candidate.id === id && candidate.kind === "file" ? {
+        ...candidate,
+        blob,
+        editable: fileCapabilities(file).editable,
+        contentRevision: expectedRevision,
+      } : candidate));
+    }).catch((openError) => {
+      if (fileLoadGenerationsRef.current[id] !== generation) return;
+      closeApp(id);
+      setError(openError instanceof Error ? openError.message : "The file could not be opened.");
+    });
+  }
+
   function handleOpen(entry: DesktopEntry) {
     setContextMenu(null);
     const currentRoute = routeRef.current;
     if (!currentRoute) return;
     if (entry.kind === "folder") {
-      navigateRoute({ ...currentRoute, explorerFolderId: entry.id, fileId: undefined });
+      openExplorerWindow(entry.id);
+      navigateRoute({ column: currentRoute.column, row: currentRoute.row, explorerFolderId: entry.id });
       return;
     }
     setError("");
-    navigateRoute({ ...currentRoute, fileId: entry.id });
+    openFileWindow(entry);
+    navigateRoute({ column: currentRoute.column, row: currentRoute.row, fileId: entry.id });
   }
 
   async function download(file: FileEntry) {
@@ -632,15 +799,12 @@ function App() {
     }
   }
 
-  async function save(content: string) {
-    const fileId = routeRef.current?.fileId;
-    if (!openFileRef.current || openFileRef.current.file.id !== fileId) return;
+  async function save(appId: string, fileId: string, content: string) {
+    const app = runningAppsRef.current.find((candidate) => candidate.id === appId);
+    if (app?.kind !== "file" || app.fileId !== fileId) return;
     const saved = await saveTextFile(fileId, content);
     setEntries((current) => current.map((entry) => entry.id === saved.id ? saved : entry));
-    const current = openFileRef.current;
-    if (routeRef.current?.fileId === saved.id && current?.file.id === saved.id) {
-      updateOpenFile({ ...current, file: saved, contentRevision: contentRevisionsRef.current[saved.id] ?? 0, remoteChanged: false });
-    }
+    updateRunningApps((current) => current.map((candidate) => candidate.id === appId && candidate.kind === "file" ? { ...candidate, file: saved, contentRevision: contentRevisionsRef.current[saved.id] ?? candidate.contentRevision, remoteChanged: false } : candidate));
     setNotice(syncStatus === "local" ? "Changes saved locally" : "Changes synced");
   }
 
@@ -658,7 +822,7 @@ function App() {
   function handleDesktopPointerDown(event: React.PointerEvent<HTMLElement>) {
     if (event.button !== 0) return;
     const target = event.target as Element;
-    if (target.closest(".file-icon, .empty-state__actions")) return;
+    if (target.closest(".file-icon, .empty-state__actions, .app-window")) return;
     event.preventDefault();
     swipeRef.current = { axis: null, pointerId: event.pointerId, startSegment: activeSegment, startTime: performance.now(), startX: event.clientX, startY: event.clientY, x: event.clientX, y: event.clientY };
     if (event.pointerType !== "touch") return;
@@ -914,11 +1078,33 @@ function App() {
     <main className="desktop-shell">
       <header className="menu-bar">
         <div className="brand-mark" aria-label="Hiraya Desktop"><span className="brand-mark__shape"><span /></span><strong>Hiraya</strong></div>
+        <nav className="taskbar" aria-label="Running apps">
+          {runningApps.map((app) => {
+            const entry = app.kind === "file" ? workspace.byId.get(app.fileId) : app.kind === "explorer" && app.folderId ? workspace.byId.get(app.folderId) : null;
+            const label = app.kind === "settings" ? "Settings" : app.kind === "explorer" ? entry?.name ?? "Desktop" : entry?.name ?? app.file?.name ?? "File";
+            return (
+              <button
+                className="taskbar__entry"
+                data-active={focusedAppId === app.id && !app.minimized || undefined}
+                data-minimized={app.minimized || undefined}
+                type="button"
+                key={app.id}
+                title={label}
+                aria-label={`${app.minimized ? "Restore" : focusedAppId === app.id && !isMobile ? "Minimize" : "Switch to"} ${label}`}
+                aria-pressed={focusedAppId === app.id && !app.minimized}
+                onClick={() => focusedAppId === app.id && !app.minimized && !isMobile ? minimizeApp(app.id) : focusApp(app.id)}
+              >
+                {app.kind === "file" ? <FileGlyph size={15} /> : app.kind === "explorer" ? <Folder size={15} /> : <GearSix size={15} />}
+                <span>{label}</span>
+              </button>
+            );
+          })}
+        </nav>
         <div className="menu-bar__actions">
           <button type="button" aria-label="New file" disabled={!canMutate} onClick={() => setDialog({ type: "create-file", parentId: null })}><Plus size={15} weight="bold" /> <span>New file</span></button>
           <button type="button" aria-label="New folder" disabled={!canMutate} onClick={() => setDialog({ type: "create-folder", parentId: null })}><FolderPlus size={16} /> <span>New folder</span></button>
           <button type="button" aria-label="Upload files" disabled={!canMutate} onClick={() => chooseUpload(null)}><UploadSimple size={16} /> <span>Upload</span></button>
-          <button type="button" aria-label="Open settings" title="Settings" aria-haspopup="dialog" onClick={() => setSettingsOpen(true)}><GearSix size={16} /> <span>Settings</span></button>
+          <button type="button" aria-label="Open settings" title="Settings" onClick={openSettingsWindow}><GearSix size={16} /> <span>Settings</span></button>
           <span className="menu-bar__sync" data-status={syncStatus} title={syncStatus === "local" ? "Changes are saved in this browser" : syncStatus === "online" ? "Changes are synced" : syncStatus === "connecting" ? "Connecting to sync server" : "Sync server unavailable; editing is disabled"}>
             {syncStatus === "local" ? <HardDrive size={15} /> : syncStatus === "online" ? <CloudCheck size={15} /> : syncStatus === "connecting" ? <SpinnerGap size={15} /> : <CloudSlash size={15} />}
             <span>{syncStatus === "local" ? "Saved locally" : syncStatus === "online" ? "Synced" : syncStatus === "connecting" ? "Connecting" : "Offline"}</span>
@@ -938,9 +1124,9 @@ function App() {
           event.preventDefault();
           event.stopPropagation();
         }}
-        onClick={(event) => { if (!(event.target as Element).closest(".file-icon, .empty-state__actions")) setSelectedId(null); }}
+        onClick={(event) => { if (!(event.target as Element).closest(".file-icon, .empty-state__actions, .app-window")) setSelectedId(null); }}
         onContextMenu={(event) => {
-          if ((event.target as Element).closest(".file-icon, .empty-state__actions")) return;
+          if ((event.target as Element).closest(".file-icon, .empty-state__actions, .app-window")) return;
           event.preventDefault();
           const press = desktopPressRef.current;
           if (press) {
@@ -1014,6 +1200,82 @@ function App() {
           </div>
         )}
         <div className="drop-message" aria-hidden="true"><UploadSimple size={25} /> Drop files to store them privately</div>
+
+        <div className="app-window-layer" aria-label="Running applications">
+          {runningApps.map((app, index) => {
+            const titleId = `running-app-title-${index}`;
+            const folderEntry = app.kind === "explorer" && app.folderId ? workspace.byId.get(app.folderId) : null;
+            const folder = folderEntry?.kind === "folder" ? folderEntry : null;
+            const fileEntry = app.kind === "file" ? app.file ?? workspace.byId.get(app.fileId) : null;
+            const file = fileEntry?.kind === "file" ? fileEntry : null;
+            const title = app.kind === "settings" ? "Settings" : app.kind === "explorer" ? folder?.name ?? "Desktop" : file?.name ?? "Opening file";
+            return (
+              <AppWindow
+                key={app.id}
+                id={app.id}
+                title={title}
+                titleId={titleId}
+                bounds={app.bounds}
+                minWidth={app.kind === "file" ? 420 : 360}
+                minHeight={app.kind === "file" ? 320 : 280}
+                zIndex={app.zIndex}
+                focused={focusedAppId === app.id}
+                minimized={app.minimized}
+                mobile={isMobile}
+                onFocus={focusApp}
+                onBoundsChange={updateAppBounds}
+                onMinimize={minimizeApp}
+                onClose={closeApp}
+                titleArea={<div><span className="window-kicker">{app.kind === "file" ? app.editable ? "Text editor" : "Preview" : app.kind === "explorer" ? "Folder" : "Hiraya desktop"}</span><h2 id={titleId}>{title}</h2></div>}
+              >
+                {app.kind === "file" && file && app.blob ? (
+                  <FileWindow
+                    file={file}
+                    blob={app.blob}
+                    editable={Boolean(app.editable)}
+                    readOnly={!canMutate}
+                    remoteChanged={app.remoteChanged}
+                    editorSettings={editorSettings}
+                    onSave={(content) => save(app.id, file.id, content)}
+                    onDownload={() => void download(file)}
+                    onEditorSettingsChange={applyEditorSettings}
+                    onResolveLink={(path) => readFileByRelativePath(file.id, path)}
+                    onOpenLinkedFile={handleOpen}
+                    onDirtyChange={(dirty) => { fileDirtyRef.current[app.id] = dirty; }}
+                  />
+                ) : app.kind === "file" ? <div className="app-window__loading"><SpinnerGap size={22} /> Opening file</div> : null}
+                {app.kind === "explorer" && (
+                  <FolderExplorer
+                    folder={folder}
+                    breadcrumbs={folder ? workspace.ancestors(folder.id) : []}
+                    children={workspace.children.get(folder?.id ?? null) ?? []}
+                    onNavigate={(nextFolder) => navigateExplorerWindow(app.id, nextFolder?.id ?? null)}
+                    onOpen={handleOpen}
+                    onCreateFolder={(parentId) => setDialog({ type: "create-folder", parentId })}
+                    onCreateFile={(parentId) => setDialog({ type: "create-file", parentId })}
+                    onUpload={chooseUpload}
+                    onMove={(entry, parentId) => void handleMoveTo(entry, parentId)}
+                    onContextMenu={(entry, x, y) => setContextMenu({ type: "entry", entryId: entry.id, x, y })}
+                    readOnly={!canMutate}
+                  />
+                )}
+                {app.kind === "settings" && (
+                  <SettingsWindow
+                    layout={layout}
+                    canMutate={canMutate}
+                    exportDisabled={loading}
+                    exporting={exporting}
+                    fullscreenEnabled={document.fullscreenEnabled}
+                    isFullscreen={isFullscreen}
+                    onLayoutChange={applyLayout}
+                    onExport={() => void handleExport()}
+                    onToggleFullscreen={() => void toggleFullscreen()}
+                  />
+                )}
+              </AppWindow>
+            );
+          })}
+        </div>
       </section>
 
       {(pageColumns > 1 || pageRows > 1 || responsive.pages.length > 1) && (
@@ -1085,23 +1347,6 @@ function App() {
       {error && <div className="error-banner" role="alert"><WarningCircle size={19} weight="fill" /><span>{error}</span><button type="button" onClick={() => setError("")} aria-label="Dismiss error">Dismiss</button></div>}
       {notice && <div className="notice" role="status">{notice}</div>}
 
-      {explorerFolderId !== undefined && !openFile && (
-        <FolderExplorer
-          folder={explorerFolder}
-          breadcrumbs={breadcrumbs}
-          children={explorerChildren}
-          onClose={() => { const current = routeRef.current; if (current) closeToRoute({ column: current.column, row: current.row }); }}
-          onNavigate={(folder) => { const current = routeRef.current; if (current) navigateRoute({ ...current, explorerFolderId: folder?.id ?? null, fileId: undefined }); }}
-          onOpen={handleOpen}
-          onCreateFolder={(parentId) => setDialog({ type: "create-folder", parentId })}
-          onCreateFile={(parentId) => setDialog({ type: "create-file", parentId })}
-          onUpload={chooseUpload}
-          onMove={(entry, parentId) => void handleMoveTo(entry, parentId)}
-          onContextMenu={(entry, x, y) => setContextMenu({ type: "entry", entryId: entry.id, x, y })}
-          readOnly={!canMutate}
-        />
-      )}
-
       {contextMenu?.type === "entry" && contextMenuEntry && (
         <ContextMenu
           menu={contextMenu}
@@ -1130,7 +1375,7 @@ function App() {
             setContextMenu(null);
           }}
           onSettings={() => {
-            setSettingsOpen(true);
+            openSettingsWindow();
             setContextMenu(null);
           }}
           readOnly={!canMutate}
@@ -1145,46 +1390,6 @@ function App() {
           onClose={() => { setMoveDialogSubmitting(false); setMoveDialogEntryId(null); }}
           onMove={async (parentId) => { await handleMoveTo(moveDialogEntry, parentId, true); setMoveDialogSubmitting(false); setMoveDialogEntryId(null); }}
           onSubmittingChange={setMoveDialogSubmitting}
-        />
-      )}
-      {settingsOpen && (
-        <SettingsWindow
-          layout={layout}
-          canMutate={canMutate}
-          exportDisabled={loading}
-          exporting={exporting}
-          fullscreenEnabled={document.fullscreenEnabled}
-          isFullscreen={isFullscreen}
-          onClose={() => setSettingsOpen(false)}
-          onLayoutChange={applyLayout}
-          onExport={() => void handleExport()}
-          onToggleFullscreen={() => void toggleFullscreen()}
-        />
-      )}
-      {openFile && (
-        <FileWindow
-          key={openFile.file.id}
-          file={openFile.file}
-          blob={openFile.blob}
-          editable={openFile.editable}
-          readOnly={!canMutate}
-          remoteChanged={openFile.remoteChanged}
-          editorSettings={editorSettings}
-          onClose={() => {
-            const current = routeRef.current;
-            if (!current) return;
-            closeToRoute({
-              column: current.column,
-              row: current.row,
-              ...(current.explorerFolderId !== undefined ? { explorerFolderId: current.explorerFolderId } : {}),
-            });
-          }}
-          onSave={save}
-          onDownload={() => void download(openFile.file)}
-          onEditorSettingsChange={applyEditorSettings}
-          onResolveLink={(path) => readFileByRelativePath(openFile.file.id, path)}
-          onOpenLinkedFile={handleOpen}
-          onDirtyChange={(dirty) => { openFileDirtyRef.current = dirty; }}
         />
       )}
     </main>
