@@ -3,7 +3,7 @@ import type { DesktopSnapshot } from "../src/lib/opfs";
 export function desktopSnapshot(): DesktopSnapshot {
   return {
     entries: [],
-    layout: { views: [{ id: "view-1" }], columns: 1, snapToGrid: false, wallpaper: "dusk" },
+    layout: { rootOrder: [], snapToGrid: false, wallpaper: "dusk" },
     editorSettings: { autoSave: true, fontSize: 13, language: "auto" },
     sync: { workspaceId: null, revision: 0, entryRevisions: {}, contentRevisions: {}, layoutRevision: 0, settingsRevision: 0 },
   };
@@ -11,7 +11,7 @@ export function desktopSnapshot(): DesktopSnapshot {
 
 export function remoteWorkspace() {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     workspaceId: "workspace-1",
     initialized: true,
     revision: 1,
@@ -22,13 +22,12 @@ export function remoteWorkspace() {
       parentId: null,
       modifiedAt: 1,
       position: { x: 10, y: 20 },
-      viewId: "view-1",
       mimeType: "text/plain; charset=utf-8",
       size: 4,
       revision: 1,
       contentRevision: 1,
     }],
-    layout: { views: [{ id: "view-1" }], columns: 1, snapToGrid: false, wallpaper: "dusk" },
+    layout: { rootOrder: ["file-1"], snapToGrid: false, wallpaper: "dusk" },
     layoutRevision: 1,
     editorSettings: { autoSave: true, fontSize: 13, language: "auto" },
     settingsRevision: 1,

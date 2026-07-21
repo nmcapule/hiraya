@@ -1,14 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { decodeManifest, parseManifestV9 } from "../src/lib/manifest-codec";
+import { decodeManifest, parseManifestV10 } from "../src/lib/manifest-codec";
 import { desktopSnapshot } from "./fixtures";
 
-function manifestV9() {
+function manifestV10() {
   const snapshot = desktopSnapshot();
   return {
-    version: 9 as const,
+    version: 10 as const,
     entries: snapshot.entries,
-    views: snapshot.layout.views,
-    viewColumns: snapshot.layout.columns,
+    rootOrder: snapshot.layout.rootOrder,
     snapToGrid: snapshot.layout.snapToGrid,
     wallpaper: snapshot.layout.wallpaper,
     editorSettings: snapshot.editorSettings,
@@ -17,53 +16,44 @@ function manifestV9() {
 }
 
 describe("OPFS manifest codec", () => {
-  test("round-trips the persisted v9 shape", () => {
-    const input = manifestV9();
-    expect(parseManifestV9(JSON.parse(JSON.stringify(input)))).toEqual(input);
+  test("round-trips the persisted v10 shape", () => {
+    const input = manifestV10();
+    expect(parseManifestV10(JSON.parse(JSON.stringify(input)))).toEqual(input);
     expect(decodeManifest(input, { x: 100, y: 100 }, () => "unused").migrated).toBe(false);
   });
 
+  test("migrates v9 views deterministically and preserves sync identity", () => {
+    const entries = [
+      { kind: "folder", id: "tie-2", name: "Tie 2", parentId: null, viewId: "view-2", modifiedAt: 1, position: { x: 8, y: 4 } },
+      { kind: "folder", id: "later", name: "Later", parentId: null, viewId: "view-1", modifiedAt: 1, position: { x: 20, y: 1 } },
+      { kind: "folder", id: "earlier", name: "Earlier", parentId: null, viewId: "view-1", modifiedAt: 1, position: { x: 10, y: 9 } },
+      { kind: "folder", id: "tie-1", name: "Tie 1", parentId: null, viewId: "view-2", modifiedAt: 1, position: { x: 8, y: 4 } },
+    ];
+    const current = manifestV10();
+    const decoded = decodeManifest({
+      ...current,
+      version: 9,
+      entries,
+      views: [{ id: "view-1" }, { id: "view-2" }],
+      viewColumns: 2,
+    }, { x: 100, y: 100 }, () => "unused");
+    expect(decoded.migrated).toBe(true);
+    expect(decoded.manifest.version).toBe(10);
+    expect(decoded.manifest.rootOrder).toEqual(["earlier", "later", "tie-2", "tie-1"]);
+    expect(decoded.manifest.entries.some((entry) => "viewId" in entry)).toBe(false);
+    expect(decoded.manifest.sync).toEqual(current.sync);
+  });
+
   test("migrates v8 sync state without a workspace identity", () => {
-    const current = manifestV9();
+    const current = manifestV10();
     const { workspaceId: _workspaceId, ...sync } = current.sync;
     void _workspaceId;
-    const decoded = decodeManifest({ ...current, version: 8, sync }, { x: 100, y: 100 }, () => "unused");
-    expect(decoded.migrated).toBe(true);
-    expect(decoded.manifest.version).toBe(9);
+    const decoded = decodeManifest({ ...current, version: 8, entries: [], views: [{ id: "view" }], viewColumns: 1, sync }, { x: 100, y: 100 }, () => "unused");
     expect(decoded.manifest.sync.workspaceId).toBeNull();
   });
 
-  test("migrates v3 deterministically while preserving entries", () => {
-    const file = {
-      kind: "file" as const,
-      id: "file-1",
-      name: "one.txt",
-      parentId: null,
-      viewId: "view-old",
-      modifiedAt: 1,
-      position: { x: 4, y: 5 },
-      mimeType: "text/plain",
-      size: 0,
-    };
-    const decoded = decodeManifest({ version: 3, entries: [file], views: [{ id: "view-old" }], viewColumns: 1 }, { x: 100, y: 100 }, () => "unused");
-    expect(decoded.migrated).toBe(true);
-    expect(decoded.manifest.version).toBe(9);
-    expect(decoded.manifest.entries).toEqual([file]);
-    expect(decoded.manifest.wallpaper).toBe("dusk");
-  });
-
-  test("migrates v6 and v7 sync state without a workspace identity", () => {
-    const current = manifestV9();
-    const { workspaceId: _workspaceId, ...sync } = current.sync;
-    void _workspaceId;
-    for (const version of [6, 7]) {
-      const decoded = decodeManifest({ ...current, version, sync }, { x: 100, y: 100 }, () => "unused");
-      expect(decoded.manifest.sync.workspaceId).toBeNull();
-    }
-  });
-
-  test("rejects invalid v9 sync and entry metadata", () => {
-    expect(() => parseManifestV9({ ...manifestV9(), sync: { ...manifestV9().sync, revision: -1 } })).toThrow("revision");
-    expect(() => parseManifestV9({ ...manifestV9(), views: [{ id: "bad/id" }] })).toThrow("view ID");
+  test("rejects invalid v10 sync and root ordering", () => {
+    expect(() => parseManifestV10({ ...manifestV10(), sync: { ...manifestV10().sync, revision: -1 } })).toThrow("revision");
+    expect(() => parseManifestV10({ ...manifestV10(), rootOrder: ["missing"] })).toThrow("root order");
   });
 });

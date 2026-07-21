@@ -5,7 +5,6 @@ export type WorkspaceIndex = {
   children: ReadonlyMap<string | null, readonly DesktopEntry[]>;
   folders: readonly FolderEntry[];
   roots: readonly DesktopEntry[];
-  rootsByView: ReadonlyMap<string, readonly DesktopEntry[]>;
   ancestors: (entryId: string) => FolderEntry[];
   descendants: (entryId: string) => DesktopEntry[];
 };
@@ -15,7 +14,6 @@ export function createWorkspaceIndex(entries: readonly DesktopEntry[]): Workspac
   const children = new Map<string | null, DesktopEntry[]>();
   const folders: FolderEntry[] = [];
   const roots: DesktopEntry[] = [];
-  const rootsByView = new Map<string, DesktopEntry[]>();
 
   for (const entry of entries) {
     const siblings = children.get(entry.parentId) ?? [];
@@ -24,11 +22,6 @@ export function createWorkspaceIndex(entries: readonly DesktopEntry[]): Workspac
     if (entry.kind === "folder") folders.push(entry);
     if (entry.parentId !== null) continue;
     roots.push(entry);
-    if (entry.viewId) {
-      const viewEntries = rootsByView.get(entry.viewId) ?? [];
-      viewEntries.push(entry);
-      rootsByView.set(entry.viewId, viewEntries);
-    }
   }
 
   function ancestors(entryId: string) {
@@ -59,5 +52,5 @@ export function createWorkspaceIndex(entries: readonly DesktopEntry[]): Workspac
     return result;
   }
 
-  return { byId, children, folders, roots, rootsByView, ancestors, descendants };
+  return { byId, children, folders, roots, ancestors, descendants };
 }

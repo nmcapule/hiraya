@@ -31,8 +31,8 @@ describe("SyncEngine local lifecycle", () => {
     const storage = {
       loadDesktop: async () => { loads += 1; return snapshot; },
       createFolder: async (name: string) => {
-        const folder = { kind: "folder" as const, id: "folder-1", name, parentId: null, viewId: "view-1", modifiedAt: 1, position: { x: 0, y: 0 } };
-        snapshot = { ...snapshot, entries: [folder] };
+        const folder = { kind: "folder" as const, id: "folder-1", name, parentId: null, modifiedAt: 1, position: { x: 0, y: 0 } };
+        snapshot = { ...snapshot, entries: [folder], layout: { ...snapshot.layout, rootOrder: [folder.id] } };
         return folder;
       },
       readCurrentDesktop: async () => snapshot,
@@ -49,7 +49,7 @@ describe("SyncEngine local lifecycle", () => {
     expect(loads).toBe(1);
     expect(statuses).toEqual(["connecting", "local"]);
 
-    await engine.createFolder("Docs", null, { x: 0, y: 0 }, "view-1");
+    await engine.createFolder("Docs", null, { x: 0, y: 0 });
     expect(published).toHaveLength(2);
     expect(published[1].entries[0].name).toBe("Docs");
 
@@ -64,17 +64,17 @@ describe("SyncEngine local lifecycle", () => {
       loadDesktop: async () => snapshot,
       saveDesktopLayout: async (layout: DesktopSnapshot["layout"]) => { snapshot = { ...snapshot, layout }; },
       readCurrentDesktop: async () => snapshot,
-      createFolder: async (_name: string, _parentId: string | null, _position: unknown, viewId: string | null) => ({
-        kind: "folder" as const, id: "folder-1", name: "Docs", parentId: null, viewId, modifiedAt: 1, position: { x: 0, y: 0 },
+      createFolder: async () => ({
+        kind: "folder" as const, id: "folder-1", name: "Docs", parentId: null, modifiedAt: 1, position: { x: 0, y: 0 },
       }),
     } as unknown as NonNullable<SyncEngineOptions["storage"]>;
     const engine = new SyncEngine({ frontendOnly: true, storage });
     await engine.start({ x: 100, y: 100 });
-    const layout = { ...snapshot.layout, views: [...snapshot.layout.views, { id: "view-2" }] };
+    const layout = { ...snapshot.layout };
 
     await engine.saveDesktopLayout(layout);
-    const folder = await engine.createFolder("Docs", null, { x: 0, y: 0 }, "view-2");
-    expect(folder.viewId).toBe("view-2");
+    const folder = await engine.createFolder("Docs", null, { x: 0, y: 0 });
+    expect(folder.id).toBe("folder-1");
     engine.stop();
   });
 });
@@ -100,7 +100,7 @@ describe("SyncEngine remote reconciliation", () => {
     expect(statuses).toEqual(["connecting"]);
     expect(startSettled).toBe(false);
 
-    resolveFetch(Response.json({ schemaVersion: 1, workspaceId: "workspace-1", initialized: false, revision: 0 }));
+    resolveFetch(Response.json({ schemaVersion: 2, workspaceId: "workspace-1", initialized: false, revision: 0 }));
     await starting;
     engine.stop();
   });
@@ -158,10 +158,10 @@ describe("SyncEngine remote reconciliation", () => {
     const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
       requests.push(`${init?.method ?? "GET"} ${String(input)}`);
       if (String(input) === "/api/workspace") {
-        return Response.json({ schemaVersion: 1, workspaceId: "workspace-1", initialized: false, revision: 0 });
+        return Response.json({ schemaVersion: 2, workspaceId: "workspace-1", initialized: false, revision: 0 });
       }
       return Response.json({
-        schemaVersion: 1,
+        schemaVersion: 2,
         workspaceId: "workspace-1",
         initialized: true,
         revision: 1,
@@ -185,7 +185,7 @@ describe("SyncEngine remote reconciliation", () => {
     const snapshot = desktopSnapshot();
     snapshot.sync = { ...snapshot.sync, workspaceId: "old-workspace", revision: 50 };
     const fetchImpl = (async () => Response.json({
-      schemaVersion: 1,
+      schemaVersion: 2,
       workspaceId: "new-workspace",
       initialized: true,
       revision: 1,
@@ -217,7 +217,7 @@ describe("SyncEngine remote reconciliation", () => {
     const starting = engine.start({ x: 100, y: 100 });
     await Promise.resolve();
     engine.stop();
-    resolveFetch(Response.json({ schemaVersion: 1, workspaceId: "workspace-1", initialized: false, revision: 0 }));
+    resolveFetch(Response.json({ schemaVersion: 2, workspaceId: "workspace-1", initialized: false, revision: 0 }));
 
     await expect(starting).rejects.toMatchObject({ name: "AbortError" });
     expect(applications).toBe(0);

@@ -29,6 +29,7 @@ func TestBootstrapAndPersistenceRestart(t *testing.T) {
 		folder("folder", "Docs", nil, ptr("view-1")),
 		file("file", "hello.txt", ptr("folder"), nil, "text/plain", 5),
 	}
+	workspace.Layout.RootOrder = []string{"folder"}
 
 	response := bootstrapRequest(t, server, workspace, map[string]string{"file": "hello"})
 	if response.Code != http.StatusCreated {
@@ -95,6 +96,94 @@ func TestPersistenceDefaultsLegacyWallpaper(t *testing.T) {
 	}
 }
 
+func TestWorkspaceSchemaV1MigrationOrdersRootsAndPersistsV2(t *testing.T) {
+	dir := t.TempDir()
+	filesDir := filepath.Join(dir, "files")
+	if err := os.MkdirAll(filesDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"Second tie", "Later first view", "Earlier first view", "First tie"} {
+		if err := os.Mkdir(filepath.Join(filesDir, name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	legacy := []byte(`{"schemaVersion":1,"workspaceId":"workspace","initialized":true,"revision":12,"entries":[{"kind":"folder","id":"tie-2","name":"Second tie","parentId":null,"modifiedAt":1,"position":{"x":8,"y":4},"viewId":"view-2","revision":3,"contentRevision":0},{"kind":"folder","id":"later","name":"Later first view","parentId":null,"modifiedAt":2,"position":{"x":20,"y":1},"viewId":"view-1","revision":4,"contentRevision":0},{"kind":"folder","id":"earlier","name":"Earlier first view","parentId":null,"modifiedAt":3,"position":{"x":10,"y":9},"viewId":"view-1","revision":5,"contentRevision":0},{"kind":"folder","id":"tie-1","name":"First tie","parentId":null,"modifiedAt":4,"position":{"x":8,"y":4},"viewId":"view-2","revision":6,"contentRevision":0}],"layout":{"views":[{"id":"view-1"},{"id":"view-2"}],"columns":2,"snapToGrid":true,"wallpaper":"ember"},"layoutRevision":7,"editorSettings":{"autoSave":false,"fontSize":17,"language":"typescript"},"settingsRevision":8}`)
+	if err := os.WriteFile(filepath.Join(dir, metadataName), legacy, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, logicalMarker), []byte("1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	workspace := store.snapshot()
+	if workspace.SchemaVersion != 2 || workspace.Revision != 12 || workspace.LayoutRevision != 7 || workspace.SettingsRevision != 8 {
+		t.Fatalf("migration changed revisions: %+v", workspace)
+	}
+	if got := strings.Join(workspace.Layout.RootOrder, ","); got != "earlier,later,tie-2,tie-1" {
+		t.Fatalf("migrated root order = %q", got)
+	}
+	if !workspace.Layout.SnapToGrid || workspace.Layout.Wallpaper != "ember" || workspace.EditorSettings.FontSize != 17 {
+		t.Fatalf("migration changed layout or settings: %+v", workspace)
+	}
+	persisted, err := os.ReadFile(filepath.Join(dir, metadataName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(persisted, []byte(`"views"`)) || bytes.Contains(persisted, []byte(`"viewId"`)) || !bytes.Contains(persisted, []byte(`"schemaVersion":2`)) {
+		t.Fatalf("persisted migration is not schema v2: %s", persisted)
+	}
+}
+
+func TestRootOrderMaintainedByEntryMutations(t *testing.T) {
+	store, server := initializedTestServer(t)
+	for _, entry := range []Entry{
+		folder("a", "A", nil, nil),
+		folder("b", "B", nil, nil),
+		folder("c", "C", ptr("a"), nil),
+		folder("d", "D", nil, nil),
+	} {
+		response := multipartEntryRequest(t, server, http.MethodPost, "/api/entries", entry, nil)
+		if response.Code != http.StatusOK {
+			t.Fatalf("create %s: %d %s", entry.ID, response.Code, response.Body.String())
+		}
+	}
+	if got := strings.Join(store.snapshot().Layout.RootOrder, ","); got != "a,b,d" {
+		t.Fatalf("root order after creates = %q", got)
+	}
+
+	b := findEntry(t, store.snapshot().Entries, "b")
+	b.ParentID = ptr("a")
+	if response := jsonRequest(t, server, http.MethodPatch, "/api/entries/b", b); response.Code != http.StatusOK {
+		t.Fatalf("move root to nested: %d %s", response.Code, response.Body.String())
+	}
+	c := findEntry(t, store.snapshot().Entries, "c")
+	c.ParentID = nil
+	if response := jsonRequest(t, server, http.MethodPatch, "/api/entries/c", c); response.Code != http.StatusOK {
+		t.Fatalf("move nested to root: %d %s", response.Code, response.Body.String())
+	}
+	if got := strings.Join(store.snapshot().Layout.RootOrder, ","); got != "a,d,c" {
+		t.Fatalf("root order after moves = %q", got)
+	}
+
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, httptest.NewRequest(http.MethodDelete, "/api/entries/a", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("delete root: %d %s", response.Code, response.Body.String())
+	}
+	if got := strings.Join(store.snapshot().Layout.RootOrder, ","); got != "d,c" {
+		t.Fatalf("root order after delete = %q", got)
+	}
+	reorder := jsonRequest(t, server, http.MethodPut, "/api/layout", Layout{RootOrder: []string{"c", "d"}, SnapToGrid: true, Wallpaper: "grove"})
+	if reorder.Code != http.StatusOK || strings.Join(store.snapshot().Layout.RootOrder, ",") != "c,d" {
+		t.Fatalf("layout reorder: %d %s", reorder.Code, reorder.Body.String())
+	}
+}
+
 func TestOpenStoreRejectsSymlinkedFilesRoot(t *testing.T) {
 	dir := t.TempDir()
 	target := t.TempDir()
@@ -113,22 +202,7 @@ func TestMigratesIDKeyedStorageToLogicalPaths(t *testing.T) {
 	if err := os.MkdirAll(filesDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	workspace := Workspace{
-		Initialized: true, Revision: 4,
-		Entries: []Entry{
-			folder("folder-id", "Docs", nil, ptr("view-1")),
-			file("file-id", "notes.txt", ptr("folder-id"), nil, "text/plain", 5),
-		},
-		Layout: Layout{Views: []View{{ID: "view-1"}}, Columns: 1, Wallpaper: "dusk"}, LayoutRevision: 1,
-		EditorSettings: EditorSettings{AutoSave: true, FontSize: 13, Language: "auto"}, SettingsRevision: 1,
-	}
-	workspace.Entries[0].Revision = 2
-	workspace.Entries[1].Revision = 4
-	workspace.Entries[1].ContentRevision = 4
-	b, err := json.Marshal(workspace)
-	if err != nil {
-		t.Fatal(err)
-	}
+	b := []byte(`{"schemaVersion":1,"initialized":true,"revision":4,"entries":[{"kind":"folder","id":"folder-id","name":"Docs","parentId":null,"modifiedAt":1,"position":{"x":1,"y":2},"viewId":"view-1","revision":2,"contentRevision":0},{"kind":"file","id":"file-id","name":"notes.txt","parentId":"folder-id","modifiedAt":1,"position":{"x":1,"y":2},"viewId":null,"mimeType":"text/plain","size":5,"revision":4,"contentRevision":4}],"layout":{"views":[{"id":"view-1"}],"columns":1,"snapToGrid":false,"wallpaper":"dusk"},"layoutRevision":1,"editorSettings":{"autoSave":true,"fontSize":13,"language":"auto"},"settingsRevision":1}`)
 	if err := os.WriteFile(filepath.Join(dir, metadataName), b, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -159,20 +233,7 @@ func TestMigrationPreservesUnknownLegacyFiles(t *testing.T) {
 	if err := os.MkdirAll(filesDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	workspace := Workspace{
-		Initialized: true, Revision: 1,
-		Entries:          []Entry{file("known", "known.txt", nil, ptr("view-1"), "text/plain", 5)},
-		Layout:           Layout{Views: []View{{ID: "view-1"}}, Columns: 1, Wallpaper: "dusk"},
-		LayoutRevision:   1,
-		EditorSettings:   EditorSettings{AutoSave: true, FontSize: 13, Language: "auto"},
-		SettingsRevision: 1,
-	}
-	workspace.Entries[0].Revision = 1
-	workspace.Entries[0].ContentRevision = 1
-	b, err := json.Marshal(workspace)
-	if err != nil {
-		t.Fatal(err)
-	}
+	b := []byte(`{"schemaVersion":1,"initialized":true,"revision":1,"entries":[{"kind":"file","id":"known","name":"known.txt","parentId":null,"modifiedAt":1,"position":{"x":1,"y":2},"viewId":"view-1","mimeType":"text/plain","size":5,"revision":1,"contentRevision":1}],"layout":{"views":[{"id":"view-1"}],"columns":1,"snapToGrid":false,"wallpaper":"dusk"},"layoutRevision":1,"editorSettings":{"autoSave":true,"fontSize":13,"language":"auto"},"settingsRevision":1}`)
 	if err := os.WriteFile(filepath.Join(dir, metadataName), b, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -257,10 +318,10 @@ func TestExternalFilesystemChangesReconcileLive(t *testing.T) {
 	first := store.snapshot()
 	folderEntry := findEntryByName(t, first.Entries, "External")
 	fileEntry := findEntryByName(t, first.Entries, "note.md")
-	if folderEntry.ParentID != nil || folderEntry.ViewID == nil || *folderEntry.ViewID != "view-1" || folderEntry.Position != (Position{X: 24, Y: 24}) {
+	if folderEntry.ParentID != nil || folderEntry.Position != (Position{X: 24, Y: 24}) || strings.Join(first.Layout.RootOrder, ",") != folderEntry.ID {
 		t.Fatalf("external root placement = %+v", folderEntry)
 	}
-	if fileEntry.ParentID == nil || *fileEntry.ParentID != folderEntry.ID || fileEntry.ViewID != nil || !strings.HasPrefix(fileEntry.MimeType, "text/markdown") {
+	if fileEntry.ParentID == nil || *fileEntry.ParentID != folderEntry.ID || !strings.HasPrefix(fileEntry.MimeType, "text/markdown") {
 		t.Fatalf("external nested metadata = %+v", fileEntry)
 	}
 
@@ -344,8 +405,33 @@ func TestExternalAdditionDetectedAtStartupWithEmptyIndex(t *testing.T) {
 	t.Cleanup(func() { _ = reopened.Close() })
 	snapshot := reopened.snapshot()
 	entry := findEntryByName(t, snapshot.Entries, "outside.txt")
-	if snapshot.Revision != 2 || entry.ContentRevision != 2 || entry.ViewID == nil || *entry.ViewID != "view-1" {
+	if snapshot.Revision != 2 || entry.ContentRevision != 2 || strings.Join(snapshot.Layout.RootOrder, ",") != entry.ID {
 		t.Fatalf("startup addition reconciliation = %+v workspace=%+v", entry, snapshot)
+	}
+}
+
+func TestExternalRootsAppendAndDeletionRemovesOrder(t *testing.T) {
+	store, server := initializedTestServer(t)
+	created := multipartEntryRequest(t, server, http.MethodPost, "/api/entries", file("existing", "existing.txt", nil, nil, "text/plain", 0), ptr("existing"))
+	if created.Code != http.StatusOK {
+		t.Fatal(created.Body.String())
+	}
+	if err := os.WriteFile(filepath.Join(store.filesDir, "external.txt"), []byte("external"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	waitForRevision(t, store, 3)
+	added := store.snapshot()
+	external := findEntryByName(t, added.Entries, "external.txt")
+	if got := strings.Join(added.Layout.RootOrder, ","); got != "existing,"+external.ID || added.LayoutRevision != 3 {
+		t.Fatalf("root order after external addition = %q, layout revision = %d", got, added.LayoutRevision)
+	}
+	if err := os.Remove(filepath.Join(store.filesDir, "existing.txt")); err != nil {
+		t.Fatal(err)
+	}
+	waitForRevision(t, store, 4)
+	deleted := store.snapshot()
+	if got := strings.Join(deleted.Layout.RootOrder, ","); got != external.ID || deleted.LayoutRevision != 4 {
+		t.Fatalf("root order after external deletion = %q, layout revision = %d", got, deleted.LayoutRevision)
 	}
 }
 
@@ -406,6 +492,7 @@ func TestFailedBootstrapRemovesStagedLogicalTree(t *testing.T) {
 	store.writeMetadata = func(string, []byte, os.FileMode) error { return errors.New("injected persistence failure") }
 	workspace := testBootstrap()
 	workspace.Entries = []Entry{file("file", "retry.txt", nil, ptr("view-1"), "text/plain", 5)}
+	workspace.Layout.RootOrder = []string{"file"}
 	response := bootstrapRequest(t, server, workspace, map[string]string{"file": "hello"})
 	if response.Code != http.StatusInternalServerError {
 		t.Fatalf("failed bootstrap status = %d, body = %s", response.Code, response.Body.String())
@@ -662,7 +749,7 @@ func TestMutationsRevisionsAndLastRequestWins(t *testing.T) {
 	if settingsResult.Revision != 8 || settingsResult.SettingsRevision != 8 {
 		t.Fatalf("settings response = %+v", settingsResult)
 	}
-	layout := jsonRequest(t, server, http.MethodPut, "/api/layout", Layout{Views: []View{{ID: "view-1"}, {ID: "view-2"}}, Columns: 2, SnapToGrid: true, Wallpaper: "ember"})
+	layout := jsonRequest(t, server, http.MethodPut, "/api/layout", Layout{RootOrder: []string{"empty", "file"}, SnapToGrid: true, Wallpaper: "ember"})
 	var layoutResult layoutResponse
 	decodeResponse(t, layout, &layoutResult)
 	if layoutResult.Revision != 9 || layoutResult.LayoutRevision != 9 || !layoutResult.Layout.SnapToGrid || layoutResult.Layout.Wallpaper != "ember" {
@@ -779,7 +866,6 @@ func TestValidationRejectsInvalidStructuresAndPayloads(t *testing.T) {
 	snapshot := getWorkspace(t, server)
 	parent := findEntry(t, snapshot.Entries, "one")
 	parent.ParentID = ptr("child")
-	parent.ViewID = nil
 	cycle := jsonRequest(t, server, http.MethodPatch, "/api/entries/one", parent)
 	if cycle.Code != http.StatusConflict {
 		t.Fatalf("cycle status = %d, body = %s", cycle.Code, cycle.Body.String())
@@ -788,11 +874,11 @@ func TestValidationRejectsInvalidStructuresAndPayloads(t *testing.T) {
 	if badSettings.Code != http.StatusBadRequest {
 		t.Fatalf("bad settings status = %d", badSettings.Code)
 	}
-	removedView := jsonRequest(t, server, http.MethodPut, "/api/layout", Layout{Views: []View{{ID: "other"}}, Columns: 1, Wallpaper: "dusk"})
-	if removedView.Code != http.StatusConflict {
-		t.Fatalf("linked view removal status = %d", removedView.Code)
+	invalidOrder := jsonRequest(t, server, http.MethodPut, "/api/layout", Layout{RootOrder: []string{"other"}, Wallpaper: "dusk"})
+	if invalidOrder.Code != http.StatusConflict {
+		t.Fatalf("invalid root order status = %d", invalidOrder.Code)
 	}
-	badWallpaper := jsonRequest(t, server, http.MethodPut, "/api/layout", Layout{Views: []View{{ID: "view-1"}}, Columns: 1, Wallpaper: "ocean"})
+	badWallpaper := jsonRequest(t, server, http.MethodPut, "/api/layout", Layout{RootOrder: []string{"one"}, Wallpaper: "ocean"})
 	if badWallpaper.Code != http.StatusBadRequest {
 		t.Fatalf("bad wallpaper status = %d", badWallpaper.Code)
 	}
@@ -816,7 +902,7 @@ func TestSSENotifiesAfterMutation(t *testing.T) {
 	defer response.Body.Close()
 	reader := bufio.NewReader(response.Body)
 	identity := store.snapshot()
-	if event := readSSEEvent(t, reader); event != fmt.Sprintf("id: 1\nevent: workspace\ndata: {\"revision\":1,\"schemaVersion\":1,\"workspaceId\":%q}\n", identity.WorkspaceID) {
+	if event := readSSEEvent(t, reader); event != fmt.Sprintf("id: 1\nevent: workspace\ndata: {\"revision\":1,\"schemaVersion\":2,\"workspaceId\":%q}\n", identity.WorkspaceID) {
 		t.Fatalf("initial SSE event = %q", event)
 	}
 
@@ -824,7 +910,7 @@ func TestSSENotifiesAfterMutation(t *testing.T) {
 	if mutation.Code != http.StatusOK || store.snapshot().Revision != 2 {
 		t.Fatalf("mutation failed: %d %s", mutation.Code, mutation.Body.String())
 	}
-	if event := readSSEEvent(t, reader); event != fmt.Sprintf("id: 2\nevent: workspace\ndata: {\"revision\":2,\"schemaVersion\":1,\"workspaceId\":%q}\n", identity.WorkspaceID) {
+	if event := readSSEEvent(t, reader); event != fmt.Sprintf("id: 2\nevent: workspace\ndata: {\"revision\":2,\"schemaVersion\":2,\"workspaceId\":%q}\n", identity.WorkspaceID) {
 		t.Fatalf("mutation SSE event = %q", event)
 	}
 
@@ -840,7 +926,7 @@ func TestSSENotifiesAfterMutation(t *testing.T) {
 func TestUninitializedSnapshotAndUploadLimit(t *testing.T) {
 	_, server := newTestServer(t, t.TempDir())
 	snapshot := getWorkspace(t, server)
-	if snapshot.Initialized || snapshot.Revision != 0 || snapshot.Entries == nil || snapshot.Layout.Views == nil {
+	if snapshot.Initialized || snapshot.Revision != 0 || snapshot.Entries == nil || snapshot.Layout.RootOrder == nil {
 		t.Fatalf("uninitialized snapshot = %+v", snapshot)
 	}
 	mutation := jsonRequest(t, server, http.MethodPut, "/api/editor-settings", EditorSettings{AutoSave: true, FontSize: 13, Language: "auto"})
@@ -856,6 +942,7 @@ func TestUninitializedSnapshotAndUploadLimit(t *testing.T) {
 	limited := New(store, t.TempDir(), 3)
 	workspace := testBootstrap()
 	workspace.Entries = []Entry{file("file", "large.txt", nil, ptr("view-1"), "text/plain", 4)}
+	workspace.Layout.RootOrder = []string{"file"}
 	response := bootstrapRequest(t, limited, workspace, map[string]string{"file": "four"})
 	if response.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("oversized bootstrap status = %d, body = %s", response.Code, response.Body.String())
@@ -887,17 +974,17 @@ func initializedTestServer(t *testing.T) (*Store, *Server) {
 func testBootstrap() bootstrapWorkspace {
 	return bootstrapWorkspace{
 		Entries:        []Entry{},
-		Layout:         Layout{Views: []View{{ID: "view-1"}}, Columns: 1, Wallpaper: "dusk"},
+		Layout:         Layout{RootOrder: []string{}, Wallpaper: "dusk"},
 		EditorSettings: EditorSettings{AutoSave: true, FontSize: 13, Language: "auto"},
 	}
 }
 
 func folder(id, name string, parentID, viewID *string) Entry {
-	return Entry{Kind: "folder", ID: id, Name: name, ParentID: parentID, ModifiedAt: 1, Position: Position{X: 1, Y: 2}, ViewID: viewID}
+	return Entry{Kind: "folder", ID: id, Name: name, ParentID: parentID, ModifiedAt: 1, Position: Position{X: 1, Y: 2}}
 }
 
 func file(id, name string, parentID, viewID *string, mimeType string, size int64) Entry {
-	return Entry{Kind: "file", ID: id, Name: name, ParentID: parentID, ModifiedAt: 1, Position: Position{X: 1, Y: 2}, ViewID: viewID, MimeType: mimeType, Size: size}
+	return Entry{Kind: "file", ID: id, Name: name, ParentID: parentID, ModifiedAt: 1, Position: Position{X: 1, Y: 2}, MimeType: mimeType, Size: size}
 }
 
 func ptr[T any](value T) *T { return &value }
@@ -1106,5 +1193,5 @@ func Example_entryResponse() {
 	response := entryResponse{Revision: 4, Entry: Entry{Kind: "folder", ID: "docs", Name: "Docs", Revision: 4}}
 	b, _ := json.Marshal(response)
 	fmt.Println(string(b))
-	// Output: {"revision":4,"entry":{"kind":"folder","id":"docs","name":"Docs","parentId":null,"modifiedAt":0,"position":{"x":0,"y":0},"viewId":null,"revision":4,"contentRevision":0}}
+	// Output: {"revision":4,"entry":{"kind":"folder","id":"docs","name":"Docs","parentId":null,"modifiedAt":0,"position":{"x":0,"y":0},"revision":4,"contentRevision":0}}
 }

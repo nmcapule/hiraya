@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, CloudCheck, CloudSlash, FolderPlus, GearSix, HardDrive, Plus, SpinnerGap, Trash, UploadSimple, WarningCircle } from "@phosphor-icons/react";
+import { Check, CloudCheck, CloudSlash, FolderPlus, GearSix, HardDrive, Plus, SpinnerGap, UploadSimple, WarningCircle } from "@phosphor-icons/react";
 import seededDesktop from "virtual:hiraya-seeded";
 import { ContextMenu } from "./components/ContextMenu";
 import { FileDialog } from "./components/FileDialog";
@@ -30,7 +30,7 @@ import { DEFAULT_EDITOR_SETTINGS } from "./lib/opfs";
 import { exportSeededDesktop } from "./lib/seeded";
 import { formatDesktopRoute, normalizeDesktopRoute, parseDesktopRoute, type DesktopRoute } from "./lib/routes";
 import { DEFAULT_WALLPAPER, type ContextMenuState, type DesktopEntry, type DesktopLayout, type DialogState, type EditorSettings, type EntryPosition, type FileEntry } from "./types";
-import { desktopGrid, desktopPositionTarget, FILE_ICON_SIZE, GRID_ORIGIN, GRID_STEP, nextDesktopPosition, snapAxis, viewPage } from "./ui/desktop-geometry";
+import { desktopSlots, FILE_ICON_SIZE, GRID_ORIGIN, GRID_STEP, nextDesktopPosition, pagePositionTarget, responsiveDesktop, snapAxis } from "./ui/desktop-geometry";
 import { fileCapabilities } from "./ui/file-capabilities";
 import { topOverlay } from "./ui/overlay";
 import { createWorkspaceIndex } from "./ui/workspace-index";
@@ -57,12 +57,12 @@ function App() {
   const [route, setRoute] = useState<DesktopRoute | null>(null);
   const [clock, setClock] = useState(() => new Date());
   const [desktopSize, setDesktopSize] = useState(() => ({ width: window.innerWidth, height: Math.max(1, window.innerHeight - 44) }));
-  const [layout, setLayout] = useState<DesktopLayout>(() => ({ views: [{ id: crypto.randomUUID() }], columns: 1, snapToGrid: false, wallpaper: DEFAULT_WALLPAPER }));
+  const [layout, setLayout] = useState<DesktopLayout>(() => ({ rootOrder: [], snapToGrid: false, wallpaper: DEFAULT_WALLPAPER }));
   const [editorSettings, setEditorSettings] = useState<EditorSettings>(DEFAULT_EDITOR_SETTINGS);
   const [exporting, setExporting] = useState(false);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("connecting");
   const [editingViews, setEditingViews] = useState(false);
-  const [draggedViewId, setDraggedViewId] = useState<string | null>(null);
+  const [draggedPageKey, setDraggedPageKey] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(() => Boolean(document.fullscreenElement));
   const [settingsOpen, setSettingsOpen] = useState(false);
   const desktopRef = useRef<HTMLElement>(null);
@@ -76,8 +76,8 @@ function App() {
     startX: number;
     startY: number;
     timer: number;
-    viewId: string;
-    initialViews: DesktopLayout["views"];
+    pageKey: string;
+    initialRootOrder: string[];
   } | null>(null);
   const suppressClickRef = useRef(false);
   const edgeDragRef = useRef({ direction: "", time: 0 });
@@ -95,11 +95,16 @@ function App() {
   const editorSettingsSaveRef = useRef<Promise<void>>(Promise.resolve());
   const contentRevisionsRef = useRef<Record<string, number>>({});
   const openFileDirtyRef = useRef(false);
-  const activeViewId = route?.viewId ?? "";
+  const activePageIndex = route?.pageIndex ?? 0;
   const explorerFolderId = route?.explorerFolderId;
   const canMutate = syncStatus === "online" || syncStatus === "local";
   const workspace = useMemo(() => createWorkspaceIndex(entries), [entries]);
   const rootEntries = workspace.roots;
+  const responsive = useMemo(() => responsiveDesktop(entries, layout.rootOrder, desktopSize), [desktopSize, entries, layout.rootOrder]);
+  const pages = responsive.pages.length ? responsive.pages : [{ entries: [] }];
+  const pageColumns = responsive.columns;
+  const pageRows = responsive.rows;
+  const page = { column: activePageIndex % pageColumns, row: Math.floor(activePageIndex / pageColumns) };
   const folders = workspace.folders;
   const explorerFolderEntry = explorerFolderId ? workspace.byId.get(explorerFolderId) : null;
   const explorerFolder = explorerFolderEntry?.kind === "folder" ? explorerFolderEntry : null;
@@ -108,9 +113,6 @@ function App() {
   const dialogEntry = dialog && (dialog.type === "rename" || dialog.type === "delete") ? workspace.byId.get(dialog.entryId) ?? null : null;
   const contextMenuEntry = contextMenu ? workspace.byId.get(contextMenu.entryId) ?? null : null;
   const moveDialogEntry = moveDialogEntryId ? workspace.byId.get(moveDialogEntryId) ?? null : null;
-  const { columns: pageColumns, rows: pageRows, index: activeViewIndex, column, row } = viewPage(layout, activeViewId);
-  const page = { column, row };
-
   function setCurrentRoute(next: DesktopRoute) {
     routeRef.current = next;
     setRoute(next);
@@ -131,7 +133,8 @@ function App() {
 
   function applyLocationRoute(entriesValue = entriesRef.current, layoutValue = layoutRef.current) {
     if (!navigationReadyRef.current) return;
-    const normalized = normalizeDesktopRoute(parseDesktopRoute(window.location.hash), entriesValue, layoutValue);
+    const pageCount = Math.max(1, responsiveDesktop(entriesValue, layoutValue.rootOrder, desktopSize).pages.length);
+    const normalized = normalizeDesktopRoute(parseDesktopRoute(window.location.hash), entriesValue, pageCount);
     if (!normalized) return;
     const canonicalHash = formatDesktopRoute(normalized);
     if (canonicalHash !== window.location.hash) writeRoute(normalized, "replace");
@@ -139,7 +142,8 @@ function App() {
   }
 
   function navigateRoute(next: DesktopRoute, mode: "push" | "replace" = "push") {
-    const normalized = normalizeDesktopRoute(next, entriesRef.current, layoutRef.current);
+    const pageCount = Math.max(1, responsiveDesktop(entriesRef.current, layoutRef.current.rootOrder, desktopSize).pages.length);
+    const normalized = normalizeDesktopRoute(next, entriesRef.current, pageCount);
     if (normalized) writeRoute(normalized, mode);
   }
 
@@ -222,7 +226,7 @@ function App() {
       setContextMenu(null);
       setMoveDialogEntryId(null);
       setEditingViews(false);
-      setDraggedViewId(null);
+      setDraggedPageKey(null);
       setSettingsOpen(false);
       applyLocationRouteRef.current();
     }
@@ -290,10 +294,14 @@ function App() {
   }, []);
 
   useEffect(() => {
+    applyLocationRouteRef.current();
+  }, [pages.length]);
+
+  useEffect(() => {
     function onPointerDown(event: PointerEvent) {
       if (editingViews && !(event.target as Element).closest?.(".desktop-minimap")) {
         setEditingViews(false);
-        setDraggedViewId(null);
+        setDraggedPageKey(null);
       }
     }
     window.addEventListener("pointerdown", onPointerDown);
@@ -337,15 +345,15 @@ function App() {
       else if (owner === "moveDialog") setMoveDialogEntryId(null);
       else if (owner === "settings") setSettingsOpen(false);
       else if (owner === "contextMenu") setContextMenu(null);
-      else if (owner === "viewEditor") { setEditingViews(false); setDraggedViewId(null); }
+      else if (owner === "viewEditor") { setEditingViews(false); setDraggedPageKey(null); }
       else {
         const current = routeRef.current;
         if (!current) return;
         if (owner === "file") closeToRouteRef.current({
-          viewId: current.viewId,
+          pageIndex: current.pageIndex,
           ...(current.explorerFolderId !== undefined ? { explorerFolderId: current.explorerFolderId } : {}),
         });
-        else closeToRouteRef.current({ viewId: current.viewId });
+        else closeToRouteRef.current({ pageIndex: current.pageIndex });
       }
     }
     window.addEventListener("keydown", onKeyDown);
@@ -359,13 +367,16 @@ function App() {
   }, [notice]);
 
   function childrenCount(parentId: string | null) {
-    if (parentId !== null) return workspace.children.get(parentId)?.length ?? 0;
-    return workspace.rootsByView.get(activeViewId)?.length ?? 0;
+    return parentId !== null ? workspace.children.get(parentId)?.length ?? 0 : pages[activePageIndex]?.entries.length ?? 0;
   }
 
   function positionFor(parentId: string | null) {
+    if (parentId === null) {
+      const slots = desktopSlots(desktopSize, pages.length > 1);
+      return slots[childrenCount(null) % slots.length];
+    }
     const position = nextDesktopPosition(childrenCount(parentId), window.innerHeight);
-    return parentId === null && layoutRef.current.snapToGrid ? snapPositionInView(position) : position;
+    return position;
   }
 
   function snapPositionInView(position: EntryPosition) {
@@ -376,8 +387,7 @@ function App() {
   }
 
   function snapDesktopPosition(position: EntryPosition) {
-    const currentLayout = layoutRef.current;
-    const { column, row } = desktopPositionTarget(currentLayout, { x: desktopSize.width, y: desktopSize.height }, position);
+    const { column, row } = pagePositionTarget(pages.length, pageColumns, { x: desktopSize.width, y: desktopSize.height }, position);
     const local = snapPositionInView({
       x: position.x - column * desktopSize.width,
       y: position.y - row * desktopSize.height,
@@ -386,6 +396,19 @@ function App() {
       x: column * desktopSize.width + local.x,
       y: row * desktopSize.height + local.y,
     };
+  }
+
+  function placeRootIds(ids: string[]) {
+    const added = new Set(ids);
+    const current = layoutRef.current;
+    const remaining = current.rootOrder.filter((id) => !added.has(id));
+    const insertionIndex = Math.min(remaining.length, (activePageIndex + 1) * responsive.capacity);
+    applyLayout({ ...current, rootOrder: [...remaining.slice(0, insertionIndex), ...ids, ...remaining.slice(insertionIndex)] });
+  }
+
+  function pageIndexForRoot(id: string) {
+    const current = responsiveDesktop(entriesRef.current, layoutRef.current.rootOrder, desktopSize);
+    return Math.max(0, current.pages.findIndex((candidate) => candidate.entries.some((entry) => entry.id === id)));
   }
 
   function chooseUpload(parentId: string | null) {
@@ -416,13 +439,13 @@ function App() {
     if (!dialog || !canMutate) return;
     if (dialog.type === "create-file" || dialog.type === "create-folder") {
       const parentId = dialog.parentId;
-      const viewId = parentId === null ? activeViewId || layout.views[0].id : null;
       const created = dialog.type === "create-file"
-        ? await createTextFile(name, parentId, positionFor(parentId), viewId)
-        : await createFolder(name, parentId, positionFor(parentId), viewId);
+        ? await createTextFile(name, parentId, positionFor(parentId))
+        : await createFolder(name, parentId, positionFor(parentId));
       setEntries((current) => current.some((entry) => entry.id === created.id) ? current : [...current, created]);
+      if (parentId === null) placeRootIds([created.id]);
       setSelectedId(created.id);
-      if (parentId === null && created.viewId) goToView(created.viewId);
+      if (parentId === null) goToPage(pageIndexForRoot(created.id));
       setNotice(`${created.name} created`);
     } else if (dialog.type === "rename") {
       if (!dialogEntry) { setDialog(null); return; }
@@ -446,16 +469,19 @@ function App() {
     setError("");
     try {
       const offset = childrenCount(parentId);
-      const viewId = parentId === null ? activeViewId || layout.views[0].id : null;
-      const positions = sources.map((_, index) => nextDesktopPosition(offset + index, window.innerHeight, base));
-      const imported = await importFiles(sources, parentId, parentId === null && layoutRef.current.snapToGrid ? positions.map(snapPositionInView) : positions, viewId);
+      const slots = parentId === null ? desktopSlots(desktopSize, pages.length > 1 || offset + sources.length > responsive.capacity) : [];
+      const positions = sources.map((_, index) => parentId === null
+        ? base && index === 0 ? snapPositionInView(base) : slots[(offset + index) % slots.length]
+        : nextDesktopPosition(offset + index, window.innerHeight, base));
+      const imported = await importFiles(sources, parentId, positions);
       setEntries((current) => {
         const existingIds = new Set(current.map((entry) => entry.id));
         return [...current, ...imported.filter((entry) => !existingIds.has(entry.id))];
       });
+      if (parentId === null) placeRootIds(imported.map((entry) => entry.id));
       setSelectedId(imported.at(-1)?.id ?? null);
       const lastImported = imported.at(-1);
-      if (lastImported?.viewId) goToView(lastImported.viewId);
+      if (lastImported && parentId === null) goToPage(pageIndexForRoot(lastImported.id));
       setNotice(`${imported.length} ${imported.length === 1 ? "file" : "files"} added`);
     } catch (importError) {
       setError(importError instanceof Error ? importError.message : "The upload could not be completed.");
@@ -469,15 +495,20 @@ function App() {
       return;
     }
     const finalPosition = layoutRef.current.snapToGrid ? snapDesktopPosition(position) : position;
-    const target = desktopPositionTarget(layoutRef.current, { x: desktopSize.width, y: desktopSize.height }, finalPosition);
+    const target = pagePositionTarget(pages.length, pageColumns, { x: desktopSize.width, y: desktopSize.height }, finalPosition);
     const localPosition = {
       x: Math.max(8, finalPosition.x - target.column * desktopSize.width),
       y: Math.max(8, finalPosition.y - target.row * desktopSize.height),
     };
-    setEntries((current) => current.map((item) => item.id === entry.id ? { ...item, position: localPosition, viewId: target.view.id } : item));
+    setEntries((current) => current.map((item) => item.id === entry.id ? { ...item, position: localPosition } : item));
     try {
-      await layoutSaveRef.current;
-      await updateEntryPosition(entry.id, localPosition, target.view.id);
+      if (target.index !== activePageIndex) {
+        const order = layoutRef.current.rootOrder.filter((id) => id !== entry.id);
+        const insertionIndex = Math.min(order.length, (target.index + 1) * responsive.capacity - 1);
+        applyLayout({ ...layoutRef.current, rootOrder: [...order.slice(0, insertionIndex), entry.id, ...order.slice(insertionIndex)] });
+        await layoutSaveRef.current;
+      }
+      await updateEntryPosition(entry.id, localPosition);
     } catch {
       setError("The new icon position could not be saved.");
     }
@@ -488,8 +519,9 @@ function App() {
     setError("");
     try {
       if (entry.parentId === parentId) return;
-      const moved = await moveEntry(entry.id, parentId, positionFor(parentId), parentId === null ? activeViewId : null);
+      const moved = await moveEntry(entry.id, parentId, positionFor(parentId));
       setEntries((current) => current.map((item) => item.id === moved.id ? moved : item));
+      if (entry.parentId !== null && parentId === null) placeRootIds([moved.id]);
       setSelectedId(null);
       setContextMenu(null);
       setNotice(`${entry.name} moved`);
@@ -558,22 +590,23 @@ function App() {
     setNotice(syncStatus === "local" ? "Changes saved locally" : "Changes synced");
   }
 
-  function goToView(viewId: string, mode: "push" | "replace" = "push") {
-    const index = layoutRef.current.views.findIndex((view) => view.id === viewId);
+  function goToPage(pageIndex: number, mode: "push" | "replace" = "push") {
+    const current = responsiveDesktop(entriesRef.current, layoutRef.current.rootOrder, desktopSize);
+    const pageCount = Math.max(1, current.pages.length);
+    const index = Math.max(0, Math.min(pageCount - 1, pageIndex));
     const currentRoute = routeRef.current;
-    if (index < 0 || !currentRoute) return;
-    const { columns } = desktopGrid(layoutRef.current);
-    const column = index % columns;
-    const row = Math.floor(index / columns);
+    if (!currentRoute) return;
+    const column = index % current.columns;
+    const row = Math.floor(index / current.columns);
     if (canvasRef.current) canvasRef.current.style.transform = `translate3d(${-column * desktopSize.width}px, ${-row * desktopSize.height}px, 0)`;
-    navigateRoute({ ...currentRoute, viewId }, mode);
+    navigateRoute({ ...currentRoute, pageIndex: index }, mode);
   }
 
   function handleDesktopPointerDown(event: React.PointerEvent<HTMLElement>) {
     if (event.button !== 0) return;
     const target = event.target as Element;
     if (target.closest(".file-icon, .empty-state__actions")) return;
-    swipeRef.current = { axis: null, pointerId: event.pointerId, startIndex: activeViewIndex, startTime: performance.now(), startX: event.clientX, startY: event.clientY, x: event.clientX, y: event.clientY };
+    swipeRef.current = { axis: null, pointerId: event.pointerId, startIndex: activePageIndex, startTime: performance.now(), startX: event.clientX, startY: event.clientY, x: event.clientX, y: event.clientY };
   }
 
   function handleIconDragAtEdge(clientX: number, clientY: number) {
@@ -583,9 +616,9 @@ function App() {
     const threshold = Math.min(36, Math.max(24, Math.min(bounds.width, bounds.height) * 0.06));
     const candidates = [
       { direction: "left", distance: clientX - bounds.left, enabled: page.column > 0 },
-      { direction: "right", distance: bounds.right - clientX, enabled: true },
+      { direction: "right", distance: bounds.right - clientX, enabled: page.column < pageColumns - 1 && activePageIndex + 1 < pages.length },
       { direction: "up", distance: clientY - bounds.top, enabled: page.row > 0 },
-      { direction: "down", distance: bounds.bottom - clientY, enabled: true },
+      { direction: "down", distance: bounds.bottom - clientY, enabled: activePageIndex + pageColumns < pages.length },
     ].filter((candidate) => candidate.enabled && candidate.distance <= threshold).sort((a, b) => a.distance - b.distance);
     const edge = candidates[0];
     if (!edge) {
@@ -594,39 +627,25 @@ function App() {
     }
     const now = performance.now();
     if (edgeDragRef.current.direction === edge.direction && now - edgeDragRef.current.time < 520) return null;
-    const previousIndex = layoutRef.current.views.findIndex((view) => view.id === activeViewId);
+    const previousIndex = activePageIndex;
     const previousColumn = previousIndex % pageColumns;
     const previousRow = Math.floor(previousIndex / pageColumns);
-    let columns = pageColumns;
     let targetIndex = previousIndex;
-    const views = [...layoutRef.current.views];
     if (edge.direction === "left") targetIndex -= 1;
-    if (edge.direction === "up") targetIndex -= columns;
-    if (edge.direction === "right") {
-      targetIndex += 1;
-      if (previousColumn === columns - 1) {
-        columns += 1;
-        views.splice(targetIndex, 0, { id: crypto.randomUUID() });
-      } else if (targetIndex >= views.length) {
-        views.push({ id: crypto.randomUUID() });
-      }
-    }
-    if (edge.direction === "down") {
-      targetIndex += columns;
-      while (views.length <= targetIndex) views.push({ id: crypto.randomUUID() });
-    }
-    targetIndex = Math.max(0, Math.min(views.length - 1, targetIndex));
-    const nextColumn = targetIndex % columns;
-    const nextRow = Math.floor(targetIndex / columns);
+    if (edge.direction === "up") targetIndex -= pageColumns;
+    if (edge.direction === "right") targetIndex += 1;
+    if (edge.direction === "down") targetIndex += pageColumns;
+    targetIndex = Math.max(0, Math.min(pages.length - 1, targetIndex));
+    const nextColumn = targetIndex % pageColumns;
+    const nextRow = Math.floor(targetIndex / pageColumns);
     edgeDragRef.current = { direction: edge.direction, time: now };
-    if (views.length !== layoutRef.current.views.length || columns !== layoutRef.current.columns) applyLayout({ ...layoutRef.current, views, columns });
     if (!edgeNavigationRef.current && routeRef.current) edgeNavigationRef.current = { route: routeRef.current, historyState: window.history.state };
-    goToView(views[targetIndex].id, "replace");
+    goToPage(targetIndex, "replace");
     return {
       deltaX: (nextColumn - previousColumn) * desktopSize.width,
       deltaY: (nextRow - previousRow) * desktopSize.height,
-      maxX: Math.max(8, columns * desktopSize.width - FILE_ICON_SIZE.width),
-      maxY: Math.max(8, Math.ceil(views.length / columns) * desktopSize.height - FILE_ICON_SIZE.height),
+      maxX: Math.max(8, pageColumns * desktopSize.width - FILE_ICON_SIZE.width),
+      maxY: Math.max(8, pageRows * desktopSize.height - FILE_ICON_SIZE.height),
     };
   }
 
@@ -681,40 +700,23 @@ function App() {
     window.setTimeout(() => { suppressClickRef.current = false; }, 0);
     swipeRef.current = null;
     if (canvasRef.current) delete canvasRef.current.dataset.swiping;
-    nextIndex = Math.max(0, Math.min(layoutRef.current.views.length - 1, nextIndex));
-    goToView(layoutRef.current.views[nextIndex].id);
+    nextIndex = Math.max(0, Math.min(pages.length - 1, nextIndex));
+    goToPage(nextIndex);
   }
 
-  function moveView(viewId: string, targetIndex: number, persist = true) {
+  function movePage(pageKey: string, targetIndex: number, persist = true) {
     const current = layoutRef.current;
-    const sourceIndex = current.views.findIndex((view) => view.id === viewId);
-    const boundedTarget = Math.max(0, Math.min(current.views.length - 1, targetIndex));
+    const currentPages = responsiveDesktop(entriesRef.current, current.rootOrder, desktopSize).pages;
+    const sourceIndex = currentPages.findIndex((candidate) => candidate.entries[0]?.id === pageKey);
+    const boundedTarget = Math.max(0, Math.min(currentPages.length - 1, targetIndex));
     if (sourceIndex < 0 || sourceIndex === boundedTarget) return;
-    const views = [...current.views];
-    const [moved] = views.splice(sourceIndex, 1);
-    views.splice(boundedTarget, 0, moved);
-    applyLayout({ ...current, views }, persist);
+    const chunks = currentPages.map((candidate) => candidate.entries.map((entry) => entry.id));
+    const [moved] = chunks.splice(sourceIndex, 1);
+    chunks.splice(boundedTarget, 0, moved);
+    applyLayout({ ...current, rootOrder: chunks.flat() }, persist);
   }
 
-  function deleteView(viewId: string) {
-    if (!canMutate) return;
-    if (layout.views.length === 1) {
-      setError("The final desktop view cannot be deleted.");
-      return;
-    }
-    if (rootEntries.some((entry) => entry.viewId === viewId)) {
-      setError("Move or delete this view's items before deleting it.");
-      return;
-    }
-    const deletedIndex = layout.views.findIndex((view) => view.id === viewId);
-    const views = layout.views.filter((view) => view.id !== viewId);
-    const next = { ...layout, views, columns: Math.max(1, Math.min(layout.columns, views.length)) };
-    if (activeViewId === viewId && routeRef.current) navigateRoute({ ...routeRef.current, viewId: views[Math.min(deletedIndex, views.length - 1)].id }, "replace");
-    applyLayout(next);
-    setNotice("Desktop view deleted");
-  }
-
-  function startMinimapPress(event: React.PointerEvent<HTMLButtonElement>, viewId: string) {
+  function startMinimapPress(event: React.PointerEvent<HTMLButtonElement>, pageKey: string) {
     if (event.button !== 0 || !canMutate) return;
     const press = {
       activated: editingViews,
@@ -722,13 +724,13 @@ function App() {
       startX: event.clientX,
       startY: event.clientY,
       timer: 0,
-      viewId,
-      initialViews: [...layoutRef.current.views],
+      pageKey,
+      initialRootOrder: [...layoutRef.current.rootOrder],
     };
     press.timer = window.setTimeout(() => {
       press.activated = true;
       setEditingViews(true);
-      setDraggedViewId(viewId);
+      setDraggedPageKey(pageKey);
       suppressClickRef.current = true;
     }, editingViews ? 0 : MINIMAP_LONG_PRESS_MS);
     minimapPointerRef.current = press;
@@ -746,11 +748,12 @@ function App() {
     }
     if (!press.activated) return;
     const target = document.elementsFromPoint(event.clientX, event.clientY)
-      .map((element) => element.closest<HTMLElement>("[data-view-id]"))
+      .map((element) => element.closest<HTMLElement>("[data-page-key]"))
       .find(Boolean);
-    if (!target?.dataset.viewId) return;
-    const targetIndex = layoutRef.current.views.findIndex((view) => view.id === target.dataset.viewId);
-    moveView(press.viewId, targetIndex, false);
+    if (!target?.dataset.pageKey) return;
+    const currentPages = responsiveDesktop(entriesRef.current, layoutRef.current.rootOrder, desktopSize).pages;
+    const targetIndex = currentPages.findIndex((candidate) => candidate.entries[0]?.id === target.dataset.pageKey);
+    movePage(press.pageKey, targetIndex, false);
   }
 
   function finishMinimapPress(event: React.PointerEvent<HTMLButtonElement>, cancelled = false) {
@@ -760,15 +763,16 @@ function App() {
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
     minimapPointerRef.current = null;
     if (press.activated && cancelled) {
-      applyLayout({ ...layoutRef.current, views: press.initialViews }, false);
-      setDraggedViewId(null);
+      applyLayout({ ...layoutRef.current, rootOrder: press.initialRootOrder }, false);
+      setDraggedPageKey(null);
     } else if (press.activated) {
       applyLayout(layoutRef.current);
-      setDraggedViewId(null);
+      setDraggedPageKey(null);
       suppressClickRef.current = true;
       window.setTimeout(() => { suppressClickRef.current = false; }, 0);
     } else if (!cancelled) {
-      goToView(press.viewId);
+      const currentPages = responsiveDesktop(entriesRef.current, layoutRef.current.rootOrder, desktopSize).pages;
+      goToPage(Math.max(0, currentPages.findIndex((candidate) => candidate.entries[0]?.id === press.pageKey)));
     }
   }
 
@@ -835,16 +839,15 @@ function App() {
       >
         <div className="wallpaper-grain" aria-hidden="true" />
         <div className="desktop-canvas" ref={canvasRef} style={{ width: pageColumns * desktopSize.width, height: pageRows * desktopSize.height, transform: `translate3d(${-page.column * desktopSize.width}px, ${-page.row * desktopSize.height}px, 0)` }}>
-          {rootEntries.map((entry) => {
-            const viewIndex = layout.views.findIndex((view) => view.id === entry.viewId);
-            if (viewIndex < 0) return null;
-            const viewColumn = viewIndex % pageColumns;
-            const viewRow = Math.floor(viewIndex / pageColumns);
+          {pages.flatMap((desktopPage, pageIndex) => desktopPage.entries.map((entry) => {
+            const viewColumn = pageIndex % pageColumns;
+            const viewRow = Math.floor(pageIndex / pageColumns);
+            const projectedPosition = responsive.positions.get(entry.id) ?? entry.position;
             const renderedEntry = {
               ...entry,
               position: {
-                x: viewColumn * desktopSize.width + entry.position.x,
-                y: viewRow * desktopSize.height + entry.position.y,
+                x: viewColumn * desktopSize.width + projectedPosition.x,
+                y: viewRow * desktopSize.height + projectedPosition.y,
               },
             };
             return <FileIcon
@@ -864,7 +867,7 @@ function App() {
                 setContextMenu({ entryId: entry.id, x: event.clientX, y: event.clientY });
               }}
             />;
-          })}
+          }))}
         </div>
 
         {loading && <div className="desktop-state desktop-state--loading" aria-live="polite"><span className="loading-line" /><span className="loading-line loading-line--short" /></div>}
@@ -884,30 +887,29 @@ function App() {
       </section>
 
       {(pageColumns > 1 || pageRows > 1) && (
-        <nav className="desktop-minimap" data-editing={editingViews || undefined} aria-label="Desktop views">
+        <nav className="desktop-minimap" data-editing={editingViews || undefined} aria-label="Desktop workspaces">
           {editingViews && (
             <div className="desktop-minimap__toolbar">
-              <span>Arrange views</span>
-              <button type="button" onClick={() => { setEditingViews(false); setDraggedViewId(null); }}><Check size={12} /> Done</button>
+              <span>Arrange workspaces</span>
+              <button type="button" onClick={() => { setEditingViews(false); setDraggedPageKey(null); }}><Check size={12} /> Done</button>
             </div>
           )}
           <div className="desktop-minimap__grid" style={{ "--minimap-columns": pageColumns, "--minimap-rows": pageRows } as React.CSSProperties}>
-            {layout.views.map((view, index) => {
+            {pages.map((desktopPage, index) => {
               const column = index % pageColumns;
               const row = Math.floor(index / pageColumns);
-              const viewEntries = workspace.rootsByView.get(view.id) ?? [];
-              const deleteDisabled = viewEntries.length > 0 || layout.views.length === 1;
+              const pageKey = desktopPage.entries[0]?.id ?? `page-${index}`;
               return (
-                <div className="desktop-minimap__slot" data-view-id={view.id} data-dragging={draggedViewId === view.id || undefined} key={view.id}>
+                <div className="desktop-minimap__slot" data-page-key={pageKey} data-dragging={draggedPageKey === pageKey || undefined} key={pageKey}>
                   <button
                     className="desktop-minimap__page"
-                    data-active={view.id === activeViewId || undefined}
+                    data-active={index === activePageIndex || undefined}
                     type="button"
-                    aria-label={`View ${row + 1}, ${column + 1}${editingViews ? ", use arrow keys to move or Delete to remove" : ", long press to arrange"}`}
-                    aria-current={view.id === activeViewId ? "true" : undefined}
-                    onClick={(event) => { if (event.detail === 0 && !editingViews) goToView(view.id); }}
+                    aria-label={`Workspace ${row + 1}, ${column + 1}${editingViews ? ", use arrow keys to move" : ", long press to arrange"}`}
+                    aria-current={index === activePageIndex ? "true" : undefined}
+                    onClick={(event) => { if (event.detail === 0 && !editingViews) goToPage(index); }}
                     onContextMenu={(event) => { event.preventDefault(); setEditingViews(true); }}
-                    onPointerDown={(event) => startMinimapPress(event, view.id)}
+                    onPointerDown={(event) => startMinimapPress(event, pageKey)}
                     onPointerMove={moveMinimapPress}
                     onPointerUp={(event) => finishMinimapPress(event)}
                     onPointerCancel={(event) => finishMinimapPress(event, true)}
@@ -917,30 +919,23 @@ function App() {
                         setEditingViews(true);
                       } else if (editingViews && (event.key === "ArrowLeft" || event.key === "ArrowUp")) {
                         event.preventDefault();
-                        moveView(view.id, index - 1);
+                        movePage(pageKey, index - 1);
                       } else if (editingViews && (event.key === "ArrowRight" || event.key === "ArrowDown")) {
                         event.preventDefault();
-                        moveView(view.id, index + 1);
-                      } else if (editingViews && event.key === "Delete") {
-                        event.preventDefault();
-                        deleteView(view.id);
+                        movePage(pageKey, index + 1);
                       }
                     }}
                   >
-                    {viewEntries.map((entry) => (
-                      <span className="desktop-minimap__file" key={entry.id} style={{ left: `${entry.position.x / desktopSize.width * 100}%`, top: `${entry.position.y / desktopSize.height * 100}%` }} />
-                    ))}
+                    {desktopPage.entries.map((entry) => {
+                      const position = responsive.positions.get(entry.id) ?? entry.position;
+                      return <span className="desktop-minimap__file" key={entry.id} style={{ left: `${position.x / desktopSize.width * 100}%`, top: `${position.y / desktopSize.height * 100}%` }} />;
+                    })}
                   </button>
-                  {editingViews && (
-                    <button className="desktop-minimap__delete" type="button" disabled={deleteDisabled} title={deleteDisabled ? "Only empty views can be deleted" : "Delete empty view"} aria-label={`Delete view ${index + 1}`} onClick={() => deleteView(view.id)}>
-                      <Trash size={10} weight="bold" />
-                    </button>
-                  )}
                 </div>
               );
             })}
           </div>
-          <span className="visually-hidden" aria-live="polite">Desktop view row {page.row + 1} of {pageRows}, column {page.column + 1} of {pageColumns}</span>
+          <span className="visually-hidden" aria-live="polite">Desktop workspace row {page.row + 1} of {pageRows}, column {page.column + 1} of {pageColumns}</span>
         </nav>
       )}
 
@@ -957,7 +952,7 @@ function App() {
           folder={explorerFolder}
           breadcrumbs={breadcrumbs}
           children={explorerChildren}
-          onClose={() => { const current = routeRef.current; if (current) closeToRoute({ viewId: current.viewId }); }}
+          onClose={() => { const current = routeRef.current; if (current) closeToRoute({ pageIndex: current.pageIndex }); }}
           onNavigate={(folder) => { const current = routeRef.current; if (current) navigateRoute({ ...current, explorerFolderId: folder?.id ?? null, fileId: undefined }); }}
           onOpen={handleOpen}
           onCreateFolder={(parentId) => setDialog({ type: "create-folder", parentId })}
@@ -1019,7 +1014,7 @@ function App() {
             const current = routeRef.current;
             if (!current) return;
             closeToRoute({
-              viewId: current.viewId,
+              pageIndex: current.pageIndex,
               ...(current.explorerFolderId !== undefined ? { explorerFolderId: current.explorerFolderId } : {}),
             });
           }}

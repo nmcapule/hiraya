@@ -1,8 +1,8 @@
-import type { DesktopEntry, DesktopLayout } from "../types";
+import type { DesktopEntry } from "../types";
 import { isValidId } from "./contracts";
 
 export type DesktopRoute = {
-  viewId: string;
+  pageIndex: number;
   explorerFolderId?: string | null;
   fileId?: string;
 };
@@ -16,22 +16,17 @@ function decodeId(value: string) {
   }
 }
 
-export function parseDesktopRoute(hash: string): DesktopRoute | null {
-  const parts = hash.replace(/^#\/?/, "").split("/").filter(Boolean);
-  if (parts[0] !== "views" || parts.length < 2) return null;
-  const viewId = decodeId(parts[1]);
-  if (!viewId) return null;
-
-  const route: DesktopRoute = { viewId };
-  let index = 2;
+function parseSuffix(parts: string[], route: DesktopRoute, startIndex: number) {
+  const next = { ...route };
+  let index = startIndex;
   if (parts[index] === "explorer") {
     if (parts[index + 1] === "root") {
-      route.explorerFolderId = null;
+      next.explorerFolderId = null;
       index += 2;
     } else if (parts[index + 1] === "folder" && parts[index + 2]) {
       const folderId = decodeId(parts[index + 2]);
       if (!folderId) return null;
-      route.explorerFolderId = folderId;
+      next.explorerFolderId = folderId;
       index += 3;
     } else {
       return null;
@@ -40,26 +35,39 @@ export function parseDesktopRoute(hash: string): DesktopRoute | null {
   if (parts[index] === "file" && parts[index + 1]) {
     const fileId = decodeId(parts[index + 1]);
     if (!fileId) return null;
-    route.fileId = fileId;
+    next.fileId = fileId;
     index += 2;
   }
-  return index === parts.length ? route : null;
+  return index === parts.length ? next : null;
+}
+
+export function parseDesktopRoute(hash: string): DesktopRoute | null {
+  const parts = hash.replace(/^#\/?/, "").split("/").filter(Boolean);
+  if (parts.length < 2) return null;
+
+  if (parts[0] === "workspaces" && /^\d+$/.test(parts[1])) {
+    const pageIndex = Number(parts[1]);
+    if (!Number.isSafeInteger(pageIndex)) return null;
+    return parseSuffix(parts, { pageIndex }, 2);
+  }
+
+  // Legacy view links no longer map to persisted pages, but their targets remain useful.
+  if (parts[0] === "views" && decodeId(parts[1])) return parseSuffix(parts, { pageIndex: 0 }, 2);
+  return null;
 }
 
 export function formatDesktopRoute(route: DesktopRoute) {
-  let hash = `#/views/${encodeURIComponent(route.viewId)}`;
+  let hash = `#/workspaces/${route.pageIndex}`;
   if (route.explorerFolderId === null) hash += "/explorer/root";
   else if (route.explorerFolderId !== undefined) hash += `/explorer/folder/${encodeURIComponent(route.explorerFolderId)}`;
   if (route.fileId) hash += `/file/${encodeURIComponent(route.fileId)}`;
   return hash;
 }
 
-export function normalizeDesktopRoute(route: DesktopRoute | null, entries: DesktopEntry[], layout: DesktopLayout) {
-  const fallbackViewId = layout.views[0]?.id;
-  if (!fallbackViewId) return null;
-  const next: DesktopRoute = {
-    viewId: route && layout.views.some((view) => view.id === route.viewId) ? route.viewId : fallbackViewId,
-  };
+export function normalizeDesktopRoute(route: DesktopRoute | null, entries: DesktopEntry[], pageCount: number) {
+  const normalizedPageCount = Number.isFinite(pageCount) ? Math.max(1, Math.trunc(pageCount)) : 1;
+  const requestedPage = route && Number.isFinite(route.pageIndex) ? Math.trunc(route.pageIndex) : 0;
+  const next: DesktopRoute = { pageIndex: Math.min(Math.max(requestedPage, 0), normalizedPageCount - 1) };
   if (route?.explorerFolderId === null) next.explorerFolderId = null;
   else if (route?.explorerFolderId !== undefined && entries.some((entry) => entry.id === route.explorerFolderId && entry.kind === "folder")) {
     next.explorerFolderId = route.explorerFolderId;

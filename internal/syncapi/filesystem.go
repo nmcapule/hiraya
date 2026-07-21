@@ -529,6 +529,7 @@ func (s *Store) reconcileFilesystemLocked(nodes map[string]diskNode) error {
 	}
 	next := cloneWorkspace(s.workspace)
 	if len(deleted) != 0 {
+		next.Layout.RootOrder = removeRootIDs(next.Layout.RootOrder, deleted)
 		kept := next.Entries[:0]
 		for _, entry := range next.Entries {
 			if !deleted[entry.ID] {
@@ -595,9 +596,7 @@ func (s *Store) reconcileFilesystemLocked(nodes map[string]diskNode) error {
 		}
 		node := nodes[path]
 		parentID := (*string)(nil)
-		viewID := (*string)(nil)
 		if node.parent == "" {
-			viewID = &next.Layout.Views[0].ID
 		} else {
 			id, exists := pathIDs[node.parent]
 			if !exists {
@@ -621,10 +620,11 @@ func (s *Store) reconcileFilesystemLocked(nodes map[string]diskNode) error {
 		if err != nil {
 			return err
 		}
-		entry := Entry{Kind: node.fingerprint.Kind, ID: id, Name: node.name, ParentID: parentID, ViewID: viewID, ModifiedAt: time.Now().UnixMilli(), Revision: revision}
+		entry := Entry{Kind: node.fingerprint.Kind, ID: id, Name: node.name, ParentID: parentID, ModifiedAt: time.Now().UnixMilli(), Revision: revision}
 		if parentID == nil {
 			entry.Position = autoPosition(rootCount)
 			rootCount++
+			next.Layout.RootOrder = append(next.Layout.RootOrder, id)
 		}
 		if entry.Kind == "file" {
 			entry.Size = node.fingerprint.Size
@@ -638,7 +638,10 @@ func (s *Store) reconcileFilesystemLocked(nodes map[string]diskNode) error {
 	}
 	if changed {
 		next.Revision = revision
-		if err := validateEntries(next.Entries, next.Layout); err != nil {
+		if !sameRootOrder(next.Layout.RootOrder, s.workspace.Layout.RootOrder) {
+			next.LayoutRevision = revision
+		}
+		if err := validateWorkspace(next.Entries, next.Layout); err != nil {
 			return fmt.Errorf("external filesystem state is invalid: %w", err)
 		}
 		if err := s.persistLocked(next); err != nil {

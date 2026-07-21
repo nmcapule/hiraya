@@ -141,7 +141,7 @@ func (s *Server) bootstrap(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := validateEntries(input.Entries, input.Layout); err != nil {
+	if err := validateWorkspace(input.Entries, input.Layout); err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
@@ -406,7 +406,12 @@ func (s *Server) importEntries(w http.ResponseWriter, r *http.Request) {
 		entries[i].ModifiedAt = modifiedAt
 	}
 	next.Entries = append(next.Entries, entries...)
-	if err := validateEntries(next.Entries, next.Layout); err != nil {
+	for _, entry := range entries {
+		if entry.ParentID == nil {
+			next.Layout.RootOrder = append(next.Layout.RootOrder, entry.ID)
+		}
+	}
+	if err := validateWorkspace(next.Entries, next.Layout); err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
@@ -453,6 +458,9 @@ func (s *Server) importEntries(w http.ResponseWriter, r *http.Request) {
 		written = append(written, target)
 	}
 	next.Revision = revision
+	if len(next.Layout.RootOrder) != len(s.store.workspace.Layout.RootOrder) {
+		next.LayoutRevision = revision
+	}
 	if err := s.store.persistLocked(next); err != nil {
 		for _, path := range written {
 			_ = os.Remove(path)
@@ -584,10 +592,18 @@ func (s *Server) upsertEntry(w http.ResponseWriter, r *http.Request) {
 	}
 	if idx < 0 {
 		next.Entries = append(next.Entries, entry)
+		if entry.ParentID == nil {
+			next.Layout.RootOrder = append(next.Layout.RootOrder, entry.ID)
+		}
 	} else {
 		next.Entries[idx] = entry
+		if old.ParentID == nil && entry.ParentID != nil {
+			next.Layout.RootOrder = removeRootIDs(next.Layout.RootOrder, map[string]bool{entry.ID: true})
+		} else if old.ParentID != nil && entry.ParentID == nil {
+			next.Layout.RootOrder = append(next.Layout.RootOrder, entry.ID)
+		}
 	}
-	if err := validateEntries(next.Entries, next.Layout); err != nil {
+	if err := validateWorkspace(next.Entries, next.Layout); err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
@@ -644,6 +660,9 @@ func (s *Server) upsertEntry(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	next.Revision++
+	if idx < 0 && entry.ParentID == nil || idx >= 0 && (old.ParentID == nil) != (entry.ParentID == nil) {
+		next.LayoutRevision = next.Revision
+	}
 	if err := s.store.persistLocked(next); err != nil {
 		if replacement != nil {
 			if rollbackErr := replacement.rollback(); rollbackErr != nil {
@@ -732,7 +751,12 @@ func (s *Server) patchEntry(w http.ResponseWriter, r *http.Request) {
 	entry.ModifiedAt = s.now().UnixMilli()
 	entry.Revision = next.Revision + 1
 	next.Entries[idx] = entry
-	if err := validateEntries(next.Entries, next.Layout); err != nil {
+	if old.ParentID == nil && entry.ParentID != nil {
+		next.Layout.RootOrder = removeRootIDs(next.Layout.RootOrder, map[string]bool{id: true})
+	} else if old.ParentID != nil && entry.ParentID == nil {
+		next.Layout.RootOrder = append(next.Layout.RootOrder, id)
+	}
+	if err := validateWorkspace(next.Entries, next.Layout); err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
@@ -752,6 +776,9 @@ func (s *Server) patchEntry(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	next.Revision++
+	if (old.ParentID == nil) != (entry.ParentID == nil) {
+		next.LayoutRevision = next.Revision
+	}
 	if err := s.store.persistLocked(next); err != nil {
 		if oldPath != newPath {
 			if rollbackErr := os.Rename(newPath, oldPath); rollbackErr != nil {
@@ -819,7 +846,7 @@ func (s *Server) putContent(w http.ResponseWriter, r *http.Request) {
 	entry.Revision = next.Revision + 1
 	entry.ContentRevision = next.Revision + 1
 	next.Entries[idx] = entry
-	if err := validateEntries(next.Entries, next.Layout); err != nil {
+	if err := validateWorkspace(next.Entries, next.Layout); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -913,10 +940,12 @@ func (s *Server) deleteEntry(w http.ResponseWriter, r *http.Request) {
 	if !s.requireInitializedLocked(w) {
 		return
 	}
-	if entryIndex(s.store.workspace.Entries, id) < 0 {
+	deletedIndex := entryIndex(s.store.workspace.Entries, id)
+	if deletedIndex < 0 {
 		writeError(w, http.StatusNotFound, "entry not found")
 		return
 	}
+	deletedRoot := s.store.workspace.Entries[deletedIndex].ParentID == nil
 	deleted := map[string]bool{id: true}
 	for changed := true; changed; {
 		changed = false
@@ -939,7 +968,11 @@ func (s *Server) deleteEntry(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	next.Entries = kept
+	next.Layout.RootOrder = removeRootIDs(next.Layout.RootOrder, deleted)
 	next.Revision++
+	if deletedRoot {
+		next.LayoutRevision = next.Revision
+	}
 	trashDir := filepath.Join(s.store.dir, ".trash")
 	var quarantinedPath string
 	if _, err := os.Lstat(deletePath); err == nil {
@@ -1011,7 +1044,7 @@ func (s *Server) putLayout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	next := cloneWorkspace(s.store.workspace)
-	if err := validateEntries(next.Entries, layout); err != nil {
+	if err := validateWorkspace(next.Entries, layout); err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
@@ -1118,6 +1151,16 @@ func entryIndex(entries []Entry, id string) int {
 		}
 	}
 	return -1
+}
+
+func removeRootIDs(order []string, removed map[string]bool) []string {
+	kept := order[:0]
+	for _, id := range order {
+		if !removed[id] {
+			kept = append(kept, id)
+		}
+	}
+	return kept
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, dst any, max int64) error {

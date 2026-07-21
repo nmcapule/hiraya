@@ -67,7 +67,7 @@ If adding destructive operations, update file content and the manifest carefully
 - Multi-file imports are one server transaction: validate the full resulting workspace and all byte sizes before making any entry visible.
 - Persist file bytes before metadata that references them. Publish SSE only after the metadata commit is durable.
 - Recursive folder deletion commits metadata before best-effort blob cleanup so visible entries never point to deleted content.
-- Keep server validation equivalent to browser validation for IDs, names, sibling uniqueness, hierarchy, cycles, views, MIME data, sizes, layout, and editor settings.
+- Keep server validation equivalent to browser validation for IDs, names, sibling uniqueness, hierarchy, cycles, root ordering, MIME data, sizes, layout, and editor settings.
 - SSE events carry only the current workspace revision. Clients pull authoritative metadata and selectively fetch changed content.
 - Keep the health revision fallback in addition to SSE; proxies can leave a dead event stream appearing open.
 - Mutations are disabled when the server is unavailable. Cached files remain viewable, and unsaved editor text must not be silently discarded.
@@ -86,8 +86,8 @@ If adding destructive operations, update file content and the manifest carefully
 - If the server is uninitialized, the first browser bootstraps it from the resulting OPFS desktop, including seeded content when it initialized that browser. If the server is initialized, its workspace replaces the local cache.
 - Seeded entries become ordinary synchronized entries. User edits, moves, renames, and deletions must persist without being reset from the bundled package.
 - The menu-bar Export action packages the entire saved desktop as `hiraya-seeded.zip`, with `hiraya-seeded/manifest.json` and a logical `content` tree.
-- Export includes persisted files, folders, empty folders, views, positions, layout, metadata, and editor settings. It intentionally excludes unsaved editor changes.
-- Preserve stable entry and view IDs during export. Keep file reads for export inside the OPFS persistence boundary.
+- Export includes persisted files, folders, empty folders, root ordering, positions, layout, metadata, and editor settings. It intentionally excludes unsaved editor changes.
+- Preserve stable entry IDs and root ordering during export. Keep file reads for export inside the OPFS persistence boundary.
 - `examples/seeded` is the canonical checked-in package example. Update it and `README.md` when the seeded format or setup changes.
 
 ## Interaction Rules
@@ -95,7 +95,8 @@ If adding destructive operations, update file content and the manifest carefully
 - Dragging deliberately avoids React state updates during pointer movement. `FileIcon` applies a direct `translate3d` transform and commits the position through the sync boundary only on pointer release.
 - Use Pointer Events so dragging works with both mouse and touch.
 - Keep dragged icons clamped inside the desktop.
-- Render positions with CSS `min()` so desktop coordinates remain reachable on narrow viewports without destroying the saved desktop layout.
+- Compute workspace pages from the synchronized root order and the current viewport. Preserve dragged positions when they fit without collisions, and project other icons into available grid slots without rewriting their saved positions.
+- Never persist empty workspace pages. The empty desktop is one implicit page, and additional pages exist only while root icons exceed the current viewport capacity.
 - Do not replace the drag implementation with continuous `setState` calls.
 - External files can arrive through the hidden file input or desktop drag-and-drop. Both paths must call the same import function.
 - Text-like MIME types and known text extensions open in the editor. Images, PDFs, video, and audio use object-URL previews. Revoke every object URL after use.

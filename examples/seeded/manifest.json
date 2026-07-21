@@ -1,12 +1,7 @@
 {
-  "version": 3,
+  "version": 4,
   "layout": {
-    "views": [
-      {
-        "id": "example-view"
-      }
-    ],
-    "columns": 1,
+    "rootOrder": ["example-folder"],
     "snapToGrid": false,
     "wallpaper": "dusk"
   },
@@ -25,8 +20,7 @@
       "position": {
         "x": 22,
         "y": 22
-      },
-      "viewId": "example-view"
+      }
     },
     {
       "kind": "file",
@@ -38,7 +32,6 @@
         "x": 22,
         "y": 22
       },
-      "viewId": null,
       "mimeType": "text/plain",
       "size": 13,
       "contentUrl": "content/Welcome/hello.txt"

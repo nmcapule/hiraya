@@ -2,7 +2,6 @@ import {
   WALLPAPERS,
   type DesktopEntry,
   type DesktopLayout,
-  type DesktopView,
   type EditorLanguage,
   type EditorSettings,
   type EntryPosition,
@@ -100,18 +99,17 @@ export function parsePosition(value: unknown): EntryPosition {
 }
 
 export function parseLayout(value: unknown): DesktopLayout {
-  if (!isRecord(value) || !Array.isArray(value.views) || value.views.length === 0 || !Number.isInteger(value.columns) || (value.columns as number) < 1 || (value.columns as number) > value.views.length || typeof value.snapToGrid !== "boolean" || typeof value.wallpaper !== "string" || !WALLPAPER_IDS.has(value.wallpaper)) {
+  if (!isRecord(value) || !Array.isArray(value.rootOrder) || typeof value.snapToGrid !== "boolean" || typeof value.wallpaper !== "string" || !WALLPAPER_IDS.has(value.wallpaper)) {
     throw new Error("The desktop layout has an unsupported format.");
   }
   const ids = new Set<string>();
-  const views: DesktopView[] = value.views.map((candidate) => {
-    if (!isRecord(candidate)) throw new Error("The desktop layout has an invalid view.");
-    assertValidId(candidate.id, "The desktop layout has an invalid view ID.");
-    if (ids.has(candidate.id)) throw new Error("The desktop layout contains duplicate view IDs.");
-    ids.add(candidate.id);
-    return { id: candidate.id };
+  const rootOrder = value.rootOrder.map((id) => {
+    assertValidId(id, "The desktop layout has an invalid root entry ID.");
+    if (ids.has(id)) throw new Error("The desktop layout contains duplicate root entry IDs.");
+    ids.add(id);
+    return id;
   });
-  return { views, columns: value.columns as number, snapToGrid: value.snapToGrid, wallpaper: value.wallpaper as DesktopLayout["wallpaper"] };
+  return { rootOrder, snapToGrid: value.snapToGrid, wallpaper: value.wallpaper as DesktopLayout["wallpaper"] };
 }
 
 export function parseEditorSettings(value: unknown): EditorSettings {
@@ -128,7 +126,6 @@ function parseEntry(value: unknown, remote: boolean): ParsedEntry {
   assertValidId(value.id);
   assertCanonicalEntryName(value.name);
   if (value.parentId !== null && !isValidId(value.parentId)) throw new Error("An entry has an invalid parent ID.");
-  if (value.viewId !== null && !isValidId(value.viewId)) throw new Error("An entry has an invalid view ID.");
   const base = {
     kind: value.kind,
     id: value.id,
@@ -136,7 +133,6 @@ function parseEntry(value: unknown, remote: boolean): ParsedEntry {
     parentId: value.parentId,
     modifiedAt: readNonNegativeInteger(value.modifiedAt, "An entry has an invalid modification date."),
     position: parsePosition(value.position),
-    viewId: value.viewId,
   } as const;
   const revisions = remote ? {
     revision: readRevision(value.revision, "An entry has an invalid revision."),
@@ -161,14 +157,14 @@ export function parseEntries(value: unknown, layout: DesktopLayout, remote = fal
     if (byId.has(entry.id)) throw new Error("The desktop contains duplicate entry IDs.");
     byId.set(entry.id, entry);
   }
-  const viewIds = new Set(layout.views.map((view) => view.id));
+  const rootIds = new Set(entries.filter((entry) => entry.parentId === null).map((entry) => entry.id));
+  if (layout.rootOrder.length !== rootIds.size || layout.rootOrder.some((id) => !rootIds.has(id))) {
+    throw new Error("The desktop root order must contain every root entry exactly once.");
+  }
   const siblingNames = new Map<string, Set<string>>();
   for (const entry of entries) {
     const parentKey = entry.parentId ?? "\0";
-    if (entry.parentId === null) {
-      if (entry.viewId === null || !viewIds.has(entry.viewId)) throw new Error("A root entry refers to a missing view.");
-    } else {
-      if (entry.viewId !== null) throw new Error("Nested entries cannot belong to a view.");
+    if (entry.parentId !== null) {
       const parent = byId.get(entry.parentId);
       if (!parent || parent.kind !== "folder") throw new Error("An entry refers to a missing parent folder.");
     }
@@ -192,7 +188,7 @@ export function parseEntries(value: unknown, layout: DesktopLayout, remote = fal
 export function parseRemoteWorkspace(value: unknown): RemoteWorkspace {
   if (!isRecord(value) || typeof value.initialized !== "boolean") throw new Error("The server workspace has an unsupported format.");
   const schemaVersion = readRevision(value.schemaVersion, "The server workspace has an unsupported schema version.");
-  if (schemaVersion !== 1) throw new Error("The server workspace uses an unsupported schema version.");
+  if (schemaVersion !== 2) throw new Error("The server workspace uses an unsupported schema version.");
   assertValidId(value.workspaceId, "The server workspace has an invalid identity.");
   const identity = {
     schemaVersion,

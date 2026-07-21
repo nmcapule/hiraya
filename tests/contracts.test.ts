@@ -14,22 +14,22 @@ describe("workspace contracts", () => {
   test("rejects malformed remote revisions and hierarchy", () => {
     expect(() => parseRemoteWorkspace({ ...remoteWorkspace(), revision: 1.5 })).toThrow("revision");
     const input = remoteWorkspace();
-    input.entries[0].viewId = "missing";
-    expect(() => parseRemoteWorkspace(input)).toThrow("missing view");
+    input.layout.rootOrder = [];
+    expect(() => parseRemoteWorkspace(input)).toThrow("root order");
   });
 
   test("accepts the intentionally empty shape of an uninitialized server", () => {
     expect(parseRemoteWorkspace({
-      schemaVersion: 1,
+      schemaVersion: 2,
       workspaceId: "workspace-1",
       initialized: false,
       revision: 0,
       entries: [],
-      layout: { views: [], columns: 0, snapToGrid: false, wallpaper: "dusk" },
+      layout: { rootOrder: [], snapToGrid: false, wallpaper: "dusk" },
       layoutRevision: 0,
       editorSettings: { autoSave: true, fontSize: 13, language: "auto" },
       settingsRevision: 0,
-    })).toEqual({ schemaVersion: 1, workspaceId: "workspace-1", initialized: false, revision: 0 });
+    })).toEqual({ schemaVersion: 2, workspaceId: "workspace-1", initialized: false, revision: 0 });
   });
 
   test("uses deterministic Go-aligned ID and sibling-name rules", () => {

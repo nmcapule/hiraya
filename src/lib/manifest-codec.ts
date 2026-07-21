@@ -1,5 +1,5 @@
-import { DEFAULT_WALLPAPER, type DesktopEntry, type DesktopLayout, type DesktopView, type EditorSettings, type EntryPosition, type FileEntry, type Wallpaper } from "../types";
-import { isRecord, parseEditorSettings, parseEntries, parseLayout, readRevision } from "./contracts";
+import { DEFAULT_WALLPAPER, type DesktopEntry, type DesktopLayout, type EditorSettings, type EntryPosition, type FileEntry, type Wallpaper } from "../types";
+import { assertValidId, isRecord, parseEditorSettings, parseEntries, parseLayout, readRevision } from "./contracts";
 
 export type DesktopSyncState = {
   workspaceId: string | null;
@@ -10,11 +10,10 @@ export type DesktopSyncState = {
   settingsRevision: number;
 };
 
-export type PersistedManifestV9 = {
-  version: 9;
+export type PersistedManifestV10 = {
+  version: 10;
   entries: DesktopEntry[];
-  views: DesktopView[];
-  viewColumns: number;
+  rootOrder: string[];
   snapToGrid: boolean;
   wallpaper: Wallpaper;
   editorSettings: EditorSettings;
@@ -47,14 +46,13 @@ function parseSyncState(value: unknown): DesktopSyncState {
   };
 }
 
-export function parseManifestV9(value: unknown): PersistedManifestV9 {
-  if (!isRecord(value) || value.version !== 9 || !Array.isArray(value.views)) throw new Error("The storage index has an unsupported format.");
-  const layout = parseLayout({ views: value.views, columns: value.viewColumns, snapToGrid: value.snapToGrid, wallpaper: value.wallpaper });
+export function parseManifestV10(value: unknown): PersistedManifestV10 {
+  if (!isRecord(value) || value.version !== 10) throw new Error("The storage index has an unsupported format.");
+  const layout = parseLayout({ rootOrder: value.rootOrder, snapToGrid: value.snapToGrid, wallpaper: value.wallpaper });
   return {
-    version: 9,
+    version: 10,
     entries: parseEntries(value.entries, layout),
-    views: layout.views,
-    viewColumns: layout.columns,
+    rootOrder: layout.rootOrder,
     snapToGrid: layout.snapToGrid,
     wallpaper: layout.wallpaper,
     editorSettings: parseEditorSettings(value.editorSettings),
@@ -62,66 +60,102 @@ export function parseManifestV9(value: unknown): PersistedManifestV9 {
   };
 }
 
-function migrateEntries(entries: unknown[], viewport: EntryPosition, createId: () => string): PersistedManifestV9 {
-  const width = Math.max(1, viewport.x);
-  const height = Math.max(1, viewport.y);
-  const typed = entries as Array<Omit<DesktopEntry, "viewId">>;
-  const rootEntries = typed.filter((entry) => entry.parentId === null);
-  const columns = Math.max(1, ...rootEntries.map((entry) => Math.floor(entry.position.x / width) + 1));
-  const rows = Math.max(1, ...rootEntries.map((entry) => Math.floor(entry.position.y / height) + 1));
-  const views = Array.from({ length: columns * rows }, () => ({ id: createId() }));
-  return parseManifestV9({
-    version: 9,
-    viewColumns: columns,
-    views,
-    snapToGrid: false,
-    wallpaper: DEFAULT_WALLPAPER,
-    editorSettings: DEFAULT_EDITOR_SETTINGS,
-    sync: emptySyncState(),
-    entries: typed.map((entry) => {
-      if (entry.parentId !== null) return { ...entry, viewId: null };
-      const column = Math.floor(entry.position.x / width);
-      const row = Math.floor(entry.position.y / height);
-      return { ...entry, viewId: views[row * columns + column].id, position: { x: entry.position.x % width, y: entry.position.y % height } };
-    }),
+type LegacyView = { id: string };
+
+function legacyRootOrder(entries: DesktopEntry[], views: LegacyView[]) {
+  const viewIndexes = new Map<string, number>();
+  for (const [index, view] of views.entries()) {
+    if (!isRecord(view)) throw new Error("The desktop layout has an invalid view.");
+    assertValidId(view.id, "The desktop layout has an invalid view ID.");
+    if (viewIndexes.has(view.id)) throw new Error("The desktop layout contains duplicate view IDs.");
+    viewIndexes.set(view.id, index);
+  }
+  for (const entry of entries) {
+    const viewId = (entry as DesktopEntry & { viewId?: unknown }).viewId;
+    if (entry.parentId === null && (typeof viewId !== "string" || !viewIndexes.has(viewId))) throw new Error("A root entry refers to a missing view.");
+    if (entry.parentId !== null && viewId !== null && viewId !== undefined) throw new Error("Nested entries cannot belong to a view.");
+  }
+  return entries
+    .map((entry, index) => ({ entry, index }))
+    .filter(({ entry }) => entry.parentId === null)
+    .sort((a, b) => {
+      const aView = viewIndexes.get((a.entry as DesktopEntry & { viewId?: string | null }).viewId ?? "") ?? views.length;
+      const bView = viewIndexes.get((b.entry as DesktopEntry & { viewId?: string | null }).viewId ?? "") ?? views.length;
+      return aView - bView || a.entry.position.x - b.entry.position.x || a.entry.position.y - b.entry.position.y || a.index - b.index;
+    })
+    .map(({ entry }) => entry.id);
+}
+
+function stripViewIds(entries: unknown[]): DesktopEntry[] {
+  return entries.map((candidate) => {
+    if (!isRecord(candidate)) return candidate as DesktopEntry;
+    const { viewId: _viewId, ...entry } = candidate;
+    void _viewId;
+    return entry as DesktopEntry;
   });
 }
 
-export function decodeManifest(value: unknown, viewport: EntryPosition, createId: () => string): { manifest: PersistedManifestV9; migrated: boolean } {
+function migratePositionedEntries(entries: unknown[], viewport: EntryPosition, createId: () => string) {
+  const width = Math.max(1, viewport.x);
+  const height = Math.max(1, viewport.y);
+  const typed = entries as Array<Omit<DesktopEntry, "parentId"> & { parentId?: string | null }>;
+  const roots = typed.filter((entry) => (entry.parentId ?? null) === null);
+  const columns = Math.max(1, ...roots.map((entry) => Math.floor(entry.position.x / width) + 1));
+  const rows = Math.max(1, ...roots.map((entry) => Math.floor(entry.position.y / height) + 1));
+  const views = Array.from({ length: columns * rows }, () => ({ id: createId() }));
+  const migrated = typed.map((entry) => {
+    const parentId = entry.parentId ?? null;
+    if (parentId !== null) return { ...entry, parentId, viewId: null };
+    const column = Math.floor(entry.position.x / width);
+    const row = Math.floor(entry.position.y / height);
+    return { ...entry, parentId, viewId: views[row * columns + column].id, position: { x: entry.position.x % width, y: entry.position.y % height } };
+  });
+  return { entries: migrated, views };
+}
+
+export function decodeManifest(value: unknown, viewport: EntryPosition, createId: () => string): { manifest: PersistedManifestV10; migrated: boolean } {
   if (!isRecord(value) || !Number.isInteger(value.version)) throw new Error("The storage index has an unsupported format.");
   const version = value.version as number;
-  if (version === 9) return { manifest: parseManifestV9(value), migrated: false };
-  if (version === 8) {
-    return {
-      manifest: parseManifestV9({ ...value, version: 9, sync: { ...(isRecord(value.sync) ? value.sync : {}), workspaceId: null } }),
-      migrated: true,
-    };
-  }
+  if (version === 10) return { manifest: parseManifestV10(value), migrated: false };
+  if (version < 1 || version > 9) throw new Error("The storage index has an unsupported format.");
+
+  let entries: unknown[];
+  let views: LegacyView[];
   if (version === 1 && Array.isArray(value.files)) {
-    const entries = value.files.map((entry) => ({ ...(entry as Omit<FileEntry, "kind" | "parentId" | "viewId">), kind: "file" as const, parentId: null }));
-    return { manifest: migrateEntries(entries, viewport, createId), migrated: true };
+    const migrated = migratePositionedEntries(value.files.map((entry) => ({ ...(entry as FileEntry), kind: "file", parentId: null })), viewport, createId);
+    entries = migrated.entries;
+    views = migrated.views;
+  } else if (version === 2 && Array.isArray(value.entries)) {
+    const migrated = migratePositionedEntries(value.entries, viewport, createId);
+    entries = migrated.entries;
+    views = migrated.views;
+  } else {
+    if (!Array.isArray(value.entries) || !Array.isArray(value.views)) throw new Error("The storage index has an unsupported format.");
+    entries = value.entries;
+    views = value.views as LegacyView[];
   }
-  if (version === 2 && Array.isArray(value.entries)) return { manifest: migrateEntries(value.entries, viewport, createId), migrated: true };
-  if (version < 3 || version > 7 || !Array.isArray(value.entries) || !Array.isArray(value.views)) throw new Error("The storage index has an unsupported format.");
-  const legacy = value as Record<string, unknown>;
-  const editorSettings = version === 3 ? DEFAULT_EDITOR_SETTINGS : version === 4 && isRecord(legacy.editorSettings)
-    ? { ...legacy.editorSettings, autoSave: true }
-    : legacy.editorSettings;
+
+  const editorSettings = version <= 3 ? DEFAULT_EDITOR_SETTINGS : version === 4 && isRecord(value.editorSettings)
+    ? { ...value.editorSettings, autoSave: true }
+    : value.editorSettings;
+  const sync = version < 6 ? emptySyncState() : version < 9
+    ? { ...(isRecord(value.sync) ? value.sync : {}), workspaceId: null }
+    : value.sync;
+  const plainEntries = stripViewIds(entries);
   return {
-    manifest: parseManifestV9({
-      version: 9,
-      entries: legacy.entries,
-      views: legacy.views,
-      viewColumns: legacy.viewColumns,
-      snapToGrid: version < 7 ? false : legacy.snapToGrid,
-      wallpaper: DEFAULT_WALLPAPER,
+    manifest: parseManifestV10({
+      version: 10,
+      entries: plainEntries,
+      rootOrder: legacyRootOrder(entries as DesktopEntry[], views),
+      snapToGrid: version < 7 ? false : value.snapToGrid,
+      wallpaper: version < 8 ? DEFAULT_WALLPAPER : value.wallpaper,
       editorSettings,
-      sync: version < 6 ? emptySyncState() : { ...(isRecord(legacy.sync) ? legacy.sync : {}), workspaceId: null },
+      sync,
     }),
     migrated: true,
   };
 }
 
-export function manifestLayout(manifest: PersistedManifestV9): DesktopLayout {
-  return { views: manifest.views, columns: manifest.viewColumns, snapToGrid: manifest.snapToGrid, wallpaper: manifest.wallpaper };
+export function manifestLayout(manifest: PersistedManifestV10): DesktopLayout {
+  return { rootOrder: manifest.rootOrder, snapToGrid: manifest.snapToGrid, wallpaper: manifest.wallpaper };
 }

@@ -14,15 +14,10 @@ type Position struct {
 	Y float64 `json:"y"`
 }
 
-type View struct {
-	ID string `json:"id"`
-}
-
 type Layout struct {
-	Views      []View `json:"views"`
-	Columns    int    `json:"columns"`
-	SnapToGrid bool   `json:"snapToGrid"`
-	Wallpaper  string `json:"wallpaper"`
+	RootOrder  []string `json:"rootOrder"`
+	SnapToGrid bool     `json:"snapToGrid"`
+	Wallpaper  string   `json:"wallpaper"`
 }
 
 type EditorSettings struct {
@@ -38,7 +33,6 @@ type Entry struct {
 	ParentID        *string  `json:"parentId"`
 	ModifiedAt      int64    `json:"modifiedAt"`
 	Position        Position `json:"position"`
-	ViewID          *string  `json:"viewId"`
 	MimeType        string   `json:"mimeType"`
 	Size            int64    `json:"size"`
 	Revision        int64    `json:"revision"`
@@ -53,11 +47,10 @@ func (e Entry) MarshalJSON() ([]byte, error) {
 		ParentID        *string  `json:"parentId"`
 		ModifiedAt      int64    `json:"modifiedAt"`
 		Position        Position `json:"position"`
-		ViewID          *string  `json:"viewId"`
 		Revision        int64    `json:"revision"`
 		ContentRevision int64    `json:"contentRevision"`
 	}
-	base := baseEntry{e.Kind, e.ID, e.Name, e.ParentID, e.ModifiedAt, e.Position, e.ViewID, e.Revision, e.ContentRevision}
+	base := baseEntry{e.Kind, e.ID, e.Name, e.ParentID, e.ModifiedAt, e.Position, e.Revision, e.ContentRevision}
 	if e.Kind != "file" {
 		return json.Marshal(base)
 	}
@@ -122,15 +115,15 @@ func validateName(name string) error {
 }
 
 func validateLayout(layout Layout) error {
-	if len(layout.Views) == 0 || layout.Columns < 1 || layout.Columns > len(layout.Views) || !wallpapers[layout.Wallpaper] {
+	if !wallpapers[layout.Wallpaper] {
 		return fmt.Errorf("invalid desktop layout")
 	}
-	ids := make(map[string]bool, len(layout.Views))
-	for _, view := range layout.Views {
-		if !validID(view.ID) || ids[view.ID] {
-			return fmt.Errorf("invalid or duplicate view ID")
+	ids := make(map[string]bool, len(layout.RootOrder))
+	for _, id := range layout.RootOrder {
+		if !validID(id) || ids[id] {
+			return fmt.Errorf("invalid or duplicate root order ID")
 		}
-		ids[view.ID] = true
+		ids[id] = true
 	}
 	return nil
 }
@@ -142,11 +135,7 @@ func validateSettings(settings EditorSettings) error {
 	return nil
 }
 
-func validateEntries(entries []Entry, layout Layout) error {
-	views := make(map[string]bool, len(layout.Views))
-	for _, view := range layout.Views {
-		views[view.ID] = true
-	}
+func validateEntries(entries []Entry) error {
 	byID := make(map[string]*Entry, len(entries))
 	for i := range entries {
 		e := &entries[i]
@@ -179,15 +168,8 @@ func validateEntries(entries []Entry, layout Layout) error {
 	for i := range entries {
 		e := &entries[i]
 		parentKey := "\x00"
-		if e.ParentID == nil {
-			if e.ViewID == nil || !views[*e.ViewID] {
-				return fmt.Errorf("root entry refers to a missing view")
-			}
-		} else {
+		if e.ParentID != nil {
 			parentKey = *e.ParentID
-			if e.ViewID != nil {
-				return fmt.Errorf("nested entries cannot belong to a view")
-			}
 			parent := byID[*e.ParentID]
 			if parent == nil || parent.Kind != "folder" {
 				return fmt.Errorf("entry refers to a missing parent folder")
@@ -211,4 +193,46 @@ func validateEntries(entries []Entry, layout Layout) error {
 		}
 	}
 	return nil
+}
+
+func validateRootOrder(entries []Entry, rootOrder []string) error {
+	roots := make(map[string]bool)
+	for _, entry := range entries {
+		if entry.ParentID == nil {
+			roots[entry.ID] = true
+		}
+	}
+	if len(rootOrder) != len(roots) {
+		return fmt.Errorf("root order must contain every root entry exactly once")
+	}
+	seen := make(map[string]bool, len(rootOrder))
+	for _, id := range rootOrder {
+		if !roots[id] || seen[id] {
+			return fmt.Errorf("root order must contain every root entry exactly once")
+		}
+		seen[id] = true
+	}
+	return nil
+}
+
+func sameRootOrder(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func validateWorkspace(entries []Entry, layout Layout) error {
+	if err := validateLayout(layout); err != nil {
+		return err
+	}
+	if err := validateEntries(entries); err != nil {
+		return err
+	}
+	return validateRootOrder(entries, layout.RootOrder)
 }

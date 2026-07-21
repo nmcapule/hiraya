@@ -1,14 +1,11 @@
 export type EntryPosition = { x: number; y: number };
 
-export type DesktopView = { id: string };
-
 export const WALLPAPERS = ["dusk", "grove", "ember"] as const;
 export type Wallpaper = typeof WALLPAPERS[number];
 export const DEFAULT_WALLPAPER: Wallpaper = "dusk";
 
 export type DesktopLayout = {
-  views: DesktopView[];
-  columns: number;
+  rootOrder: string[];
   snapToGrid: boolean;
   wallpaper: Wallpaper;
 };
@@ -27,7 +24,6 @@ type BaseEntry = {
   parentId: string | null;
   modifiedAt: number;
   position: EntryPosition;
-  viewId: string | null;
 };
 
 export type FileEntry = BaseEntry & {
