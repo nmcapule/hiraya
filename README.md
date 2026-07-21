@@ -33,6 +33,7 @@ The backend accepts these optional environment variables:
 - `HIRAYA_DATA_DIR`: durable metadata and file directory, default `.hiraya-data`.
 - `HIRAYA_STATIC_DIR`: production frontend directory, default `dist`.
 - `HIRAYA_MAX_UPLOAD_BYTES`: maximum bytes in one upload or bootstrap, default 100 MiB.
+- `HIRAYA_TLS_CERT_FILE` and `HIRAYA_TLS_KEY_FILE`: optional PEM certificate and private key paths. Set both to serve HTTPS directly; omit both to serve HTTP.
 
 Build and run the same-origin production server with:
 
@@ -59,6 +60,23 @@ docker run -d \
 ```
 
 The container serves both the frontend and API on port `8080`, reports its status at `/api/health`, and runs as an unprivileged user. Keep `/data` on an explicitly managed volume so the authoritative workspace survives container replacement. `HIRAYA_MAX_UPLOAD_BYTES` can be passed with `docker run -e` to override the 100 MiB default.
+
+HTTP is the default and is suitable for `localhost`. To serve trusted HTTPS directly on port `8080`, mount a certificate covering the hostname and its private key:
+
+```sh
+docker run -d \
+  --name hiraya \
+  --restart unless-stopped \
+  -p 8080:8080 \
+  -v hiraya-data:/data \
+  -v /path/to/fullchain.pem:/tls/fullchain.pem:ro \
+  -v /path/to/privkey.pem:/tls/privkey.pem:ro \
+  -e HIRAYA_TLS_CERT_FILE=/tls/fullchain.pem \
+  -e HIRAYA_TLS_KEY_FILE=/tls/privkey.pem \
+  hiraya
+```
+
+Remote browsers require this HTTPS mode or an HTTPS reverse proxy because OPFS is unavailable on insecure non-localhost origins. The certificate must be trusted by every client device, and both mounted PEM files must be readable by the container's unprivileged UID 100.
 
 To bundle a seeded desktop into the frontend, pass its repository-relative directory at image build time:
 

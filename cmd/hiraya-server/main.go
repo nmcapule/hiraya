@@ -20,6 +20,11 @@ func main() {
 	dataDir := env("HIRAYA_DATA_DIR", ".hiraya-data")
 	addr := env("HIRAYA_ADDR", "127.0.0.1:8080")
 	staticDir := env("HIRAYA_STATIC_DIR", "dist")
+	tlsCertFile := os.Getenv("HIRAYA_TLS_CERT_FILE")
+	tlsKeyFile := os.Getenv("HIRAYA_TLS_KEY_FILE")
+	if (tlsCertFile == "") != (tlsKeyFile == "") {
+		log.Fatal("HIRAYA_TLS_CERT_FILE and HIRAYA_TLS_KEY_FILE must be set together")
+	}
 	maxUpload := defaultMaxUpload
 	if value := os.Getenv("HIRAYA_MAX_UPLOAD_BYTES"); value != "" {
 		parsed, err := strconv.ParseInt(value, 10, 64)
@@ -38,9 +43,19 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 	}
-	log.Printf("Hiraya server listening on http://%s", addr)
+	scheme := "http"
+	if tlsCertFile != "" {
+		scheme = "https"
+	}
+	log.Printf("Hiraya server listening on %s://%s", scheme, addr)
 	serveErrors := make(chan error, 1)
-	go func() { serveErrors <- server.ListenAndServe() }()
+	go func() {
+		if tlsCertFile != "" {
+			serveErrors <- server.ListenAndServeTLS(tlsCertFile, tlsKeyFile)
+			return
+		}
+		serveErrors <- server.ListenAndServe()
+	}()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	var serveErr error

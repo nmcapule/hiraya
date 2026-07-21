@@ -38,13 +38,19 @@ COPY --from=frontend /src/dist ./dist
 
 ENV HIRAYA_ADDR=0.0.0.0:8080 \
     HIRAYA_DATA_DIR=/data \
-    HIRAYA_STATIC_DIR=/app/dist
+    HIRAYA_STATIC_DIR=/app/dist \
+    HIRAYA_TLS_CERT_FILE="" \
+    HIRAYA_TLS_KEY_FILE=""
 
 EXPOSE 8080
 VOLUME ["/data"]
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD wget -q -O /dev/null http://127.0.0.1:8080/api/health || exit 1
+    CMD if [ -n "$HIRAYA_TLS_CERT_FILE" ]; then \
+        wget --no-check-certificate -q -O /dev/null https://127.0.0.1:8080/api/health; \
+      else \
+        wget -q -O /dev/null http://127.0.0.1:8080/api/health; \
+      fi || exit 1
 
 USER hiraya
 
