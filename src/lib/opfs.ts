@@ -266,8 +266,13 @@ type RpcPort = {
 
 let databasePort: Promise<RpcPort> | null = null;
 let hostedDatabaseWorker: Worker | null = null;
+let hostedDatabaseRequestId: number | null = null;
 let requestId = 0;
 const pendingRequests = new Map<number, { resolve(value: unknown): void; reject(error: Error): void }>();
+const OWNER_CHANGED_MESSAGE = "The local database owner changed. Retry the operation.";
+const RETRYABLE_OWNER_CHANGE_METHODS = new Set<StorageDbMethod>(["status", "bootstrap", "readManifest", "readPreferences", "readOutbox"]);
+
+class LocalDatabaseOwnerChangedError extends Error {}
 
 function openDatabasePort(): RpcPort {
   let port: RpcPort;
@@ -275,23 +280,43 @@ function openDatabasePort(): RpcPort {
     const shared = new SharedWorker(new URL("./opfs-shared.worker.ts", import.meta.url), { type: "module", name: "hiraya-storage" });
     port = shared.port;
     shared.port.addEventListener("message", (event) => {
-      if ((event.data as { type?: string }).type !== "need-engine") return;
+      const message = event.data as { type?: string; requestId?: number };
+      if (message.type !== "need-engine" || message.requestId === undefined) return;
+      if (hostedDatabaseWorker && hostedDatabaseRequestId === message.requestId) return;
       hostedDatabaseWorker?.terminate();
-      hostedDatabaseWorker = new Worker(new URL("./opfs-db.worker.ts", import.meta.url), { type: "module", name: "hiraya-sqlite-engine" });
+      const candidateRequestId = message.requestId;
+      const worker = new Worker(new URL("./opfs-db.worker.ts", import.meta.url), { type: "module", name: "hiraya-sqlite-engine" });
+      hostedDatabaseRequestId = candidateRequestId;
+      hostedDatabaseWorker = worker;
       const channel = new MessageChannel();
       channel.port2.onmessage = (message: MessageEvent<{ type?: string; error?: string }>) => {
         if (message.data.type === "engine-error") {
-          hostedDatabaseWorker?.terminate();
-          hostedDatabaseWorker = null;
+          worker.terminate();
+          if (hostedDatabaseWorker === worker) {
+            hostedDatabaseWorker = null;
+            hostedDatabaseRequestId = null;
+          }
           return;
         }
         if (message.data.type !== "engine-ready") return;
         channel.port2.onmessage = null;
-        shared.port.postMessage({ type: "attach-engine", port: channel.port2 }, [channel.port2]);
+        if (hostedDatabaseWorker !== worker) {
+          channel.port2.close();
+          return;
+        }
+        shared.port.postMessage({ type: "attach-engine", requestId: candidateRequestId, port: channel.port2 }, [channel.port2]);
       };
       channel.port2.start();
-      hostedDatabaseWorker.postMessage({ type: "attach", port: channel.port1 }, [channel.port1]);
+      worker.postMessage({ type: "attach", port: channel.port1 }, [channel.port1]);
     });
+    window.addEventListener("pagehide", () => {
+      if (!hostedDatabaseWorker || hostedDatabaseRequestId === null) return;
+      const releasedRequestId = hostedDatabaseRequestId;
+      hostedDatabaseWorker.terminate();
+      hostedDatabaseWorker = null;
+      hostedDatabaseRequestId = null;
+      shared.port.postMessage({ type: "release-engine", requestId: releasedRequestId });
+    }, { once: true });
   } else {
     port = new Worker(new URL("./opfs-db.worker.ts", import.meta.url), { type: "module", name: "hiraya-storage-fallback" });
   }
@@ -300,7 +325,7 @@ function openDatabasePort(): RpcPort {
     const pending = pendingRequests.get(response.id);
     if (!pending) return;
     pendingRequests.delete(response.id);
-    if (response.error) pending.reject(new Error(response.error));
+    if (response.error) pending.reject(response.error === OWNER_CHANGED_MESSAGE ? new LocalDatabaseOwnerChangedError(response.error) : new Error(response.error));
     else pending.resolve(response.result);
   });
   port.start?.();
@@ -311,11 +336,17 @@ async function callDatabase<M extends StorageDbMethod>(method: M, params: Storag
   await getRoot();
   databasePort ??= Promise.resolve().then(openDatabasePort);
   const port = await databasePort;
-  const id = ++requestId;
-  return new Promise<StorageDbResponses[M]>((resolve, reject) => {
-    pendingRequests.set(id, { resolve: (value) => resolve(value as StorageDbResponses[M]), reject });
-    port.postMessage({ id, method, params });
-  });
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      const id = ++requestId;
+      return await new Promise<StorageDbResponses[M]>((resolve, reject) => {
+        pendingRequests.set(id, { resolve: (value) => resolve(value as StorageDbResponses[M]), reject });
+        port.postMessage({ id, method, params });
+      });
+    } catch (error) {
+      if (!(error instanceof LocalDatabaseOwnerChangedError) || attempt > 0 || !RETRYABLE_OWNER_CHANGE_METHODS.has(method)) throw error;
+    }
+  }
 }
 
 function withCrossContextLock<T>(operation: () => Promise<T>) {
