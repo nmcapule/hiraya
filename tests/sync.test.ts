@@ -280,4 +280,47 @@ describe("SyncEngine remote reconciliation", () => {
     expect(workspaceReads).toBe(2);
     engine.stop();
   });
+
+  test("reports activity while remote work is queued", async () => {
+    const snapshot = desktopSnapshot();
+    const initial = remoteWorkspace();
+    const next = remoteWorkspace();
+    next.revision = 2;
+    next.entries[0].revision = 2;
+    next.entries[0].position = { x: 20, y: 30 };
+    let workspaceReads = 0;
+    let resolveMutation!: (response: Response) => void;
+    let mutationStarted!: () => void;
+    const started = new Promise<void>((resolve) => { mutationStarted = resolve; });
+    const mutation = new Promise<Response>((resolve) => { resolveMutation = resolve; });
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/workspace") {
+        workspaceReads += 1;
+        return Response.json(workspaceReads === 1 ? initial : next);
+      }
+      if (url === "/api/files/file-1/content") return new Response("note");
+      if (url === "/api/entries/file-1") {
+        mutationStarted();
+        return mutation;
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    }) as typeof fetch;
+    const engine = new SyncEngine(remoteOptions(snapshot, fetchImpl));
+    const activities: boolean[] = [];
+    const statuses: string[] = [];
+    engine.subscribe(() => undefined, (status) => statuses.push(status), (syncing) => activities.push(syncing));
+    await engine.start({ x: 100, y: 100 });
+
+    const moving = engine.updateEntryPosition("file-1", { x: 20, y: 30 });
+    await started;
+    expect(activities).toEqual([false, true]);
+    expect(statuses.at(-1)).toBe("online");
+
+    resolveMutation(Response.json({}));
+    await moving;
+    expect(activities).toEqual([false, true, false]);
+    expect(statuses.at(-1)).toBe("online");
+    engine.stop();
+  });
 });

@@ -70,6 +70,7 @@ function App() {
   const [editorSettings, setEditorSettings] = useState<EditorSettings>(DEFAULT_EDITOR_SETTINGS);
   const [exporting, setExporting] = useState(false);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("connecting");
+  const [isSyncing, setIsSyncing] = useState(false);
   const [editingViews, setEditingViews] = useState(false);
   const [draggedPageKey, setDraggedPageKey] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(() => Boolean(document.fullscreenElement));
@@ -124,6 +125,7 @@ function App() {
   const routeExplorerFolderId = route?.explorerFolderId;
   const routeFileId = route?.fileId;
   const canMutate = syncStatus === "online" || syncStatus === "local";
+  const syncIndicatorStatus = syncStatus === "online" && isSyncing ? "syncing" : syncStatus;
   const workspace = useMemo(() => createWorkspaceIndex(entries), [entries]);
   const rootEntries = workspace.roots;
   const responsive = useMemo(() => responsiveDesktop(entries, desktopSize), [desktopSize, entries]);
@@ -291,7 +293,7 @@ function App() {
       }
       navigationReadyRef.current = true;
       applyLocationRouteRef.current(synced.entries, synced.layout);
-    }, (nextStatus) => { if (active) setSyncStatus(nextStatus); });
+    }, (nextStatus) => { if (active) setSyncStatus(nextStatus); }, (syncing) => { if (active) setIsSyncing(syncing); });
     void initializeDesktop({ x: window.innerWidth, y: Math.max(1, window.innerHeight - 44) }, seededDesktop)
       .then(({ desktop: loadedDesktop, status: loadedStatus }) => {
         if (!active) return;
@@ -1105,9 +1107,9 @@ function App() {
           <button type="button" aria-label="New folder" disabled={!canMutate} onClick={() => setDialog({ type: "create-folder", parentId: null })}><FolderPlus size={16} /> <span>New folder</span></button>
           <button type="button" aria-label="Upload files" disabled={!canMutate} onClick={() => chooseUpload(null)}><UploadSimple size={16} /> <span>Upload</span></button>
           <button type="button" aria-label="Open settings" title="Settings" onClick={openSettingsWindow}><GearSix size={16} /> <span>Settings</span></button>
-          <span className="menu-bar__sync" data-status={syncStatus} title={syncStatus === "local" ? "Changes are saved in this browser" : syncStatus === "online" ? "Changes are synced" : syncStatus === "connecting" ? "Connecting to sync server" : "Sync server unavailable; editing is disabled"}>
-            {syncStatus === "local" ? <HardDrive size={15} /> : syncStatus === "online" ? <CloudCheck size={15} /> : syncStatus === "connecting" ? <SpinnerGap size={15} /> : <CloudSlash size={15} />}
-            <span>{syncStatus === "local" ? "Saved locally" : syncStatus === "online" ? "Synced" : syncStatus === "connecting" ? "Connecting" : "Offline"}</span>
+          <span className="menu-bar__sync" data-status={syncIndicatorStatus} role="status" title={syncIndicatorStatus === "local" ? "Changes are saved in this browser" : syncIndicatorStatus === "syncing" ? "Syncing changes" : syncIndicatorStatus === "online" ? "Changes are synced" : syncIndicatorStatus === "connecting" ? "Connecting to sync server" : "Sync server unavailable; editing is disabled"}>
+            {syncIndicatorStatus === "local" ? <HardDrive size={15} /> : syncIndicatorStatus === "online" ? <CloudCheck size={15} /> : syncIndicatorStatus === "connecting" || syncIndicatorStatus === "syncing" ? <SpinnerGap size={15} /> : <CloudSlash size={15} />}
+            <span>{syncIndicatorStatus === "local" ? "Saved locally" : syncIndicatorStatus === "syncing" ? "Syncing" : syncIndicatorStatus === "online" ? "Synced" : syncIndicatorStatus === "connecting" ? "Connecting" : "Offline"}</span>
           </span>
           <span className="menu-bar__clock">{formatClock(clock)}</span>
         </div>

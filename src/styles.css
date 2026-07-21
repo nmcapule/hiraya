@@ -219,7 +219,8 @@ textarea:focus-visible {
   color: #ffd39e;
 }
 
-.menu-bar__sync[data-status="connecting"] svg {
+.menu-bar__sync[data-status="connecting"] svg,
+.menu-bar__sync[data-status="syncing"] svg {
   animation: sync-spin 900ms linear infinite;
 }
 

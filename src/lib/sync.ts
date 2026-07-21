@@ -68,8 +68,10 @@ export class SyncEngine {
   private startPromise: Promise<{ desktop: storage.DesktopSnapshot; status: SyncStatus }> | null = null;
   private running = false;
   private generation = 0;
+  private pendingWork = 0;
   private readonly desktopListeners = new Set<(next: storage.DesktopSnapshot) => void>();
   private readonly statusListeners = new Set<(next: SyncStatus) => void>();
+  private readonly activityListeners = new Set<(syncing: boolean) => void>();
 
   constructor(options: SyncEngineOptions = {}) {
     this.frontendOnly = options.frontendOnly ?? false;
@@ -122,13 +124,16 @@ export class SyncEngine {
     this.healthTimer = null;
   }
 
-  subscribe(onDesktop: (next: storage.DesktopSnapshot) => void, onStatus: (next: SyncStatus) => void) {
+  subscribe(onDesktop: (next: storage.DesktopSnapshot) => void, onStatus: (next: SyncStatus) => void, onActivity?: (syncing: boolean) => void) {
     this.desktopListeners.add(onDesktop);
     this.statusListeners.add(onStatus);
+    if (onActivity) this.activityListeners.add(onActivity);
     onStatus(this.status);
+    onActivity?.(!this.frontendOnly && this.pendingWork > 0);
     return () => {
       this.desktopListeners.delete(onDesktop);
       this.statusListeners.delete(onStatus);
+      if (onActivity) this.activityListeners.delete(onActivity);
     };
   }
 
@@ -155,9 +160,22 @@ export class SyncEngine {
   }
 
   private queue<T>(operation: () => Promise<T>) {
+    if (!this.frontendOnly) {
+      this.pendingWork += 1;
+      if (this.pendingWork === 1) {
+        for (const listener of this.activityListeners) listener(true);
+      }
+    }
     const next = this.work.then(operation, operation);
     this.work = next.then(() => undefined, () => undefined);
-    return next;
+    return next.finally(() => {
+      if (!this.frontendOnly) {
+        this.pendingWork -= 1;
+        if (this.pendingWork === 0) {
+          for (const listener of this.activityListeners) listener(false);
+        }
+      }
+    });
   }
 
   private async requestJson(input: RequestInfo | URL, init?: RequestInit): Promise<unknown> {
