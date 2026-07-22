@@ -69,4 +69,12 @@ describe("window sessions", () => {
     expect(() => parseWindowTargets([{ kind: "file", fileId: "" }])).toThrow("invalid app");
     expect(() => parseWindowTargets(Array.from({ length: 101 }, () => ({ kind: "settings" })))).toThrow("unsupported app list");
   });
+
+  test("preserves explicit text editor mode", () => {
+    expect(parseWindowTargets([{ kind: "file", fileId: "file", editMode: true }])).toEqual([{ kind: "file", fileId: "file", editMode: true }]);
+    expect(parseWindowSession({
+      version: 3,
+      apps: [{ kind: "file", fileId: "file", editMode: true, bounds: { x: 0, y: 0, width: 500, height: 400 }, minimized: false, zIndex: 1 }],
+    }).apps[0]).toMatchObject({ kind: "file", fileId: "file", editMode: true });
+  });
 });

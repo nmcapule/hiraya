@@ -5,6 +5,7 @@ type Props = {
   menu: Extract<Exclude<ContextMenuState, null>, { type: "entry" }>;
   entry: DesktopEntry;
   onOpen: () => void;
+  onEditFile?: () => void;
   onRename: () => void;
   onDownload?: () => void;
   onCopy: () => void;
@@ -15,14 +16,17 @@ type Props = {
   selectionCount?: number;
 };
 
-export function ContextMenu({ menu, entry, onOpen, onRename, onDownload, onCopy, onPasteInto, onMove, onDelete, readOnly = false, selectionCount = 1 }: Props) {
+export function ContextMenu({ menu, entry, onOpen, onEditFile, onRename, onDownload, onCopy, onPasteInto, onMove, onDelete, readOnly = false, selectionCount = 1 }: Props) {
   const left = Math.min(menu.x, window.innerWidth - 190);
-  const top = Math.min(menu.y, window.innerHeight - 270);
+  const top = Math.min(menu.y, window.innerHeight - 310);
 
   return (
     <div className="context-menu" role="menu" style={{ left: Math.max(8, left), top: Math.max(48, top) }}>
       {selectionCount === 1 && <button type="button" role="menuitem" autoFocus onClick={onOpen}>
         <FolderOpen size={17} /> Open
+      </button>}
+      {selectionCount === 1 && entry.kind === "file" && onEditFile && <button type="button" role="menuitem" disabled={readOnly} onClick={onEditFile}>
+        <PencilSimple size={17} /> Edit File
       </button>}
       {selectionCount === 1 && <button type="button" role="menuitem" disabled={readOnly} onClick={onRename}>
         <PencilSimple size={17} /> Rename

@@ -2,13 +2,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Check, DownloadSimple, FloppyDisk, SlidersHorizontal } from "@phosphor-icons/react";
 import { createPortal } from "react-dom";
 import type { EditorLanguage, EditorSettings, FileEntry } from "../types";
-import { fileCapabilities } from "../ui/file-capabilities";
+import { editorLanguageFor, fileCapabilities } from "../ui/file-capabilities";
 import { TextEditor } from "./TextEditor";
-import { UrlEditor } from "./UrlEditor";
-import { parseInternetShortcut } from "../lib/internet-shortcut";
 import type { ThemeDefinition } from "../lib/themes";
 import { ImagePreview } from "./ImagePreview";
 import { MobileHeaderMenu } from "./MobileHeaderMenu";
+import { MarkdownRenderer } from "./MarkdownRenderer";
+import { formatEditorText } from "../lib/format-text";
 
 const LANGUAGE_OPTIONS: Array<{ value: EditorLanguage; label: string }> = [
   { value: "auto", label: "Auto" },
@@ -57,6 +57,7 @@ type Props = {
   file: FileEntry;
   blob: File;
   editable: boolean;
+  editMode?: boolean;
   readOnly?: boolean;
   remoteChanged?: boolean;
   headerActionsTarget?: HTMLDivElement | null;
@@ -71,7 +72,7 @@ type Props = {
   onDirtyChange?: (dirty: boolean) => void;
 };
 
-export function FileWindow({ file, blob, editable, readOnly = false, remoteChanged = false, headerActionsTarget, editorSettings, externalEmbeddedPreviews, theme, onSave, onDownload, onEditorSettingsChange, onResolveLink, onOpenLinkedFile, onDirtyChange }: Props) {
+export function FileWindow({ file, blob, editable, editMode = false, readOnly = false, remoteChanged = false, headerActionsTarget, editorSettings, externalEmbeddedPreviews, theme, onSave, onDownload, onEditorSettingsChange, onResolveLink, onOpenLinkedFile, onDirtyChange }: Props) {
   const [content, setContent] = useState("");
   const [savedContent, setSavedContent] = useState("");
   const [contentLoaded, setContentLoaded] = useState(false);
@@ -81,8 +82,10 @@ export function FileWindow({ file, blob, editable, readOnly = false, remoteChang
   const [imageZoom, setImageZoom] = useState<ImageZoom>("fit");
   const savingRef = useRef(false);
   const onSaveRef = useRef(onSave);
+  const editorSettingsRef = useRef(editorSettings);
   const lastAutoSaveAttemptRef = useRef<string | null>(null);
   onSaveRef.current = onSave;
+  editorSettingsRef.current = editorSettings;
 
   useEffect(() => {
     if (editable) {
@@ -108,19 +111,24 @@ export function FileWindow({ file, blob, editable, readOnly = false, remoteChang
     setSaving(true);
     setSaveError("");
     try {
-      await onSaveRef.current(nextContent);
-      setSavedContent(nextContent);
+      const settings = editorSettingsRef.current;
+      const saved = settings.autoFormat
+        ? await formatEditorText(nextContent, editorLanguageFor(file.name, settings.language))
+        : nextContent;
+      if (saved !== nextContent) setContent(saved);
+      await onSaveRef.current(saved);
+      setSavedContent(saved);
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : "Changes could not be saved.");
     } finally {
       savingRef.current = false;
       setSaving(false);
     }
-  }, []);
+  }, [file.name]);
 
   const dirty = content !== savedContent;
   const preview = fileCapabilities(file).preview;
-  const validContent = preview !== "url" || (() => { try { parseInternetShortcut(content); return true; } catch { return false; } })();
+  const textEditor = editable && (editMode || preview === "text" || preview === "url");
 
   useEffect(() => {
     onDirtyChange?.(dirty);
@@ -132,20 +140,20 @@ export function FileWindow({ file, blob, editable, readOnly = false, remoteChang
   }, [file.id]);
 
   useEffect(() => {
-    if (!editable || readOnly || !editorSettings.autoSave || !contentLoaded || !dirty || !validContent || saving || lastAutoSaveAttemptRef.current === content) return;
+    if (!textEditor || readOnly || !editorSettings.autoSave || !contentLoaded || !dirty || saving || lastAutoSaveAttemptRef.current === content) return;
     const timer = window.setTimeout(() => {
       lastAutoSaveAttemptRef.current = content;
       void save(content);
     }, 600);
     return () => window.clearTimeout(timer);
-  }, [content, contentLoaded, dirty, editable, editorSettings.autoSave, readOnly, save, saving, validContent]);
+  }, [content, contentLoaded, dirty, editorSettings.autoSave, readOnly, save, saving, textEditor]);
 
   return (
     <div className="file-window file-window--embedded">
       {headerActionsTarget && createPortal(
         <div className="file-header-actions" aria-label="File actions">
           {preview === "image" && <ImageZoomControl value={imageZoom} onChange={setImageZoom} />}
-          {editable && preview === "text" && !readOnly && (
+          {textEditor && !readOnly && (
             <MobileHeaderMenu label="Editor settings" icon={<SlidersHorizontal size={18} />}>
               {(dismiss) => <>
                 <label>
@@ -167,17 +175,25 @@ export function FileWindow({ file, blob, editable, readOnly = false, remoteChang
                   }} />
                   <span>Auto save</span>
                 </label>
+                <label className="mobile-header-menu__toggle">
+                  <input type="checkbox" checked={editorSettings.lineWrap} onChange={(event) => onEditorSettingsChange({ ...editorSettings, lineWrap: event.target.checked })} />
+                  <span>Line wrap</span>
+                </label>
+                <label className="mobile-header-menu__toggle">
+                  <input type="checkbox" checked={editorSettings.autoFormat} onChange={(event) => onEditorSettingsChange({ ...editorSettings, autoFormat: event.target.checked })} />
+                  <span>Format on save</span>
+                </label>
                 <button type="button" onClick={() => { dismiss(); onDownload(); }}><DownloadSimple size={17} /> Download</button>
               </>}
             </MobileHeaderMenu>
           )}
-          {(!editable || readOnly || preview === "url") && preview !== "none" && (
+          {(!textEditor || readOnly) && preview !== "none" && (
             <button className="icon-button file-header-actions__download" type="button" onClick={onDownload} aria-label="Download file">
               <DownloadSimple size={17} />
             </button>
           )}
-          {editable && !readOnly && (
-            <button className="button button--primary button--save file-header-actions__save" type="button" onClick={() => void save(content)} disabled={saving || !dirty || !validContent}>
+          {textEditor && !readOnly && (
+            <button className="button button--primary button--save file-header-actions__save" type="button" onClick={() => void save(content)} disabled={saving || !dirty}>
               {saving ? <FloppyDisk size={17} /> : <Check size={17} />}
               {saving ? "Saving" : dirty ? "Save" : "Saved"}
             </button>
@@ -188,7 +204,7 @@ export function FileWindow({ file, blob, editable, readOnly = false, remoteChang
         {saveError && <div className="window-error">{saveError}</div>}
         {remoteChanged && <div className="window-error">This file changed on the server. Your unsaved text is preserved; saving it will become the latest version.</div>}
         <div className="file-window__content">
-          {editable && preview === "text" && contentLoaded && (
+          {textEditor && contentLoaded && (
             <TextEditor
               key={file.id}
               file={file}
@@ -198,13 +214,13 @@ export function FileWindow({ file, blob, editable, readOnly = false, remoteChang
               theme={theme}
               readOnly={readOnly}
               onChange={setContent}
-              onSave={() => void save(content)}
+              onSave={(nextContent) => void save(nextContent)}
               onResolveLink={onResolveLink}
               onOpenLinkedFile={onOpenLinkedFile}
             />
           )}
-          {preview === "url" && contentLoaded && (
-            <UrlEditor content={content} readOnly={readOnly} onChange={setContent} onSave={() => void save(content)} />
+          {!editMode && preview === "markdown" && contentLoaded && (
+            <MarkdownRenderer content={content} externalEmbeddedPreviews={externalEmbeddedPreviews} onResolveLink={onResolveLink} onOpenLinkedFile={onOpenLinkedFile} />
           )}
           {!editable && preview === "image" && objectUrl && <ImagePreview src={objectUrl} alt={file.name} zoom={imageZoom} onZoomChange={setImageZoom} />}
           {!editable && preview === "pdf" && objectUrl && <iframe className="preview-frame" src={objectUrl} title={file.name} />}

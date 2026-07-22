@@ -18,8 +18,10 @@ export type EditorLanguage = "auto" | "plain" | "markdown" | "json" | "javascrip
 
 export type EditorSettings = {
   autoSave: boolean;
+  autoFormat: boolean;
   fontSize: number;
   language: EditorLanguage;
+  lineWrap: boolean;
 };
 
 type BaseEntry = {

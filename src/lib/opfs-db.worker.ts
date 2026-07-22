@@ -17,7 +17,7 @@ import { EMPTY_WINDOW_SESSION, parseWindowSession, type WindowSession } from "./
 import { activityRecord, parseActivityQuery, type ActivityPage, type NewActivityRecord } from "./activity";
 
 const DATABASE_NAME = "/hiraya.sqlite3";
-const DATABASE_SCHEMA_VERSION = 4;
+const DATABASE_SCHEMA_VERSION = 5;
 const HISTORY_LIMIT = Number(import.meta.env.HIRAYA_HISTORY_LIMIT);
 const DEFAULT_PREFERENCES: StoredPreferences = { autoUpdate: true, externalEmbeddedPreviews: true };
 
@@ -83,6 +83,10 @@ function createSchema(db: Database) {
     INSERT INTO appearance VALUES (1, '${DEFAULT_THEME_ID}');
     COMMIT;
   `);
+  if (version > 0 && version < 5) db.exec(`
+    ALTER TABLE editor_settings ADD COLUMN line_wrap INTEGER NOT NULL DEFAULT 1 CHECK (line_wrap IN (0, 1));
+    ALTER TABLE editor_settings ADD COLUMN auto_format INTEGER NOT NULL DEFAULT 0 CHECK (auto_format IN (0, 1));
+  `);
   db.exec(`
     CREATE TABLE IF NOT EXISTS workspace (
       singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -102,7 +106,9 @@ function createSchema(db: Database) {
       singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
       auto_save INTEGER NOT NULL CHECK (auto_save IN (0, 1)),
       font_size INTEGER NOT NULL,
-      language TEXT NOT NULL
+      language TEXT NOT NULL,
+      line_wrap INTEGER NOT NULL CHECK (line_wrap IN (0, 1)),
+      auto_format INTEGER NOT NULL CHECK (auto_format IN (0, 1))
     );
     CREATE TABLE IF NOT EXISTS appearance (
       singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -222,9 +228,10 @@ function replaceManifestRows(db: Database, manifest: PersistedManifestV13) {
       themeStatement.finalize();
     }
     db.exec({
-      sql: `INSERT INTO editor_settings VALUES (1, ?, ?, ?)
-        ON CONFLICT(singleton) DO UPDATE SET auto_save=excluded.auto_save, font_size=excluded.font_size, language=excluded.language`,
-      bind: [manifest.editorSettings.autoSave, manifest.editorSettings.fontSize, manifest.editorSettings.language],
+      sql: `INSERT INTO editor_settings VALUES (1, ?, ?, ?, ?, ?)
+        ON CONFLICT(singleton) DO UPDATE SET auto_save=excluded.auto_save, font_size=excluded.font_size, language=excluded.language,
+        line_wrap=excluded.line_wrap, auto_format=excluded.auto_format`,
+      bind: [manifest.editorSettings.autoSave, manifest.editorSettings.fontSize, manifest.editorSettings.language, manifest.editorSettings.lineWrap, manifest.editorSettings.autoFormat],
     });
     db.exec("DELETE FROM entries");
     const statement = db.prepare(`INSERT INTO entries
@@ -370,6 +377,8 @@ function readManifest(db: Database): PersistedManifestV13 {
     autoSave: numberValue(settings.auto_save) === 1,
     fontSize: numberValue(settings.font_size),
     language: stringValue(settings.language) as EditorSettings["language"],
+    lineWrap: numberValue(settings.line_wrap) === 1,
+    autoFormat: numberValue(settings.auto_format) === 1,
   };
   return {
     version: 13,

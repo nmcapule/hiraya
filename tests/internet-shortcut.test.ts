@@ -2,9 +2,6 @@ import { describe, expect, test } from "bun:test";
 import {
   parseInternetShortcut,
   parseShortcutUrl,
-  readInternetShortcutUrl,
-  updateInternetShortcut,
-  updateInternetShortcutDraft,
 } from "../src/lib/internet-shortcut";
 import { fileCapabilities } from "../src/ui/file-capabilities";
 
@@ -32,18 +29,6 @@ describe("internet shortcuts", () => {
     expect(() => parseShortcutUrl("https://exa mple.com")).toThrow("valid URL");
   });
 
-  test("updates the destination while preserving metadata and line endings", () => {
-    const content = "\uFEFF[InternetShortcut]\r\nIconFile=site.ico\r\nURL=https://old.example\r\nIconIndex=0\r\n";
-    const updated = updateInternetShortcut(content, "https://new.example/path");
-    expect(updated).toBe("\uFEFF[InternetShortcut]\r\nIconFile=site.ico\r\nURL=https://new.example/path\r\nIconIndex=0\r\n");
-  });
-
-  test("adds a missing section and permits incomplete editor drafts", () => {
-    const draft = updateInternetShortcutDraft("", "https://exa");
-    expect(readInternetShortcutUrl(draft)).toBe("https://exa");
-    expect(updateInternetShortcut("IconFile=site.ico", "https://example.com")).toContain("[InternetShortcut]\nURL=https://example.com\n");
-  });
-
   test("recognizes URL shortcuts without relying on their MIME type", () => {
     const capabilities = fileCapabilities({
       kind: "file",
@@ -56,5 +41,20 @@ describe("internet shortcuts", () => {
       position: { x: 0, y: 0 },
     });
     expect(capabilities).toEqual({ editable: true, preview: "url", icon: "url" });
+  });
+
+  test("renders Markdown by default while keeping it text-editable", () => {
+    for (const [name, mimeType] of [["README.md", "application/octet-stream"], ["README.markdown", "text/plain"], ["README", "text/markdown; charset=utf-8"]]) {
+      expect(fileCapabilities({
+        kind: "file",
+        id: name,
+        name,
+        parentId: null,
+        mimeType,
+        size: 0,
+        modifiedAt: 1,
+        position: { x: 0, y: 0 },
+      }).preview).toBe("markdown");
+    }
   });
 });

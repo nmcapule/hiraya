@@ -10,19 +10,19 @@ type WindowSessionBase = {
 };
 
 export type WindowSessionApp = WindowSessionBase & (
-  | { kind: "file"; fileId: string }
+  | { kind: "file"; fileId: string; editMode?: boolean }
   | { kind: "explorer"; folderId: string | null }
   | { kind: "settings" }
 );
 
-export type WindowSession = { version: 1 | 2; apps: WindowSessionApp[] };
+export type WindowSession = { version: 1 | 2 | 3; apps: WindowSessionApp[] };
 
 export type WindowTarget =
-  | { kind: "file"; fileId: string }
+  | { kind: "file"; fileId: string; editMode?: boolean }
   | { kind: "explorer"; folderId: string | null }
   | { kind: "settings" };
 
-export const EMPTY_WINDOW_SESSION: WindowSession = { version: 2, apps: [] };
+export const EMPTY_WINDOW_SESSION: WindowSession = { version: 3, apps: [] };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -40,7 +40,7 @@ export function parseWindowTargets(value: unknown): WindowTarget[] {
   return value.map((item): WindowTarget => {
     if (!isRecord(item)) throw new Error("The route history contains an invalid app.");
     let target: WindowTarget;
-    if (item.kind === "file" && isValidId(item.fileId)) target = { kind: "file", fileId: item.fileId };
+    if (item.kind === "file" && isValidId(item.fileId) && (item.editMode === undefined || typeof item.editMode === "boolean")) target = { kind: "file", fileId: item.fileId, ...(item.editMode ? { editMode: true } : {}) };
     else if (item.kind === "explorer" && (item.folderId === null || isValidId(item.folderId))) target = { kind: "explorer", folderId: item.folderId as string | null };
     else if (item.kind === "settings") target = { kind: "settings" };
     else throw new Error("The route history contains an invalid app.");
@@ -59,7 +59,7 @@ function parseBounds(value: unknown): WindowBounds {
 }
 
 export function parseWindowSession(value: unknown): WindowSession {
-  if (!isRecord(value) || value.version !== 1 && value.version !== 2 || !Array.isArray(value.apps) || value.apps.length > 100) {
+  if (!isRecord(value) || value.version !== 1 && value.version !== 2 && value.version !== 3 || !Array.isArray(value.apps) || value.apps.length > 100) {
     throw new Error("The saved window session has an unsupported format.");
   }
   const ids = new Set<string>();
@@ -70,8 +70,8 @@ export function parseWindowSession(value: unknown): WindowSession {
     const base = { bounds: parseBounds(item.bounds), minimized: item.minimized, zIndex: item.zIndex as number };
     let app: WindowSessionApp;
     let id: string;
-    if (item.kind === "file" && isValidId(item.fileId)) {
-      app = { ...base, kind: "file", fileId: item.fileId };
+    if (item.kind === "file" && isValidId(item.fileId) && (item.editMode === undefined || typeof item.editMode === "boolean")) {
+      app = { ...base, kind: "file", fileId: item.fileId, ...(item.editMode ? { editMode: true } : {}) };
       id = `file:${item.fileId}`;
     } else if (item.kind === "explorer" && (item.folderId === null || isValidId(item.folderId))) {
       app = { ...base, kind: "explorer", folderId: item.folderId as string | null };

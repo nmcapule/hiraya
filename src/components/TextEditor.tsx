@@ -26,7 +26,7 @@ type Props = {
   externalEmbeddedPreviews: boolean;
   readOnly?: boolean;
   onChange: (value: string) => void;
-  onSave: () => void;
+  onSave: (value: string) => void;
   onResolveLink: (path: string) => Promise<LinkedFile>;
   onOpenLinkedFile: (file: FileEntry) => void;
 };
@@ -350,13 +350,14 @@ export function TextEditor({ file, value, settings, theme, externalEmbeddedPrevi
   const languageConfig = useRef(new Compartment());
   const fontConfig = useRef(new Compartment());
   const editableConfig = useRef(new Compartment());
+  const lineWrapConfig = useRef(new Compartment());
   const themeConfig = useRef(new Compartment());
   const previewConfig = useRef(new Compartment());
   const onChangeRef = useRef(onChange);
   const onSaveRef = useRef(onSave);
   const resolveLinkRef = useRef(onResolveLink);
   const openLinkedFileRef = useRef(onOpenLinkedFile);
-  const initialConfig = useRef({ value, fileName: file.name, language: editorLanguageFor(file.name, settings.language), fontSize: settings.fontSize, theme, externalEmbeddedPreviews, readOnly });
+  const initialConfig = useRef({ value, fileName: file.name, language: editorLanguageFor(file.name, settings.language), fontSize: settings.fontSize, lineWrap: settings.lineWrap, theme, externalEmbeddedPreviews, readOnly });
   onChangeRef.current = onChange;
   onSaveRef.current = onSave;
   resolveLinkRef.current = onResolveLink;
@@ -370,13 +371,13 @@ export function TextEditor({ file, value, settings, theme, externalEmbeddedPrevi
       extensions: [
         basicSetup,
         EditorState.tabSize.of(2),
-        EditorView.lineWrapping,
+        lineWrapConfig.current.of(initialConfig.current.lineWrap ? EditorView.lineWrapping : []),
         EditorView.contentAttributes.of({ "aria-label": `Contents of ${initialConfig.current.fileName}`, spellcheck: "true" }),
         languageConfig.current.of(languageExtension(initialConfig.current.language)),
         fontConfig.current.of(EditorView.theme({ "&": { fontSize: `${initialConfig.current.fontSize}px` } })),
         editableConfig.current.of(EditorView.editable.of(!initialConfig.current.readOnly)),
         themeConfig.current.of(editorTheme(initialConfig.current.theme)),
-        keymap.of([{ key: "Mod-s", preventDefault: true, run: () => { onSaveRef.current(); return true; } }]),
+        keymap.of([{ key: "Mod-s", preventDefault: true, run: (target) => { onSaveRef.current(target.state.doc.toString()); return true; } }]),
         EditorView.updateListener.of((update) => {
           if (update.docChanged) onChangeRef.current(update.state.doc.toString());
         }),
@@ -411,6 +412,10 @@ export function TextEditor({ file, value, settings, theme, externalEmbeddedPrevi
   useEffect(() => {
     viewRef.current?.dispatch({ effects: fontConfig.current.reconfigure(EditorView.theme({ "&": { fontSize: `${settings.fontSize}px` } })) });
   }, [settings.fontSize]);
+
+  useEffect(() => {
+    viewRef.current?.dispatch({ effects: lineWrapConfig.current.reconfigure(settings.lineWrap ? EditorView.lineWrapping : []) });
+  }, [settings.lineWrap]);
 
   useEffect(() => {
     viewRef.current?.dispatch({ effects: editableConfig.current.reconfigure(EditorView.editable.of(!readOnly)) });

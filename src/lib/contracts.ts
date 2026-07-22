@@ -134,7 +134,16 @@ export function parseEditorSettings(value: unknown): EditorSettings {
   if (!isRecord(value) || typeof value.autoSave !== "boolean" || !Number.isInteger(value.fontSize) || (value.fontSize as number) < 11 || (value.fontSize as number) > 22 || typeof value.language !== "string" || !EDITOR_LANGUAGES.has(value.language as EditorLanguage)) {
     throw new Error("The editor settings have an unsupported format.");
   }
-  return { autoSave: value.autoSave, fontSize: value.fontSize as number, language: value.language as EditorLanguage };
+  if (value.lineWrap !== undefined && typeof value.lineWrap !== "boolean" || value.autoFormat !== undefined && typeof value.autoFormat !== "boolean") {
+    throw new Error("The editor settings have an unsupported format.");
+  }
+  return {
+    autoSave: value.autoSave,
+    autoFormat: value.autoFormat as boolean | undefined ?? false,
+    fontSize: value.fontSize as number,
+    language: value.language as EditorLanguage,
+    lineWrap: value.lineWrap as boolean | undefined ?? true,
+  };
 }
 
 type ParsedEntry = DesktopEntry & { revision?: number; contentRevision?: number };

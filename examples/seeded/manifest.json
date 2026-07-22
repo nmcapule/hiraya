@@ -6,8 +6,10 @@
   },
   "editorSettings": {
     "autoSave": true,
+    "autoFormat": false,
     "fontSize": 13,
-    "language": "auto"
+    "language": "auto",
+    "lineWrap": true
   },
   "appearance": {
     "selectedThemeId": "hiraya-dusk",

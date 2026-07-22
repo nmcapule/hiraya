@@ -53,9 +53,10 @@ import { createWorkspaceIndex } from "./ui/workspace-index";
 import { clampWindowBounds, initialWindowBounds, type WindowBounds } from "./ui/window-manager";
 import { namesMatch } from "./lib/entry-validation";
 import { parseWindowTargets, restoreWindowSession, windowTargetId, type WindowSession, type WindowSessionApp, type WindowTarget } from "./lib/window-session";
+import { parseInternetShortcut } from "./lib/internet-shortcut";
 
 type BaseRunningApp = { id: string; bounds: WindowBounds; minimized: boolean; zIndex: number };
-type FileApp = BaseRunningApp & { kind: "file"; fileId: string; file?: FileEntry; blob?: File; editable?: boolean; contentRevision: number; remoteChanged: boolean };
+type FileApp = BaseRunningApp & { kind: "file"; fileId: string; file?: FileEntry; blob?: File; editable?: boolean; editMode: boolean; contentRevision: number; remoteChanged: boolean };
 type ExplorerApp = BaseRunningApp & { kind: "explorer"; folderId: string | null };
 type SettingsApp = BaseRunningApp & { kind: "settings" };
 type RunningApp = FileApp | ExplorerApp | SettingsApp;
@@ -276,7 +277,7 @@ function App() {
 
   function runningAppTargets(apps = runningAppsRef.current): WindowTarget[] {
     return apps.map((app) => {
-      if (app.kind === "file") return { kind: "file", fileId: app.fileId };
+      if (app.kind === "file") return { kind: "file", fileId: app.fileId, ...(app.editMode ? { editMode: true } : {}) };
       if (app.kind === "explorer") return { kind: "explorer", folderId: app.folderId };
       return { kind: "settings" };
     });
@@ -443,6 +444,7 @@ function App() {
         ...saved,
         id: `file:${saved.fileId}`,
         file,
+        editMode: Boolean(saved.editMode),
         contentRevision: contentRevisionsRef.current[saved.fileId] ?? 0,
         remoteChanged: false,
       };
@@ -488,6 +490,7 @@ function App() {
         kind: "file",
         fileId: file.id,
         file,
+        editMode: Boolean(target.editMode),
         contentRevision: contentRevisionsRef.current[file.id] ?? 0,
         remoteChanged: false,
       };
@@ -652,10 +655,10 @@ function App() {
   useEffect(() => {
     if (windowSessionReadyRef.current) {
       const session: WindowSession = {
-        version: 2,
+        version: 3,
         apps: runningApps.map((app): WindowSessionApp => {
           const base = { bounds: app.bounds, minimized: app.minimized, zIndex: app.zIndex };
-          if (app.kind === "file") return { ...base, kind: "file", fileId: app.fileId };
+          if (app.kind === "file") return { ...base, kind: "file", fileId: app.fileId, ...(app.editMode ? { editMode: true } : {}) };
           if (app.kind === "explorer") return { ...base, kind: "explorer", folderId: app.folderId };
           return { ...base, kind: "settings" };
         }),
@@ -1321,9 +1324,10 @@ function App() {
     return true;
   }
 
-  function openFileWindow(file: FileEntry, syncRoute = true, focus = true) {
+  function openFileWindow(file: FileEntry, syncRoute = true, focus = true, editMode = false) {
     const id = `file:${file.id}`;
     if (runningAppsRef.current.some((app) => app.id === id)) {
+      if (editMode) updateRunningApps((current) => current.map((app) => app.id === id && app.kind === "file" ? { ...app, editMode: true } : app));
       if (focus) focusApp(id, syncRoute);
       return false;
     }
@@ -1333,6 +1337,7 @@ function App() {
       kind: "file",
       fileId: file.id,
       file,
+      editMode,
       contentRevision: expectedRevision,
       remoteChanged: false,
     };
@@ -1342,8 +1347,32 @@ function App() {
     return true;
   }
 
+  async function openInternetShortcut(file: FileEntry, popup: Window | null) {
+    if (!popup) {
+      setError("The link was blocked by the browser. Allow pop-ups for Hiraya and try again.");
+      return;
+    }
+    popup.opener = null;
+    try {
+      const shortcut = parseInternetShortcut(await (await readFile(file.id)).text());
+      if (shortcut.sensitive && !window.confirm(`This shortcut uses the sensitive ${shortcut.scheme}: scheme. Open it anyway?`)) {
+        popup.close();
+        return;
+      }
+      popup.location.replace(shortcut.url);
+    } catch (openError) {
+      popup.close();
+      setError(openError instanceof Error ? openError.message : "The internet shortcut could not be opened.");
+    }
+  }
+
   function handleOpen(entry: DesktopEntry) {
     setContextMenu(null);
+    if (entry.kind === "file" && fileCapabilities(entry).preview === "url") {
+      setError("");
+      void openInternetShortcut(entry, window.open("about:blank", "_blank"));
+      return;
+    }
     const currentRoute = routeRef.current;
     if (!currentRoute) return;
     const existingId = entry.kind === "folder" ? `explorer:${entry.id}` : `file:${entry.id}`;
@@ -1360,6 +1389,15 @@ function App() {
     setError("");
     const created = openFileWindow(entry, false);
     navigateRoute({ column: currentRoute.column, row: currentRoute.row, fileId: entry.id }, created ? "push" : "replace", previousApps);
+  }
+
+  function handleEditFile(file: FileEntry) {
+    setContextMenu(null);
+    const currentRoute = routeRef.current;
+    if (!currentRoute || !fileCapabilities(file).editable) return;
+    const previousApps = runningAppTargets();
+    const created = openFileWindow(file, false, true, true);
+    navigateRoute({ column: currentRoute.column, row: currentRoute.row, fileId: file.id }, created ? "push" : "replace", previousApps);
   }
 
   async function download(file: FileEntry) {
@@ -1870,7 +1908,7 @@ function App() {
                 aria-pressed={focusedAppId === app.id && !app.minimized}
                 onClick={() => focusedAppId === app.id && !app.minimized && !isMobile ? minimizeApp(app.id) : focusApp(app.id)}
               >
-                {app.kind === "file" ? entry?.kind === "file" && fileCapabilities(entry).preview === "url" ? <LinkSimple size={15} /> : <FileGlyph size={15} /> : app.kind === "explorer" ? <Folder size={15} /> : <GearSix size={15} />}
+                {app.kind === "file" ? entry?.kind === "file" && fileCapabilities(entry).icon === "url" ? <LinkSimple size={15} /> : <FileGlyph size={15} /> : app.kind === "explorer" ? <Folder size={15} /> : <GearSix size={15} />}
                 <span>{label}</span>
               </button>
             );
@@ -2009,14 +2047,15 @@ function App() {
                 onDragEnd={finishWindowEdgeNavigation}
                 onMinimize={minimizeApp}
                 onClose={closeApp}
-                titleArea={<div><span className="window-kicker">{app.kind === "file" ? file && fileCapabilities(file).preview === "url" ? "URL editor" : app.editable ? "Text editor" : "Preview" : app.kind === "explorer" ? "Folder" : "Hiraya desktop"}</span><h2 id={titleId}>{title}</h2></div>}
+                titleArea={<div><span className="window-kicker">{app.kind === "file" ? app.editMode || file && ["text", "url"].includes(fileCapabilities(file).preview) ? "Text editor" : file && fileCapabilities(file).preview === "markdown" ? "Markdown" : "Preview" : app.kind === "explorer" ? "Folder" : "Hiraya desktop"}</span><h2 id={titleId}>{title}</h2></div>}
               >
                 {(headerElements) => <>
                 {app.kind === "file" && file && app.blob ? (
                   <FileWindow
                     file={file}
                     blob={app.blob}
-                    editable={Boolean(app.editable)}
+                     editable={Boolean(app.editable)}
+                     editMode={app.editMode}
                     readOnly={!canMutate}
                     remoteChanged={app.remoteChanged}
                     headerActionsTarget={headerElements.actions}
@@ -2182,6 +2221,7 @@ function App() {
           menu={contextMenu}
           entry={contextMenuEntry}
           onOpen={() => handleOpen(contextMenuEntry)}
+          onEditFile={contextMenuEntry.kind === "file" && fileCapabilities(contextMenuEntry).editable ? () => handleEditFile(contextMenuEntry) : undefined}
           onRename={() => { setDialog({ type: "rename", entryId: contextMenuEntry.id }); setContextMenu(null); }}
           onDownload={contextMenuEntry.kind === "file" ? () => void download(contextMenuEntry) : undefined}
           onCopy={() => void copySelection()}
