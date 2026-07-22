@@ -746,6 +746,7 @@ async function createTextFileUnsafe(nameValue: string, parentId: string | null, 
   findParent(manifest.entries, parentId);
   assertUniqueName(manifest.entries, name, parentId);
 
+  const now = Date.now();
   const file: FileEntry = {
     kind: "file",
     id: crypto.randomUUID(),
@@ -753,7 +754,8 @@ async function createTextFileUnsafe(nameValue: string, parentId: string | null, 
     parentId,
     mimeType: "text/plain",
     size: 0,
-    modifiedAt: Date.now(),
+    createdAt: now,
+    modifiedAt: now,
     position: parsePosition(position),
   };
   await writeContent(file.id, "");
@@ -767,12 +769,14 @@ async function createFolderUnsafe(nameValue: string, parentId: string | null, po
   findParent(manifest.entries, parentId);
   assertUniqueName(manifest.entries, name, parentId);
 
+  const now = Date.now();
   const folder: FolderEntry = {
     kind: "folder",
     id: crypto.randomUUID(),
     name,
     parentId,
-    modifiedAt: Date.now(),
+    createdAt: now,
+    modifiedAt: now,
     position: parsePosition(position),
   };
   await writeManifest({ ...manifest, entries: [...manifest.entries, folder] }, activityRecord("Created folder", [`Folder: ${folder.name}`, locationDetail(manifest.entries, parentId)]));
@@ -797,6 +801,7 @@ async function importFilesUnsafe(
     }
   }
 
+  const createdAt = Date.now();
   const imported: FileEntry[] = files.map((source, index) => ({
     kind: "file",
     id: crypto.randomUUID(),
@@ -804,7 +809,8 @@ async function importFilesUnsafe(
     parentId,
     mimeType: source.type || "application/octet-stream",
     size: source.size,
-    modifiedAt: source.lastModified || Date.now(),
+    createdAt,
+    modifiedAt: source.lastModified || createdAt,
     position: parsedPositions[index],
   }));
   for (const [index, file] of imported.entries()) await writeContent(file.id, files[index]);

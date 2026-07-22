@@ -13,11 +13,11 @@ function snapshot(): ClipboardEntrySnapshot {
   return {
     selectedRootIds: ["folder", "empty"],
     entries: [
-      { kind: "folder", id: "folder", name: "Folder", parentId: null, modifiedAt: 1, position: { x: -10, y: 20 } },
-      { kind: "file", id: "note", name: "note.txt", parentId: "folder", modifiedAt: 2, position: { x: 0, y: 0 }, mimeType: "text/plain", size: 5 },
-      { kind: "folder", id: "nested", name: "Nested", parentId: "folder", modifiedAt: 3, position: { x: 0, y: 0 } },
-      { kind: "file", id: "binary", name: "data.bin", parentId: "nested", modifiedAt: 4, position: { x: 0, y: 0 }, mimeType: "application/octet-stream", size: 4 },
-      { kind: "folder", id: "empty", name: "Empty", parentId: null, modifiedAt: 5, position: { x: 40, y: 50 } },
+      { kind: "folder", id: "folder", name: "Folder", parentId: null, createdAt: 1, modifiedAt: 1, position: { x: -10, y: 20 } },
+      { kind: "file", id: "note", name: "note.txt", parentId: "folder", createdAt: 1, modifiedAt: 2, position: { x: 0, y: 0 }, mimeType: "text/plain", size: 5 },
+      { kind: "folder", id: "nested", name: "Nested", parentId: "folder", createdAt: null, modifiedAt: 3, position: { x: 0, y: 0 } },
+      { kind: "file", id: "binary", name: "data.bin", parentId: "nested", createdAt: 2, modifiedAt: 4, position: { x: 0, y: 0 }, mimeType: "application/octet-stream", size: 4 },
+      { kind: "folder", id: "empty", name: "Empty", parentId: null, createdAt: 5, modifiedAt: 5, position: { x: 40, y: 50 } },
     ],
     contents: new Map([
       ["note", new Blob([new Uint8Array([0, 255, 10, 13, 65])], { type: "text/plain" })],
@@ -54,6 +54,18 @@ describe("clipboard archive codec", () => {
     expect(isClipboardArchiveType(CLIPBOARD_ARCHIVE_WEB_MIME_TYPE)).toBe(true);
     expect(isClipboardArchiveType(CLIPBOARD_ARCHIVE_MIME_TYPE)).toBe(true);
     expect(isClipboardArchiveType("text/plain")).toBe(false);
+  });
+
+  test("reads old archives without creation dates as null", async () => {
+    const files = await archiveFiles(await encodeClipboardArchive(snapshot()));
+    const manifest = JSON.parse(new TextDecoder().decode(files["manifest.json"]));
+    manifest.entries = manifest.entries.map((entry: Record<string, unknown>) => {
+      const legacy = { ...entry };
+      delete legacy.createdAt;
+      return legacy;
+    });
+    const decoded = await decodeClipboardArchive(archiveBlob({ ...files, "manifest.json": strToU8(JSON.stringify(manifest)) }));
+    expect(decoded.entries.every((entry) => entry.createdAt === null)).toBe(true);
   });
 
   test("rejects invalid trees and incomplete content while encoding", async () => {

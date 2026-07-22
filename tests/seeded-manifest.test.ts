@@ -5,9 +5,10 @@ import { desktopSnapshot } from "./fixtures";
 describe("seeded manifests", () => {
   test("round-trips a portable manifest", () => {
     const snapshot = desktopSnapshot();
-    snapshot.entries = [{ kind: "file", id: "file-1", name: "read me.txt", parentId: null, modifiedAt: 1, position: { x: 0, y: 0 }, mimeType: "text/plain", size: 3 }];
+    snapshot.entries = [{ kind: "file", id: "file-1", name: "read me.txt", parentId: null, createdAt: 123, modifiedAt: 1, position: { x: 0, y: 0 }, mimeType: "text/plain", size: 3 }];
     const portable = toPortableSeededManifest(snapshot, () => "content/read me.txt");
     expect(parsePortableSeededManifest(JSON.parse(JSON.stringify(portable)))).toEqual(portable);
+    expect(portable.entries[0].createdAt).toBe(123);
   });
 
   test("rejects non-portable content URLs", () => {
@@ -38,6 +39,7 @@ describe("seeded manifests", () => {
     expect(parsed.appearance).toEqual({ selectedThemeId: "hiraya-dusk", customThemes: [] });
     expect(parsed.entries.map((entry) => entry.position)).toEqual([{ x: -40, y: 1 }, { x: 300, y: 1 }]);
     expect(parsed.entries.some((entry) => "viewId" in entry)).toBe(false);
+    expect(parsed.entries.every((entry) => entry.createdAt === null)).toBe(true);
   });
 
   test("migrates version 5 without root ordering or workspace breaks", () => {

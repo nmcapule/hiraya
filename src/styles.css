@@ -2498,6 +2498,13 @@ textarea:focus-visible {
 }
 
 @media (max-width: 620px) {
+  .properties-window {
+    padding: 20px 18px 24px;
+  }
+
+  .properties-window__details > div {
+    grid-template-columns: 76px minmax(0, 1fr);
+  }
   .menu-bar {
     padding: 0 max(10px, env(safe-area-inset-right)) 0 max(13px, env(safe-area-inset-left));
   }

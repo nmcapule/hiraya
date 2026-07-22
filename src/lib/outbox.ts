@@ -42,6 +42,17 @@ export function outboxDesktopRetentionIds(records: readonly OutboxRecord[]) {
   return retained;
 }
 
+export function normalizeOutboxOperation(operation: OutboxOperation): OutboxOperation {
+  if (operation.kind === "create") return { ...operation, entries: parseEntries(operation.entries) as DesktopEntry[] };
+  if (operation.kind === "update-entry") return { ...operation, entry: parseEntries([operation.entry])[0] as DesktopEntry };
+  if (operation.kind === "save-content") {
+    const entry = parseEntries([operation.entry])[0];
+    if (entry.kind !== "file") throw new Error("Saved content requires a file entry.");
+    return { ...operation, entry };
+  }
+  return operation;
+}
+
 export function applyOutboxOperation(manifest: PersistedManifestV13, operation: OutboxOperation): PersistedManifestV13 {
   let entries = manifest.entries;
   switch (operation.kind) {

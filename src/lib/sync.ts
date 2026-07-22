@@ -60,6 +60,12 @@ function localEntry(entry: RemoteEntry): DesktopEntry {
   return local;
 }
 
+function serverEntry(entry: DesktopEntry) {
+  const { createdAt: _createdAt, ...compatible } = entry;
+  void _createdAt;
+  return compatible;
+}
+
 function toSnapshot(workspace: InitializedRemoteWorkspace): storage.DesktopSnapshot {
   const entryRevisions: Record<string, number> = {};
   const contentRevisions: Record<string, number> = {};
@@ -312,7 +318,7 @@ export class SyncEngine {
     const snapshot = await this.storage.readDesktopSnapshot();
     const pending = (await this.storage.readOutbox()).filter((record) => (record.desktopId ?? this.desktopId) === this.desktopId);
     const form = new FormData();
-    form.append("workspace", JSON.stringify({ entries: snapshot.entries, layout: snapshot.layout, editorSettings: snapshot.editorSettings, appearance: snapshot.appearance }));
+    form.append("workspace", JSON.stringify({ entries: snapshot.entries.map(serverEntry), layout: snapshot.layout, editorSettings: snapshot.editorSettings, appearance: snapshot.appearance }));
     for (const entry of snapshot.entries) {
       if (entry.kind !== "file") continue;
       const content = snapshot.contents.get(entry.id);
@@ -372,19 +378,19 @@ export class SyncEngine {
         if (operation.entries.length === 1) {
           const entry = operation.entries[0];
           const form = new FormData();
-          form.append("entry", JSON.stringify(entry));
+          form.append("entry", JSON.stringify(serverEntry(entry)));
           if (entry.kind === "file") form.append("content", await this.storage.readPendingContent(record.operationId, entry.id), entry.name);
           await this.requestJson(API_ROUTES.desktopEntries(desktopId), { method: "POST", headers: headers(), body: form });
         } else {
           const form = new FormData();
-          form.append("entries", JSON.stringify(operation.entries));
+          form.append("entries", JSON.stringify(operation.entries.map(serverEntry)));
           for (const entry of operation.entries) if (entry.kind === "file") form.append(`file-${entry.id}`, await this.storage.readPendingContent(record.operationId, entry.id), entry.name);
           await this.requestJson(API_ROUTES.desktopImports(desktopId), { method: "POST", headers: headers(), body: form });
         }
         return;
       }
       case "update-entry":
-        await this.requestJson(API_ROUTES.desktopEntry(desktopId, operation.entry.id), { method: "PATCH", headers: headers({ "Content-Type": "application/json" }), body: JSON.stringify(operation.entry) });
+        await this.requestJson(API_ROUTES.desktopEntry(desktopId, operation.entry.id), { method: "PATCH", headers: headers({ "Content-Type": "application/json" }), body: JSON.stringify(serverEntry(operation.entry)) });
         return;
       case "delete":
         await this.requestJson(API_ROUTES.desktopEntry(desktopId, operation.entryId), { method: "DELETE", headers: headers() });
@@ -588,7 +594,8 @@ export class SyncEngine {
     const name = validateEntryName(nameValue);
     this.assertParent(parentId);
     assertUniqueName(this.current().entries, name, parentId);
-    const entry: FileEntry = { kind: "file", id: crypto.randomUUID(), name, parentId, mimeType: "text/plain", size: 0, modifiedAt: Date.now(), position: parsedPosition };
+    const now = Date.now();
+    const entry: FileEntry = { kind: "file", id: crypto.randomUUID(), name, parentId, mimeType: "text/plain", size: 0, createdAt: now, modifiedAt: now, position: parsedPosition };
     return this.mutate({ kind: "create", entries: [entry] }, (next) => next.entries.find((item) => item.id === entry.id) as FileEntry, new Map([[entry.id, new Blob([], { type: entry.mimeType })]]));
   }
 
@@ -598,7 +605,8 @@ export class SyncEngine {
     const name = validateEntryName(nameValue);
     this.assertParent(parentId);
     assertUniqueName(this.current().entries, name, parentId);
-    const entry: FolderEntry = { kind: "folder", id: crypto.randomUUID(), name, parentId, modifiedAt: Date.now(), position: parsedPosition };
+    const now = Date.now();
+    const entry: FolderEntry = { kind: "folder", id: crypto.randomUUID(), name, parentId, createdAt: now, modifiedAt: now, position: parsedPosition };
     return this.mutate({ kind: "create", entries: [entry] }, (next) => next.entries.find((item) => item.id === entry.id) as FolderEntry);
   }
 
@@ -612,7 +620,8 @@ export class SyncEngine {
       assertUniqueName(this.current().entries, name, parentId);
       if (names.slice(0, index).some((candidate) => namesMatch(candidate, name))) throw new Error(`The upload contains more than one file named “${name}”.`);
     }
-    const entries: FileEntry[] = files.map((file, index) => ({ kind: "file", id: crypto.randomUUID(), name: names[index], parentId, mimeType: file.type || "application/octet-stream", size: file.size, modifiedAt: file.lastModified || Date.now(), position: parsedPositions[index] }));
+    const createdAt = Date.now();
+    const entries: FileEntry[] = files.map((file, index) => ({ kind: "file", id: crypto.randomUUID(), name: names[index], parentId, mimeType: file.type || "application/octet-stream", size: file.size, createdAt, modifiedAt: file.lastModified || createdAt, position: parsedPositions[index] }));
     return this.mutate({ kind: "create", entries }, (next) => entries.map((entry) => next.entries.find((item) => item.id === entry.id) as FileEntry), new Map(entries.map((entry, index) => [entry.id, files[index]])));
   }
 
@@ -756,7 +765,7 @@ export class SyncEngine {
       const name = validateEntryName(isRoot ? rootNames.get(entry.id) ?? entry.name : entry.name);
       const nextParent = isRoot ? parentId : idMap.get(entry.parentId!);
       const position = parsePosition(isRoot ? rootPositions.get(entry.id) ?? entry.position : entry.position);
-      return { ...entry, id: idMap.get(entry.id)!, name, parentId: nextParent ?? null, position, modifiedAt: now };
+      return { ...entry, id: idMap.get(entry.id)!, name, parentId: nextParent ?? null, position, createdAt: now, modifiedAt: now };
     });
     const rootEntries = entries.filter((entry) => snapshot.selectedRootIds.some((id) => idMap.get(id) === entry.id));
     for (const [index, entry] of rootEntries.entries()) {

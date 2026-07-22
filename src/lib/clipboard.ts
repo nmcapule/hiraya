@@ -32,8 +32,8 @@ function assertExactEntryShape(value: unknown) {
     throw new Error("A clipboard entry has an unsupported format.");
   }
   const keys = value.kind === "file"
-    ? ["kind", "id", "name", "parentId", "modifiedAt", "position", "mimeType", "size"]
-    : ["kind", "id", "name", "parentId", "modifiedAt", "position"];
+    ? ["kind", "id", "name", "parentId", ...(value.createdAt === undefined ? [] : ["createdAt"]), "modifiedAt", "position", "mimeType", "size"]
+    : ["kind", "id", "name", "parentId", ...(value.createdAt === undefined ? [] : ["createdAt"]), "modifiedAt", "position"];
   if (!hasExactKeys(value, keys)) throw new Error("A clipboard entry has an unsupported format.");
 }
 
@@ -170,15 +170,16 @@ export async function snapshotFromClipboardItems(items: DataTransferItemList): P
   async function visit(source: FileSystemEntry, parentId: string | null) {
     const id = crypto.randomUUID();
     const position = { x: 8, y: 8 };
+    const createdAt = Date.now();
     if (parentId === null) selectedRootIds.push(id);
     if (source.isDirectory) {
-      entries.push({ kind: "folder", id, name: source.name, parentId, modifiedAt: Date.now(), position });
+      entries.push({ kind: "folder", id, name: source.name, parentId, createdAt, modifiedAt: createdAt, position });
       for (const child of await directoryEntries(source as FileSystemDirectoryEntry)) await visit(child, id);
       return;
     }
     if (!source.isFile) throw new Error("The clipboard contains an unsupported filesystem item.");
     const file = await entryFile(source as FileSystemFileEntry);
-    entries.push({ kind: "file", id, name: source.name || file.name, parentId, mimeType: file.type || "application/octet-stream", size: file.size, modifiedAt: file.lastModified || Date.now(), position });
+    entries.push({ kind: "file", id, name: source.name || file.name, parentId, mimeType: file.type || "application/octet-stream", size: file.size, createdAt, modifiedAt: file.lastModified || createdAt, position });
     contents.set(id, file);
   }
 

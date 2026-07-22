@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import {
   File as FileGlyph,
   FileArchive,
@@ -29,6 +29,7 @@ type Props = {
   onDragEnd: (cancelled: boolean) => void;
   getSnapPreview?: (position: EntryPosition) => EntryPosition;
   onContextMenu: (event: React.MouseEvent) => void;
+  onContextMenuAt: (x: number, y: number) => void;
   onExternalDrop?: (files: File[]) => void;
 };
 
@@ -48,7 +49,7 @@ function FileTypeIcon({ entry }: { entry: DesktopEntry }) {
   return <FileGlyph {...props} />;
 }
 
-export function FileIcon({ entry, selected, onSelect, onOpen, onMove, onDragAtEdge, onDragEnd, getSnapPreview, onContextMenu, onExternalDrop }: Props) {
+export function FileIcon({ entry, selected, onSelect, onOpen, onMove, onDragAtEdge, onDragEnd, getSnapPreview, onContextMenu, onContextMenuAt, onExternalDrop }: Props) {
   const iconRef = useRef<HTMLButtonElement>(null);
   const snapPreviewRef = useRef<HTMLSpanElement>(null);
   const drag = useRef<{
@@ -67,6 +68,7 @@ export function FileIcon({ entry, selected, onSelect, onOpen, onMove, onDragAtEd
     targetFolderId: string | null;
     canvas: HTMLElement;
     finishing: boolean;
+    longPressTimer?: number;
   } | null>(null);
   const onMoveRef = useRef(onMove);
   const onDragEndRef = useRef(onDragEnd);
@@ -74,6 +76,10 @@ export function FileIcon({ entry, selected, onSelect, onOpen, onMove, onDragAtEd
   onMoveRef.current = onMove;
   onDragEndRef.current = onDragEnd;
   getSnapPreviewRef.current = getSnapPreview;
+
+  useEffect(() => () => {
+    if (drag.current?.longPressTimer) window.clearTimeout(drag.current.longPressTimer);
+  }, []);
 
   useLayoutEffect(() => {
     const current = drag.current;
@@ -140,6 +146,14 @@ export function FileIcon({ entry, selected, onSelect, onOpen, onMove, onDragAtEd
       canvas,
       finishing: false,
     };
+    if (event.pointerType === "touch") {
+      drag.current.longPressTimer = window.setTimeout(() => {
+        const current = drag.current;
+        if (!current || current.pointerId !== event.pointerId || current.moved) return;
+        current.longPressTimer = undefined;
+        onContextMenuAt(event.clientX, event.clientY);
+      }, 500);
+    }
     canvas.dataset.iconDragging = "true";
     event.currentTarget.setPointerCapture(event.pointerId);
     onSelect(event);
@@ -151,6 +165,8 @@ export function FileIcon({ entry, selected, onSelect, onOpen, onMove, onDragAtEd
     const deltaY = event.clientY - drag.current.pointerY;
 
     if (!drag.current.moved && Math.hypot(deltaX, deltaY) < 4) return;
+    if (drag.current.longPressTimer) window.clearTimeout(drag.current.longPressTimer);
+    drag.current.longPressTimer = undefined;
     drag.current.moved = true;
     let x = Math.min(drag.current.maxX, Math.max(8, drag.current.originX + deltaX));
     let y = Math.min(drag.current.maxY, Math.max(8, drag.current.originY + deltaY));
@@ -186,6 +202,7 @@ export function FileIcon({ entry, selected, onSelect, onOpen, onMove, onDragAtEd
     const completed = drag.current;
     if (!completed || completed.pointerId !== event.pointerId || completed.finishing) return;
     completed.finishing = true;
+    if (completed.longPressTimer) window.clearTimeout(completed.longPressTimer);
     if (iconRef.current?.hasPointerCapture(event.pointerId)) iconRef.current.releasePointerCapture(event.pointerId);
     const targetFolderId = completed.moved && !cancelled ? findDropTarget(event.clientX, event.clientY) : null;
     const position = { x: Math.round(completed.x), y: Math.round(completed.y) };
@@ -254,6 +271,11 @@ export function FileIcon({ entry, selected, onSelect, onOpen, onMove, onDragAtEd
         } : undefined}
         onKeyDown={(event) => {
           if (event.key === "Enter") onOpen();
+          else if (event.key === "ContextMenu" || event.shiftKey && event.key === "F10") {
+            event.preventDefault();
+            const bounds = event.currentTarget.getBoundingClientRect();
+            onContextMenuAt(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2);
+          }
         }}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}

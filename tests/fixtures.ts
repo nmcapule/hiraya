@@ -22,6 +22,7 @@ export function remoteWorkspace() {
       id: "file-1",
       name: "notes.txt",
       parentId: null,
+      createdAt: null,
       modifiedAt: 1,
       position: { x: 10, y: 20 },
       mimeType: "text/plain; charset=utf-8",

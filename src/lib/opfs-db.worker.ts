@@ -11,14 +11,14 @@ import type {
   StorageDbResponses,
   StoredPreferences,
 } from "./opfs-db-protocol";
-import { applyOutboxOperation, type OutboxOperation, type OutboxRecord } from "./outbox";
+import { applyOutboxOperation, normalizeOutboxOperation, type OutboxOperation, type OutboxRecord } from "./outbox";
 import { parseManifestV13 } from "./manifest-codec";
 import { EMPTY_WINDOW_SESSION, parseWindowSession, type WindowSession } from "./window-session";
 import { activityRecord, parseActivityPage, parseActivityQuery, type ActivityPage, type NewActivityRecord } from "./activity";
 import { canAdoptFreshPlaceholder, desktopIdForManifest } from "./desktop-catalog";
 
 const DATABASE_NAME = "/hiraya.sqlite3";
-const DATABASE_SCHEMA_VERSION = 7;
+const DATABASE_SCHEMA_VERSION = 8;
 const HISTORY_LIMIT = Number(import.meta.env.HIRAYA_HISTORY_LIMIT);
 const DEFAULT_PREFERENCES: StoredPreferences = { autoUpdate: true, externalEmbeddedPreviews: true };
 
@@ -49,6 +49,11 @@ function stringValue(value: SqlValue | undefined) {
 function nullableString(value: SqlValue | undefined) {
   if (value === null) return null;
   return stringValue(value);
+}
+
+function nullableNumber(value: SqlValue | undefined) {
+  if (value === null) return null;
+  return numberValue(value);
 }
 
 function createSchema(db: Database) {
@@ -191,6 +196,7 @@ function createSchema(db: Database) {
   `);
   if (version > 0 && version < 6) db.exec("ALTER TABLE outbox ADD COLUMN desktop_id TEXT");
   if (version < 7) db.exec("ALTER TABLE desktops ADD COLUMN adoptable_placeholder INTEGER NOT NULL DEFAULT 0 CHECK (adoptable_placeholder IN (0, 1))");
+  if (version < 8) db.exec("ALTER TABLE entries ADD COLUMN created_at INTEGER CHECK (created_at >= 0)");
   if (version < DATABASE_SCHEMA_VERSION) db.exec(`PRAGMA user_version=${DATABASE_SCHEMA_VERSION}`);
 }
 
@@ -201,7 +207,7 @@ function readOutbox(db: Database, desktopId?: string): OutboxRecord[] {
     clientId: stringValue(row.client_id),
     workspaceId: nullableString(row.workspace_id),
     desktopId: row.desktop_id === null ? desktopId ?? "legacy" : stringValue(row.desktop_id),
-    operation: JSON.parse(stringValue(row.operation_json)) as OutboxOperation,
+    operation: normalizeOutboxOperation(JSON.parse(stringValue(row.operation_json)) as OutboxOperation),
     status: stringValue(row.status) as OutboxRecord["status"],
     error: nullableString(row.error),
   }));
@@ -256,8 +262,8 @@ function replaceManifestRows(db: Database, manifest: PersistedManifestV13) {
     });
     db.exec("DELETE FROM entries");
     const statement = db.prepare(`INSERT INTO entries
-      (id, ordinal, kind, name, parent_id, modified_at, position_x, position_y, mime_type, size, entry_revision, content_revision)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      (id, ordinal, kind, name, parent_id, created_at, modified_at, position_x, position_y, mime_type, size, entry_revision, content_revision)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     try {
       manifest.entries.forEach((entry, ordinal) => {
         statement.bind([
@@ -266,6 +272,7 @@ function replaceManifestRows(db: Database, manifest: PersistedManifestV13) {
           entry.kind,
           entry.name,
           entry.parentId,
+          entry.createdAt,
           entry.modifiedAt,
           entry.position.x,
           entry.position.y,
@@ -385,6 +392,7 @@ function readManifest(db: Database): PersistedManifestV13 {
       id,
       name: stringValue(row.name),
       parentId: nullableString(row.parent_id),
+      createdAt: nullableNumber(row.created_at),
       modifiedAt: numberValue(row.modified_at),
       position: { x: numberValue(row.position_x), y: numberValue(row.position_y) },
     };

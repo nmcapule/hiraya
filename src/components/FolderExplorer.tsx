@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import {
   ArrowLeft,
@@ -38,6 +38,7 @@ type DragState = {
   startX: number;
   startY: number;
   moved: boolean;
+  longPressTimer?: number;
 };
 
 const byKindAndName = (a: DesktopEntry, b: DesktopEntry) =>
@@ -67,6 +68,10 @@ export function FolderExplorer({
   const orderedChildren = [...children].sort(byKindAndName);
   const trail = folder && breadcrumbs.at(-1)?.id !== folder.id ? [...breadcrumbs, folder] : breadcrumbs;
 
+  useEffect(() => () => {
+    if (drag.current?.longPressTimer) window.clearTimeout(drag.current.longPressTimer);
+  }, []);
+
   function open(entry: DesktopEntry) {
     if (entry.kind === "folder") onNavigate(entry);
     else onOpen(entry);
@@ -88,7 +93,7 @@ export function FolderExplorer({
   }
 
   function handlePointerDown(event: React.PointerEvent<HTMLButtonElement>, entry: DesktopEntry) {
-    if (event.button !== 0 || readOnly) return;
+    if (event.button !== 0) return;
     drag.current = {
       entry,
       pointerId: event.pointerId,
@@ -96,6 +101,16 @@ export function FolderExplorer({
       startY: event.clientY,
       moved: false,
     };
+    if (event.pointerType === "touch") {
+      drag.current.longPressTimer = window.setTimeout(() => {
+        const current = drag.current;
+        if (!current || current.pointerId !== event.pointerId || current.moved) return;
+        current.longPressTimer = undefined;
+        if (!selectedIds.has(entry.id)) onSelect(entry, { toggle: false, range: false, orderedIds: orderedChildren.map((item) => item.id) });
+        onContextMenu(entry, event.clientX, event.clientY);
+      }, 500);
+    }
+    if (readOnly) return;
     event.currentTarget.setPointerCapture(event.pointerId);
   }
 
@@ -103,6 +118,8 @@ export function FolderExplorer({
     const current = drag.current;
     if (!current || current.pointerId !== event.pointerId) return;
     if (!current.moved && Math.hypot(event.clientX - current.startX, event.clientY - current.startY) < 5) return;
+    if (current.longPressTimer) window.clearTimeout(current.longPressTimer);
+    current.longPressTimer = undefined;
     current.moved = true;
     event.currentTarget.dataset.dragging = "true";
     setDropTarget(findDropTarget(event.clientX, event.clientY));
@@ -111,6 +128,7 @@ export function FolderExplorer({
   function finishPointer(event: React.PointerEvent<HTMLButtonElement>, cancelled = false) {
     const current = drag.current;
     if (!current || current.pointerId !== event.pointerId) return;
+    if (current.longPressTimer) window.clearTimeout(current.longPressTimer);
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
     delete event.currentTarget.dataset.dragging;
 
@@ -183,7 +201,15 @@ export function FolderExplorer({
                     onSelect(entry, { toggle: event.metaKey || event.ctrlKey, range: event.shiftKey, orderedIds: orderedChildren.map((item) => item.id) });
                   }}
                   onDoubleClick={() => open(entry)}
-                  onKeyDown={(event) => event.key === "Enter" && open(entry)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") open(entry);
+                    else if (event.key === "ContextMenu" || event.shiftKey && event.key === "F10") {
+                      event.preventDefault();
+                      if (!selectedIds.has(entry.id)) onSelect(entry, { toggle: false, range: false, orderedIds: orderedChildren.map((item) => item.id) });
+                      const bounds = event.currentTarget.getBoundingClientRect();
+                      onContextMenu(entry, bounds.left + bounds.width / 2, bounds.top + bounds.height / 2);
+                    }
+                  }}
                   onContextMenu={(event) => {
                     event.preventDefault();
                     if (!selectedIds.has(entry.id)) onSelect(entry, { toggle: false, range: false, orderedIds: orderedChildren.map((item) => item.id) });

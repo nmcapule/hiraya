@@ -34,6 +34,7 @@ describe("OPFS manifest codec", () => {
     expect(decoded.migrated).toBe(true);
     expect(decoded.manifest.version).toBe(13);
     expect(decoded.manifest.entries[0].position).toEqual({ x: -250, y: 90 });
+    expect(decoded.manifest.entries[0].createdAt).toBeNull();
     expect("rootOrder" in decoded.manifest).toBe(false);
     expect("workspaceBreaks" in decoded.manifest).toBe(false);
   });
@@ -50,6 +51,7 @@ describe("OPFS manifest codec", () => {
       parentId: null,
       mimeType: "text/plain",
       size: 3,
+      createdAt: null,
       modifiedAt: 1,
       position: { x: -20, y: 40 },
     }]);
@@ -81,5 +83,11 @@ describe("OPFS manifest codec", () => {
   test("rejects invalid v13 sync and non-finite positions", () => {
     expect(() => parseManifestV13({ ...manifestV13(), sync: { ...manifestV13().sync, revision: -1 } })).toThrow("revision");
     expect(() => parseManifestV13({ ...manifestV13(), entries: [{ kind: "folder", id: "a", name: "A", parentId: null, modifiedAt: 1, position: { x: Number.NaN, y: 0 } }] })).toThrow("position");
+  });
+
+  test("preserves nullable creation dates in current manifests", () => {
+    const current = manifestV13();
+    const entry = { kind: "folder", id: "a", name: "A", parentId: null, createdAt: 123, modifiedAt: 456, position: { x: 0, y: 0 } };
+    expect(parseManifestV13({ ...current, entries: [entry] }).entries[0].createdAt).toBe(123);
   });
 });

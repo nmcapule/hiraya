@@ -1,4 +1,4 @@
-import { Copy, DownloadSimple, FilePlus, FolderOpen, FolderPlus, FolderSimplePlus, GearSix, PencilSimple, Trash, UploadSimple, ClipboardText } from "@phosphor-icons/react";
+import { Copy, DownloadSimple, FilePlus, FolderOpen, FolderPlus, FolderSimplePlus, GearSix, Info, PencilSimple, Trash, UploadSimple, ClipboardText } from "@phosphor-icons/react";
 import type { ContextMenuState, DesktopEntry } from "../types";
 
 type Props = {
@@ -11,14 +11,15 @@ type Props = {
   onCopy: () => void;
   onPasteInto?: () => void;
   onMove: () => void;
+  onProperties: () => void;
   onDelete: () => void;
   readOnly?: boolean;
   selectionCount?: number;
 };
 
-export function ContextMenu({ menu, entry, onOpen, onEditFile, onRename, onDownload, onCopy, onPasteInto, onMove, onDelete, readOnly = false, selectionCount = 1 }: Props) {
+export function ContextMenu({ menu, entry, onOpen, onEditFile, onRename, onDownload, onCopy, onPasteInto, onMove, onProperties, onDelete, readOnly = false, selectionCount = 1 }: Props) {
   const left = Math.min(menu.x, window.innerWidth - 190);
-  const top = Math.min(menu.y, window.innerHeight - 310);
+  const top = Math.min(menu.y, window.innerHeight - 352);
 
   return (
     <div className="context-menu" role="menu" style={{ left: Math.max(8, left), top: Math.max(48, top) }}>
@@ -42,6 +43,9 @@ export function ContextMenu({ menu, entry, onOpen, onEditFile, onRename, onDownl
       <button type="button" role="menuitem" disabled={readOnly} onClick={onMove}>
         <FolderSimplePlus size={17} /> Move to...
       </button>
+      {selectionCount === 1 && <button className="context-menu__separated" type="button" role="menuitem" onClick={onProperties}>
+        <Info size={17} /> Properties
+      </button>}
       <button className="context-menu__danger" type="button" role="menuitem" disabled={readOnly} onClick={onDelete}>
         <Trash size={17} /> Delete
       </button>

@@ -368,7 +368,7 @@ describe("SyncEngine remote reconciliation", () => {
 
   test("replays an offline source record while another desktop is active", async () => {
     const empty = desktopSnapshot();
-    const folder = { kind: "folder" as const, id: "offline-folder", name: "Offline", parentId: null, modifiedAt: 1, position: { x: 0, y: 0 } };
+    const folder = { kind: "folder" as const, id: "offline-folder", name: "Offline", parentId: null, createdAt: 10, modifiedAt: 1, position: { x: 0, y: 0 } };
     const operation = { kind: "create" as const, entries: [folder] };
     let records: OutboxRecord[] = [{ operationId: "0000000000000001", sequence: 1, clientId: "client", workspaceId: "workspace-1", desktopId: "source", operation, status: "pending", error: null }];
     const requests: string[] = [];
@@ -391,7 +391,11 @@ describe("SyncEngine remote reconciliation", () => {
       requests.push(request);
       if (String(input) === "/api/desktops/active") return Response.json(workspace(1));
       if (String(input) === "/api/desktops/source" && !init?.method) return Response.json(workspace(2, [{ ...folder, revision: 2, contentRevision: 0 }]));
-      if (String(input) === "/api/desktops/source/entries") return Response.json({ revision: 2, entry: folder });
+      if (String(input) === "/api/desktops/source/entries") {
+        const body = init?.body as FormData;
+        expect(JSON.parse(String(body.get("entry")))).not.toHaveProperty("createdAt");
+        return Response.json({ revision: 2, entry: folder });
+      }
       throw new Error(`Unexpected request: ${request}`);
     }) as typeof fetch;
     const engine = new SyncEngine({ storage, fetch: fetchImpl, eventSource: FakeEventSource as unknown as typeof EventSource });
@@ -487,7 +491,7 @@ describe("SyncEngine remote reconciliation", () => {
     expect(entryIndex).toBeGreaterThan(createIndex);
     expect(editIndex).toBeGreaterThan(entryIndex);
     expect(records).toEqual([]);
-    expect(result.desktop.entries).toContainEqual(editedFile);
+    expect(result.desktop.entries).toContainEqual({ ...editedFile, createdAt: null });
     expect(result.desktop.sync.revision).toBe(4);
     engine.stop();
   });
@@ -589,15 +593,18 @@ describe("SyncEngine remote reconciliation", () => {
 
   test("bootstraps an uninitialized server", async () => {
     const snapshot = desktopSnapshot();
+    snapshot.entries = [{ kind: "folder", id: "local-folder", name: "Local", parentId: null, createdAt: 123, modifiedAt: 123, position: { x: 0, y: 0 } }];
     const requests: string[] = [];
     let bootstrapAppearance: unknown;
+    let bootstrapEntries: Array<Record<string, unknown>> = [];
     const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
       requests.push(`${init?.method ?? "GET"} ${String(input)}`);
       if (String(input) === "/api/workspace") {
         return Response.json({ schemaVersion: 5, workspaceId: "workspace-1", initialized: false, revision: 0 });
       }
-      const workspaceInput = JSON.parse(String((init?.body as FormData).get("workspace"))) as { appearance: unknown };
+      const workspaceInput = JSON.parse(String((init?.body as FormData).get("workspace"))) as { appearance: unknown; entries: Array<Record<string, unknown>> };
       bootstrapAppearance = workspaceInput.appearance;
+      bootstrapEntries = workspaceInput.entries;
       return Response.json({
         schemaVersion: 5,
         workspaceId: "workspace-1",
@@ -618,6 +625,7 @@ describe("SyncEngine remote reconciliation", () => {
     expect(result.desktop.sync.workspaceId).toBe("workspace-1");
     expect(requests).toEqual(["GET /api/workspace", "POST /api/bootstrap"]);
     expect(bootstrapAppearance).toEqual(snapshot.appearance);
+    expect(bootstrapEntries[0]).not.toHaveProperty("createdAt");
     engine.stop();
   });
 

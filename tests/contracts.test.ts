@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { isValidId, normalizeDesktopName, parseDesktopList, parseLayout, parsePosition, parseRemoteWorkspace, parseRootDesktopPositions } from "../src/lib/contracts";
+import { isValidId, normalizeDesktopName, parseDesktopList, parseEntries, parseLayout, parsePosition, parseRemoteWorkspace, parseRootDesktopPositions } from "../src/lib/contracts";
 import { namesMatch, validateEntryName } from "../src/lib/entry-validation";
 import { remoteWorkspace } from "./fixtures";
 import { BUILTIN_THEMES } from "../src/lib/themes";
@@ -22,6 +22,14 @@ describe("workspace contracts", () => {
     const input = remoteWorkspace();
     input.entries[0].parentId = "missing";
     expect(() => parseRemoteWorkspace(input)).toThrow("missing parent");
+  });
+
+  test("normalizes missing creation dates and validates present dates", () => {
+    const entry = { kind: "folder", id: "a", name: "A", parentId: null, modifiedAt: 1, position: { x: 0, y: 0 } };
+    expect(parseEntries([entry])[0].createdAt).toBeNull();
+    expect(parseEntries([{ ...entry, createdAt: 0 }])[0].createdAt).toBe(0);
+    expect(() => parseEntries([{ ...entry, createdAt: -1 }])).toThrow("creation date");
+    expect(() => parseEntries([{ ...entry, createdAt: Number.MAX_SAFE_INTEGER + 1 }])).toThrow("creation date");
   });
 
   test("validates revisioned remote appearance", () => {

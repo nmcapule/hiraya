@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { applyOutboxOperation, outboxDesktopRetentionIds, type OutboxRecord } from "../src/lib/outbox";
+import { applyOutboxOperation, normalizeOutboxOperation, outboxDesktopRetentionIds, type OutboxRecord } from "../src/lib/outbox";
 import { BUILTIN_THEMES } from "../src/lib/themes";
 import { desktopSnapshot } from "./fixtures";
 
@@ -35,6 +35,12 @@ describe("theme outbox projection", () => {
 });
 
 describe("entry batch outbox projection", () => {
+  test("normalizes entries from old persisted operations", () => {
+    const entry = { kind: "folder" as const, id: "legacy", name: "Legacy", parentId: null, modifiedAt: 1, position: { x: 0, y: 0 } };
+    const operation = normalizeOutboxOperation({ kind: "create", entries: [entry] });
+    expect(operation.kind === "create" && operation.entries[0].createdAt).toBeNull();
+  });
+
   test("creates mixed trees, moves batches, and recursively deletes batches", () => {
     const folder = { kind: "folder" as const, id: "11111111-1111-4111-8111-111111111111", name: "Copies", parentId: null, modifiedAt: 1, position: { x: 4, y: 5 } };
     const file = { kind: "file" as const, id: "22222222-2222-4222-8222-222222222222", name: "note.txt", parentId: folder.id, modifiedAt: 1, position: { x: 4, y: 5 }, mimeType: "text/plain", size: 3 };

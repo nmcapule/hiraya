@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, CloudCheck, CloudSlash, File as FileGlyph, Folder, FolderPlus, GearSix, HardDrive, LinkSimple, Plus, SpinnerGap, UploadSimple, WarningCircle } from "@phosphor-icons/react";
+import { Check, CloudCheck, CloudSlash, File as FileGlyph, Folder, FolderPlus, GearSix, HardDrive, Info, LinkSimple, Plus, SpinnerGap, UploadSimple, WarningCircle } from "@phosphor-icons/react";
 import seededDesktop from "virtual:hiraya-seeded";
 import { ContextMenu, DesktopContextMenu } from "./components/ContextMenu";
 import { AppWindow } from "./components/AppWindow";
@@ -10,6 +10,7 @@ import { FolderExplorer } from "./components/FolderExplorer";
 import { MoveDialog } from "./components/MoveDialog";
 import { DesktopSwitcher } from "./components/DesktopSwitcher";
 import { PasteConflictDialog } from "./components/PasteConflictDialog";
+import { PropertiesWindow } from "./components/PropertiesWindow";
 import { SettingsWindow } from "./components/SettingsWindow";
 import { UpdateToast } from "./components/UpdateToast";
 import {
@@ -67,7 +68,8 @@ type BaseRunningApp = { id: string; bounds: WindowBounds; minimized: boolean; zI
 type FileApp = BaseRunningApp & { kind: "file"; fileId: string; file?: FileEntry; blob?: File; editable?: boolean; editMode: boolean; contentRevision: number; remoteChanged: boolean };
 type ExplorerApp = BaseRunningApp & { kind: "explorer"; folderId: string | null };
 type SettingsApp = BaseRunningApp & { kind: "settings" };
-type RunningApp = FileApp | ExplorerApp | SettingsApp;
+type PropertiesApp = BaseRunningApp & { kind: "properties"; entryId: string };
+type RunningApp = FileApp | ExplorerApp | PropertiesApp | SettingsApp;
 type RouteHistoryState = { hiraya: true; parentHash?: string; apps?: WindowTarget[] };
 type PendingPaste = { snapshot: ClipboardEntrySnapshot; parentId: string | null; position?: EntryPosition };
 const MINIMAP_LONG_PRESS_MS = 500;
@@ -214,6 +216,7 @@ function App() {
   desktopsRef.current = desktops;
   const routeExplorerFolderId = route?.explorerFolderId;
   const routeFileId = route?.fileId;
+  const routePropertiesEntryId = route?.propertiesEntryId;
   const routeSettings = route?.settings;
   const canMutate = syncStatus !== "connecting";
   const syncIndicatorStatus = syncStatus === "online" && isSyncing ? "syncing" : syncStatus;
@@ -296,6 +299,7 @@ function App() {
     return apps.map((app) => {
       if (app.kind === "file") return { kind: "file", fileId: app.fileId, ...(app.editMode ? { editMode: true } : {}) };
       if (app.kind === "explorer") return { kind: "explorer", folderId: app.folderId };
+      if (app.kind === "properties") return { kind: "properties", entryId: app.entryId };
       return { kind: "settings" };
     });
   }
@@ -346,6 +350,7 @@ function App() {
     if (!app) return base;
     if (app.kind === "file") return { ...base, fileId: app.fileId };
     if (app.kind === "explorer") return { ...base, explorerFolderId: app.folderId };
+    if (app.kind === "properties") return { ...base, propertiesEntryId: app.entryId };
     return { ...base, settings: true };
   }
 
@@ -456,6 +461,7 @@ function App() {
     const restored = restoreWindowSession(session, loadedEntries, restoredRoute, desktopSize).map((saved): RunningApp => {
       if (saved.kind === "settings") return { ...saved, id: "settings" };
       if (saved.kind === "explorer") return { ...saved, id: `explorer:${saved.folderId ?? "root"}` };
+      if (saved.kind === "properties") return { ...saved, id: `properties:${saved.entryId}` };
       const file = byId.get(saved.fileId) as FileEntry;
       return {
         ...saved,
@@ -498,6 +504,11 @@ function App() {
         restored.push(reusable
           ? { ...reusable, id, folderId: target.folderId }
           : { ...createAppBase(id, 760, 590, 360, 280, restored.length, historySegment), kind: "explorer", folderId: target.folderId });
+        continue;
+      }
+      if (target.kind === "properties") {
+        if (!entriesRef.current.some((entry) => entry.id === target.entryId)) continue;
+        restored.push({ ...createAppBase(id, 520, 570, 360, 320, restored.length, historySegment), kind: "properties", entryId: target.entryId });
         continue;
       }
       const file = entriesRef.current.find((entry): entry is FileEntry => entry.id === target.fileId && entry.kind === "file");
@@ -559,13 +570,14 @@ function App() {
   applyLocationRouteRef.current = applyLocationRoute;
   navigateRouteRef.current = navigateRoute;
   openRouteAppsRef.current = (next) => {
-    if (next.explorerFolderId !== undefined) openExplorerWindow(next.explorerFolderId, false, !next.fileId && !next.settings);
+    if (next.explorerFolderId !== undefined) openExplorerWindow(next.explorerFolderId, false, !next.fileId && !next.propertiesEntryId && !next.settings);
     if (next.fileId) {
       const entry = workspace.byId.get(next.fileId);
-      if (entry?.kind === "file") openFileWindow(entry, false, !next.settings);
+      if (entry?.kind === "file") openFileWindow(entry, false, !next.propertiesEntryId && !next.settings);
     }
+    if (next.propertiesEntryId && workspace.byId.has(next.propertiesEntryId)) openPropertiesWindow(next.propertiesEntryId, false);
     if (next.settings) openSettingsWindow(false);
-    if (next.explorerFolderId === undefined && !next.fileId && !next.settings) setFocusedApp(null);
+    if (next.explorerFolderId === undefined && !next.fileId && !next.propertiesEntryId && !next.settings) setFocusedApp(null);
   };
   closeAppRef.current = closeApp;
 
@@ -610,7 +622,7 @@ function App() {
         }
         return current.type === "rename" ? syncedIds.has(current.entryId) ? current : null : current.entryIds.some((id) => syncedIds.has(id)) ? { ...current, entryIds: current.entryIds.filter((id) => syncedIds.has(id)) } : null;
       });
-      const availableApps = runningAppsRef.current.filter((app) => app.kind === "settings" || app.kind === "explorer" && app.folderId === null || syncedIds.has(app.kind === "file" ? app.fileId : app.folderId!));
+      const availableApps = runningAppsRef.current.filter((app) => app.kind === "settings" || app.kind === "explorer" && app.folderId === null || syncedIds.has(app.kind === "file" ? app.fileId : app.kind === "properties" ? app.entryId : app.folderId!));
       updateRunningApps(availableApps);
       if (focusedAppIdRef.current && !availableApps.some((app) => app.id === focusedAppIdRef.current)) {
         const currentRoute = routeRef.current;
@@ -716,11 +728,12 @@ function App() {
   useEffect(() => {
     if (windowSessionReadyRef.current) {
       const session: WindowSession = {
-        version: 3,
+        version: 4,
         apps: runningApps.map((app): WindowSessionApp => {
           const base = { bounds: app.bounds, minimized: app.minimized, zIndex: app.zIndex };
           if (app.kind === "file") return { ...base, kind: "file", fileId: app.fileId, ...(app.editMode ? { editMode: true } : {}) };
           if (app.kind === "explorer") return { ...base, kind: "explorer", folderId: app.folderId };
+          if (app.kind === "properties") return { ...base, kind: "properties", entryId: app.entryId };
           return { ...base, kind: "settings" };
         }),
       };
@@ -877,9 +890,10 @@ function App() {
     const currentApps = runningAppsRef.current;
     const reconciledApps = currentApps.flatMap((app): RunningApp[] => {
       if (app.kind === "settings" || app.kind === "explorer" && app.folderId === null) return [app];
-      const entryId = app.kind === "file" ? app.fileId : app.folderId;
+      const entryId = app.kind === "file" ? app.fileId : app.kind === "properties" ? app.entryId : app.folderId;
       const entry = entryId ? workspace.byId.get(entryId) : null;
       if (!entry || app.kind === "file" && entry.kind !== "file" || app.kind === "explorer" && entry.kind !== "folder") return [];
+      if (app.kind === "properties") return [app];
       if (app.kind === "explorer") return [app];
       if (entry.kind !== "file") return [];
       const expectedRevision = contentRevisionsRef.current[app.fileId] ?? 0;
@@ -922,9 +936,10 @@ function App() {
       row: 0,
       ...(routeExplorerFolderId !== undefined ? { explorerFolderId: routeExplorerFolderId } : {}),
       ...(routeFileId ? { fileId: routeFileId } : {}),
+      ...(routePropertiesEntryId ? { propertiesEntryId: routePropertiesEntryId } : {}),
       ...(routeSettings ? { settings: true as const } : {}),
     });
-  }, [loading, routeExplorerFolderId, routeFileId, routeSettings, windowSessionRestored]);
+  }, [loading, routeExplorerFolderId, routeFileId, routePropertiesEntryId, routeSettings, windowSessionRestored]);
 
   useEffect(() => {
     applyLocationRouteRef.current();
@@ -1474,6 +1489,23 @@ function App() {
     setFocusedApp(id);
     const currentRoute = routeRef.current;
     if (syncRoute && currentRoute) navigateRoute({ column: currentRoute.column, row: currentRoute.row, settings: true }, "push", previousApps);
+    return true;
+  }
+
+  function openPropertiesWindow(entryId: string, syncRoute = true) {
+    const entry = entriesRef.current.find((candidate) => candidate.id === entryId);
+    if (!entry) return false;
+    const id = `properties:${entryId}`;
+    if (runningAppsRef.current.some((app) => app.id === id)) {
+      focusApp(id, syncRoute);
+      return false;
+    }
+    const previousApps = runningAppTargets();
+    const app: PropertiesApp = { ...createAppBase(id, 520, 570, 360, 320), kind: "properties", entryId };
+    updateRunningApps([...runningAppsRef.current, app]);
+    setFocusedApp(id);
+    const currentRoute = routeRef.current;
+    if (syncRoute && currentRoute) navigateRoute({ column: currentRoute.column, row: currentRoute.row, propertiesEntryId: entryId }, "push", previousApps);
     return true;
   }
 
@@ -2047,8 +2079,8 @@ function App() {
         {activeDesktopId && <DesktopSwitcher desktops={desktops} activeDesktopId={activeDesktopId} defaultDesktopId={defaultDesktopId} disabled={loading} onSwitch={(id) => void activateDesktop(id)} onCreate={createDesktop} onRename={renameDesktop} onDelete={deleteDesktop} />}
         <nav className="taskbar" aria-label="Running apps">
           {activeApps.map((app) => {
-            const entry = app.kind === "file" ? workspace.byId.get(app.fileId) : app.kind === "explorer" && app.folderId ? workspace.byId.get(app.folderId) : null;
-            const label = app.kind === "settings" ? "Settings" : app.kind === "explorer" ? entry?.name ?? "Desktop" : entry?.name ?? app.file?.name ?? "File";
+            const entry = app.kind === "file" ? workspace.byId.get(app.fileId) : app.kind === "properties" ? workspace.byId.get(app.entryId) : app.kind === "explorer" && app.folderId ? workspace.byId.get(app.folderId) : null;
+            const label = app.kind === "settings" ? "Settings" : app.kind === "properties" ? `${entry?.name ?? "Item"} Properties` : app.kind === "explorer" ? entry?.name ?? "Desktop" : entry?.name ?? app.file?.name ?? "File";
             return (
               <button
                 className="taskbar__entry"
@@ -2061,7 +2093,7 @@ function App() {
                 aria-pressed={focusedAppId === app.id && !app.minimized}
                 onClick={() => focusedAppId === app.id && !app.minimized && !isMobile ? minimizeApp(app.id) : focusApp(app.id)}
               >
-                {app.kind === "file" ? entry?.kind === "file" && fileCapabilities(entry).icon === "url" ? <LinkSimple size={15} /> : <FileGlyph size={15} /> : app.kind === "explorer" ? <Folder size={15} /> : <GearSix size={15} />}
+                {app.kind === "file" ? entry?.kind === "file" && fileCapabilities(entry).icon === "url" ? <LinkSimple size={15} /> : <FileGlyph size={15} /> : app.kind === "explorer" ? <Folder size={15} /> : app.kind === "properties" ? <Info size={15} /> : <GearSix size={15} />}
                 <span>{label}</span>
               </button>
             );
@@ -2149,6 +2181,10 @@ function App() {
                 if (!selectedIdSet.has(entry.id)) replaceSelection("desktop", [entry.id]);
                 openEntryContextMenu(entry.id, event.clientX, event.clientY);
               }}
+              onContextMenuAt={(x, y) => {
+                if (!selectedIdSet.has(entry.id)) replaceSelection("desktop", [entry.id]);
+                openEntryContextMenu(entry.id, x, y);
+              }}
             />;
           }))}
         </div>
@@ -2179,7 +2215,8 @@ function App() {
             const folder = folderEntry?.kind === "folder" ? folderEntry : null;
             const fileEntry = app.kind === "file" ? app.file ?? workspace.byId.get(app.fileId) : null;
             const file = fileEntry?.kind === "file" ? fileEntry : null;
-            const title = app.kind === "settings" ? isMobile && settingsPage !== "main" ? settingsPage === "themes" ? "Themes" : "Logs" : "Settings" : app.kind === "explorer" ? folder?.name ?? "Desktop" : file?.name ?? "Opening file";
+            const propertiesEntry = app.kind === "properties" ? workspace.byId.get(app.entryId) : null;
+            const title = app.kind === "settings" ? isMobile && settingsPage !== "main" ? settingsPage === "themes" ? "Themes" : "Logs" : "Settings" : app.kind === "properties" ? `${propertiesEntry?.name ?? "Item"} Properties` : app.kind === "explorer" ? folder?.name ?? "Desktop" : file?.name ?? "Opening file";
             return (
               <AppWindow
                 key={app.id}
@@ -2188,7 +2225,7 @@ function App() {
                 titleId={titleId}
                 bounds={localBounds}
                 minWidth={app.kind === "file" ? 420 : 360}
-                minHeight={app.kind === "file" ? 320 : 280}
+                minHeight={app.kind === "file" || app.kind === "properties" ? 320 : 280}
                 zIndex={app.zIndex}
                 focused={focusedAppId === app.id}
                 minimized={app.minimized}
@@ -2200,7 +2237,7 @@ function App() {
                 onDragEnd={finishWindowEdgeNavigation}
                 onMinimize={minimizeApp}
                 onClose={closeApp}
-                titleArea={<div><span className="window-kicker">{app.kind === "file" ? app.editMode || file && ["text", "url"].includes(fileCapabilities(file).preview) ? "Text editor" : file && fileCapabilities(file).preview === "markdown" ? "Markdown" : "Preview" : app.kind === "explorer" ? "Folder" : "Hiraya desktop"}</span><h2 id={titleId}>{title}</h2></div>}
+                 titleArea={<div><span className="window-kicker">{app.kind === "file" ? app.editMode || file && ["text", "url"].includes(fileCapabilities(file).preview) ? "Text editor" : file && fileCapabilities(file).preview === "markdown" ? "Markdown" : "Preview" : app.kind === "explorer" ? "Folder" : app.kind === "properties" ? "Properties" : "Hiraya desktop"}</span><h2 id={titleId}>{title}</h2></div>}
               >
                 {(headerElements) => <>
                 {app.kind === "file" && file && app.blob ? (
@@ -2247,6 +2284,13 @@ function App() {
                     }}
                     readOnly={!canMutate}
                     headerElements={headerElements}
+                  />
+                )}
+                {app.kind === "properties" && propertiesEntry && (
+                  <PropertiesWindow
+                    entry={propertiesEntry}
+                    ancestors={workspace.ancestors(propertiesEntry.id)}
+                    descendants={propertiesEntry.kind === "folder" ? workspace.descendants(propertiesEntry.id) : []}
                   />
                 )}
                 {app.kind === "settings" && (
@@ -2380,6 +2424,7 @@ function App() {
           onCopy={() => void copySelection()}
           onPasteInto={contextMenuEntry.kind === "folder" && clipboardRef.current ? () => void beginPaste(contextMenuEntry.id) : undefined}
           onMove={() => { setMoveDialogSubmitting(false); setMoveDialogEntryIds(contextMenuEntries.map((entry) => entry.id)); setContextMenu(null); }}
+          onProperties={() => { openPropertiesWindow(contextMenuEntry.id); setContextMenu(null); }}
           onDelete={() => { setDialog({ type: "delete", entryIds: contextMenuEntries.map((entry) => entry.id) }); setContextMenu(null); }}
           selectionCount={contextMenuEntries.length}
           readOnly={!canMutate}

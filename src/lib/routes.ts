@@ -8,6 +8,7 @@ export type DesktopRoute = {
   row: number;
   explorerFolderId?: string | null;
   fileId?: string;
+  propertiesEntryId?: string;
   settings?: true;
 };
 
@@ -42,8 +43,15 @@ function parseSuffix(parts: string[], route: DesktopRoute, startIndex: number) {
     next.fileId = fileId;
     index += 2;
   }
-  if (parts[index] === "settings") {
+  if (parts[index] === "properties" && parts[index + 1]) {
     if (next.explorerFolderId !== undefined || next.fileId) return null;
+    const entryId = decodeId(parts[index + 1]);
+    if (!entryId) return null;
+    next.propertiesEntryId = entryId;
+    index += 2;
+  }
+  if (parts[index] === "settings") {
+    if (next.explorerFolderId !== undefined || next.fileId || next.propertiesEntryId) return null;
     next.settings = true;
     index += 1;
   }
@@ -86,6 +94,7 @@ export function formatDesktopRoute(route: DesktopRoute) {
     ? `#/desktops/${encodeURIComponent(route.desktopId)}/workspaces/${route.column}/${route.row}`
     : `#/workspaces/${route.column}/${route.row}`;
   if (route.settings) return `${hash}/settings`;
+  if (route.propertiesEntryId) return `${hash}/properties/${encodeURIComponent(route.propertiesEntryId)}`;
   if (route.explorerFolderId === null) hash += "/explorer/root";
   else if (route.explorerFolderId !== undefined) hash += `/explorer/folder/${encodeURIComponent(route.explorerFolderId)}`;
   if (route.fileId) hash += `/file/${encodeURIComponent(route.fileId)}`;
@@ -97,6 +106,7 @@ export function normalizeDesktopRoute(route: DesktopRoute | null, entries: Deskt
   const row = route && Number.isSafeInteger(route.row) ? route.row : 0;
   const next: DesktopRoute = { ...(desktopId ? { desktopId } : route?.desktopId ? { desktopId: route.desktopId } : {}), column, row };
   if (route?.settings) return { ...next, settings: true };
+  if (route?.propertiesEntryId && entries.some((entry) => entry.id === route.propertiesEntryId)) return { ...next, propertiesEntryId: route.propertiesEntryId };
   if (route?.explorerFolderId === null) next.explorerFolderId = null;
   else if (route?.explorerFolderId !== undefined && entries.some((entry) => entry.id === route.explorerFolderId && entry.kind === "folder")) {
     next.explorerFolderId = route.explorerFolderId;

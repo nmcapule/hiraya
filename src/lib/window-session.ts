@@ -12,17 +12,19 @@ type WindowSessionBase = {
 export type WindowSessionApp = WindowSessionBase & (
   | { kind: "file"; fileId: string; editMode?: boolean }
   | { kind: "explorer"; folderId: string | null }
+  | { kind: "properties"; entryId: string }
   | { kind: "settings" }
 );
 
-export type WindowSession = { version: 1 | 2 | 3; apps: WindowSessionApp[] };
+export type WindowSession = { version: 1 | 2 | 3 | 4; apps: WindowSessionApp[] };
 
 export type WindowTarget =
   | { kind: "file"; fileId: string; editMode?: boolean }
   | { kind: "explorer"; folderId: string | null }
+  | { kind: "properties"; entryId: string }
   | { kind: "settings" };
 
-export const EMPTY_WINDOW_SESSION: WindowSession = { version: 3, apps: [] };
+export const EMPTY_WINDOW_SESSION: WindowSession = { version: 4, apps: [] };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -31,6 +33,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function windowTargetId(target: WindowTarget) {
   if (target.kind === "file") return `file:${target.fileId}`;
   if (target.kind === "explorer") return `explorer:${target.folderId ?? "root"}`;
+  if (target.kind === "properties") return `properties:${target.entryId}`;
   return "settings";
 }
 
@@ -42,6 +45,7 @@ export function parseWindowTargets(value: unknown): WindowTarget[] {
     let target: WindowTarget;
     if (item.kind === "file" && isValidId(item.fileId) && (item.editMode === undefined || typeof item.editMode === "boolean")) target = { kind: "file", fileId: item.fileId, ...(item.editMode ? { editMode: true } : {}) };
     else if (item.kind === "explorer" && (item.folderId === null || isValidId(item.folderId))) target = { kind: "explorer", folderId: item.folderId as string | null };
+    else if (item.kind === "properties" && isValidId(item.entryId)) target = { kind: "properties", entryId: item.entryId };
     else if (item.kind === "settings") target = { kind: "settings" };
     else throw new Error("The route history contains an invalid app.");
     const id = windowTargetId(target);
@@ -59,7 +63,7 @@ function parseBounds(value: unknown): WindowBounds {
 }
 
 export function parseWindowSession(value: unknown): WindowSession {
-  if (!isRecord(value) || value.version !== 1 && value.version !== 2 && value.version !== 3 || !Array.isArray(value.apps) || value.apps.length > 100) {
+  if (!isRecord(value) || value.version !== 1 && value.version !== 2 && value.version !== 3 && value.version !== 4 || !Array.isArray(value.apps) || value.apps.length > 100) {
     throw new Error("The saved window session has an unsupported format.");
   }
   const ids = new Set<string>();
@@ -76,6 +80,9 @@ export function parseWindowSession(value: unknown): WindowSession {
     } else if (item.kind === "explorer" && (item.folderId === null || isValidId(item.folderId))) {
       app = { ...base, kind: "explorer", folderId: item.folderId as string | null };
       id = `explorer:${item.folderId ?? "root"}`;
+    } else if (item.kind === "properties" && isValidId(item.entryId)) {
+      app = { ...base, kind: "properties", entryId: item.entryId };
+      id = `properties:${item.entryId}`;
     } else if (item.kind === "settings") {
       app = { ...base, kind: "settings" };
       id = "settings";
@@ -92,7 +99,7 @@ export function parseWindowSession(value: unknown): WindowSession {
 export function restoreWindowSession(session: WindowSession, entries: DesktopEntry[], activeSegment: SurfaceSegment, viewport: WindowViewport) {
   const byId = new Map(entries.map((entry) => [entry.id, entry]));
   return session.apps
-    .filter((app) => app.kind === "settings" || app.kind === "explorer" && app.folderId === null || (app.kind === "file" ? byId.get(app.fileId)?.kind === "file" : byId.get(app.folderId!)?.kind === "folder"))
+    .filter((app) => app.kind === "settings" || app.kind === "explorer" && app.folderId === null || app.kind === "properties" ? app.kind === "properties" && byId.has(app.entryId) : app.kind === "file" ? byId.get(app.fileId)?.kind === "file" : byId.get(app.folderId!)?.kind === "folder")
     .sort((left, right) => left.zIndex - right.zIndex)
     .map((app, index): WindowSessionApp => {
       const minimumSize = app.kind === "file" ? { minWidth: 420, minHeight: 320 } : { minWidth: 360, minHeight: 280 };

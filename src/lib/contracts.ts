@@ -113,6 +113,11 @@ function readNonNegativeInteger(value: unknown, message: string): number {
   return value as number;
 }
 
+function readNullableNonNegativeInteger(value: unknown, message: string): number | null {
+  if (value === undefined || value === null) return null;
+  return readNonNegativeInteger(value, message);
+}
+
 export function readRevision(value: unknown, message = "A revision has an unsupported format.") {
   if (!Number.isSafeInteger(value) || (value as number) < 0) throw new Error(message);
   return value as number;
@@ -181,6 +186,7 @@ function parseEntry(value: unknown, remote: boolean): ParsedEntry {
     id: value.id,
     name: value.name,
     parentId: value.parentId,
+    createdAt: readNullableNonNegativeInteger(value.createdAt, "An entry has an invalid creation date."),
     modifiedAt: readNonNegativeInteger(value.modifiedAt, "An entry has an invalid modification date."),
     position: parsePosition(value.position),
   } as const;

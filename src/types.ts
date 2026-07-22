@@ -29,10 +29,11 @@ export type EditorSettings = {
   lineWrap: boolean;
 };
 
-type BaseEntry = {
+export type BaseEntry = {
   id: string;
   name: string;
   parentId: string | null;
+  createdAt: number | null;
   modifiedAt: number;
   position: EntryPosition;
 };
