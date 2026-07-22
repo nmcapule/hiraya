@@ -38,6 +38,9 @@ jobs:
       - name: Lint
         run: bun run lint
 
+      - name: Test
+        run: bun test
+
       - name: Build frontend-only desktop
         env:
           HIRAYA_BASE_PATH: /${{ github.event.repository.name }}/

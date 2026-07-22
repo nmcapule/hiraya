@@ -5,7 +5,6 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "server": "go run ./cmd/hiraya-server",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "test": "bun test",
