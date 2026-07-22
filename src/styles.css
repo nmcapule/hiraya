@@ -1754,8 +1754,7 @@ textarea:focus-visible {
   grid-template-columns: 34px minmax(0, 1fr) minmax(90px, 180px);
   align-items: center;
   padding: 5px 12px 5px 9px;
-  border: 1px solid transparent;
-  border-radius: 9px;
+  border: 0;
   color: #26302d;
   background: transparent;
   text-align: left;
@@ -1765,19 +1764,15 @@ textarea:focus-visible {
 
 .folder-explorer__row:hover,
 .folder-explorer__row[data-selected] {
-  border-color: #c7c9c1;
   background: rgba(255, 255, 255, 0.65);
 }
 
 .folder-explorer__row[data-selected] {
-  border-color: #c3a76f;
   background: #eadab8;
 }
 
 .folder-explorer__row[data-drop-target] {
-  border-color: #b68a38;
   background: #e5c98f;
-  box-shadow: 0 0 0 2px rgba(182, 138, 56, 0.14);
 }
 
 .folder-explorer__row[data-dragging] {
@@ -3033,11 +3028,11 @@ textarea:focus-visible {
 .folder-explorer__breadcrumbs button[data-current],
 .folder-explorer__breadcrumbs button[data-drop-target] { color: var(--theme-text); background: var(--theme-selected); }
 .folder-explorer__content { background: color-mix(in srgb, var(--theme-window-muted) 60%, var(--theme-window)); }
-.folder-explorer__row { min-height: calc(48px * var(--theme-density)); border: var(--theme-border-width) solid transparent; border-radius: calc(var(--theme-radius-small) * 1.1); color: var(--theme-text); }
+.folder-explorer__row { min-height: calc(48px * var(--theme-density)); border: 0; color: var(--theme-text); }
 .folder-explorer__row:hover,
-.folder-explorer__row[data-selected] { border-color: var(--theme-border); background: color-mix(in srgb, var(--theme-window) 78%, transparent); }
-.folder-explorer__row[data-selected] { border-color: var(--theme-selection); background: var(--theme-selected); }
-.folder-explorer__row[data-drop-target] { border-color: var(--theme-accent); background: color-mix(in srgb, var(--theme-accent) 32%, var(--theme-window)); box-shadow: 0 0 0 2px var(--theme-focus); }
+.folder-explorer__row[data-selected] { background: color-mix(in srgb, var(--theme-window) 78%, transparent); }
+.folder-explorer__row[data-selected] { background: var(--theme-selected); }
+.folder-explorer__row[data-drop-target] { background: color-mix(in srgb, var(--theme-accent) 32%, var(--theme-window)); }
 .folder-explorer__row svg { color: var(--theme-accent); }
 .folder-explorer__name { font-size: calc(12px * var(--theme-type-scale)); font-weight: var(--theme-weight); }
 .folder-explorer__kind,
