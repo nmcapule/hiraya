@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { ArrowClockwise, ArrowLeft, ArrowsOut, CaretRight, ClockCounterClockwise, CornersIn, CornersOut, ExportIcon, GridFour, PaintBrush } from "@phosphor-icons/react";
 import { ActivityLog } from "./ActivityLog";
 import type { ActivityPage, ActivityQuery } from "../lib/activity";
@@ -13,6 +14,7 @@ import {
   themeContrastIssues,
 } from "../lib/themes";
 import { WALLPAPERS, type DesktopLayout, type Wallpaper } from "../types";
+import type { AppWindowHeaderElements } from "./AppWindow";
 
 const WALLPAPER_LABELS: Record<Wallpaper, { name: string; description: string }> = {
   dusk: { name: "Dusk", description: "Misty green with a warm horizon" },
@@ -44,6 +46,9 @@ const COLOR_LABELS: Record<keyof ThemeColors, string> = {
 };
 
 type Props = {
+  page: "main" | "themes" | "logs";
+  onPageChange: (page: "main" | "themes" | "logs") => void;
+  mobileHeaderElements?: AppWindowHeaderElements;
   layout: DesktopLayout;
   appearance: ThemeState;
   activeTheme: ThemeDefinition;
@@ -111,6 +116,9 @@ function copyName(name: string) {
 }
 
 export function SettingsWindow({
+  page,
+  onPageChange,
+  mobileHeaderElements,
   layout,
   appearance,
   activeTheme,
@@ -135,7 +143,6 @@ export function SettingsWindow({
   onCheckForUpdate,
   onAutoUpdateChange,
 }: Props) {
-  const [page, setPage] = useState<"main" | "themes" | "logs">("main");
   const [draft, setDraft] = useState<CustomTheme | null>(null);
   const [saving, setSaving] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -218,31 +225,37 @@ export function SettingsWindow({
 
   const openThemes = () => {
     contentRef.current?.scrollTo({ top: 0 });
-    setPage("themes");
-    requestAnimationFrame(() => themesHeadingRef.current?.focus());
+    onPageChange("themes");
+    if (!mobileHeaderElements) requestAnimationFrame(() => themesHeadingRef.current?.focus());
   };
 
   const closeThemes = () => {
     cancelDraft();
     contentRef.current?.scrollTo({ top: 0 });
-    setPage("main");
+    onPageChange("main");
     requestAnimationFrame(() => mainThemesButtonRef.current?.focus());
   };
 
   const openLogs = () => {
     contentRef.current?.scrollTo({ top: 0 });
-    setPage("logs");
-    requestAnimationFrame(() => logsHeadingRef.current?.focus());
+    onPageChange("logs");
+    if (!mobileHeaderElements) requestAnimationFrame(() => logsHeadingRef.current?.focus());
   };
 
   const closeLogs = () => {
     contentRef.current?.scrollTo({ top: 0 });
-    setPage("main");
+    onPageChange("main");
     requestAnimationFrame(() => mainLogsButtonRef.current?.focus());
   };
 
   return (
     <div className="settings-window settings-window--embedded">
+      {page !== "main" && mobileHeaderElements?.leading && createPortal(
+        <button className="app-window__control mobile-header-back" type="button" aria-label="Back to settings" disabled={page === "themes" && saving} onClick={page === "themes" ? closeThemes : closeLogs}>
+          <ArrowLeft size={18} />
+        </button>,
+        mobileHeaderElements.leading,
+      )}
       <div className="settings-window__content" ref={contentRef}>
         {page === "main" ? (
           <>

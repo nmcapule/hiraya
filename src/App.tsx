@@ -97,6 +97,7 @@ function App() {
   const [draggedPageKey, setDraggedPageKey] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(() => Boolean(document.fullscreenElement));
   const [isMobile, setIsMobile] = useState(() => window.matchMedia("(max-width: 620px)").matches);
+  const [settingsPage, setSettingsPage] = useState<"main" | "themes" | "logs">("main");
   const [autoUpdate, setAutoUpdate] = useState(true);
   const [updateSupported, setUpdateSupported] = useState(false);
   const [updateReady, setUpdateReady] = useState(false);
@@ -323,6 +324,7 @@ function App() {
   }
 
   function closeApp(id: string) {
+    if (id === "settings") setSettingsPage("main");
     delete fileDirtyRef.current[id];
     delete fileLoadGenerationsRef.current[id];
     const remaining = runningAppsRef.current.filter((app) => app.id !== id);
@@ -1808,8 +1810,7 @@ function App() {
             const folder = folderEntry?.kind === "folder" ? folderEntry : null;
             const fileEntry = app.kind === "file" ? app.file ?? workspace.byId.get(app.fileId) : null;
             const file = fileEntry?.kind === "file" ? fileEntry : null;
-            const compactImageHeader = Boolean(isMobile && app.kind === "file" && file && !app.editable && fileCapabilities(file).preview === "image");
-            const title = app.kind === "settings" ? "Settings" : app.kind === "explorer" ? folder?.name ?? "Desktop" : file?.name ?? "Opening file";
+            const title = app.kind === "settings" ? isMobile && settingsPage !== "main" ? settingsPage === "themes" ? "Themes" : "Logs" : "Settings" : app.kind === "explorer" ? folder?.name ?? "Desktop" : file?.name ?? "Opening file";
             return (
               <AppWindow
                 key={app.id}
@@ -1829,7 +1830,7 @@ function App() {
                 onClose={closeApp}
                 titleArea={<div><span className="window-kicker">{app.kind === "file" ? file && fileCapabilities(file).preview === "url" ? "URL editor" : app.editable ? "Text editor" : "Preview" : app.kind === "explorer" ? "Folder" : "Hiraya desktop"}</span><h2 id={titleId}>{title}</h2></div>}
               >
-                {(headerContentElement) => <>
+                {(headerElements) => <>
                 {app.kind === "file" && file && app.blob ? (
                   <FileWindow
                     file={file}
@@ -1837,7 +1838,7 @@ function App() {
                     editable={Boolean(app.editable)}
                     readOnly={!canMutate}
                     remoteChanged={app.remoteChanged}
-                    imageHeaderTarget={compactImageHeader ? headerContentElement : null}
+                    mobileHeaderTarget={isMobile ? headerElements.actions : null}
                     editorSettings={editorSettings}
                     theme={activeTheme}
                     onSave={(content) => save(app.id, file.id, content)}
@@ -1871,10 +1872,14 @@ function App() {
                       setContextMenu({ type: "desktop", parentId, x, y, position: positionFor(parentId) });
                     }}
                     readOnly={!canMutate}
+                    mobileHeaderElements={isMobile ? headerElements : undefined}
                   />
                 )}
                 {app.kind === "settings" && (
                   <SettingsWindow
+                    page={settingsPage}
+                    onPageChange={setSettingsPage}
+                    mobileHeaderElements={isMobile ? headerElements : undefined}
                     layout={layout}
                     appearance={appearance}
                     activeTheme={activeTheme}

@@ -37,8 +37,8 @@ export function UrlEditor({ content, readOnly, onChange, onSave }: Props) {
       <div className="url-editor__mark" aria-hidden="true"><LinkSimple size={34} weight="duotone" /></div>
       <div className="url-editor__copy">
         <span className="window-kicker">Internet shortcut</span>
-        <h3>Where should this shortcut go?</h3>
-        <p>Use a complete destination including its scheme, such as <code>https://</code> or <code>mailto:</code>.</p>
+        <h3>{readOnly ? "Shortcut destination" : "Where should this shortcut go?"}</h3>
+        <p>{readOnly ? "Open the saved destination in a new tab." : <>Use a complete destination including its scheme, such as <code>https://</code> or <code>mailto:</code>.</>}</p>
       </div>
       <label className="url-editor__field">
         <span>Destination URL</span>

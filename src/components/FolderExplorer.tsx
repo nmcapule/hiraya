@@ -1,7 +1,9 @@
 import { useRef } from "react";
+import { createPortal } from "react-dom";
 import {
   ArrowLeft,
   CaretRight,
+  DotsThreeVertical,
   File as FileGlyph,
   FilePlus,
   Folder,
@@ -9,6 +11,8 @@ import {
   UploadSimple,
 } from "@phosphor-icons/react";
 import type { DesktopEntry, FolderEntry } from "../types";
+import type { AppWindowHeaderElements } from "./AppWindow";
+import { MobileHeaderMenu } from "./MobileHeaderMenu";
 
 export interface FolderExplorerProps {
   folder: FolderEntry | null;
@@ -26,6 +30,7 @@ export interface FolderExplorerProps {
   onSelect: (entry: DesktopEntry, options: { toggle: boolean; range: boolean; orderedIds: string[] }) => void;
   onMove: (entry: DesktopEntry, targetParentId: string | null) => void;
   readOnly?: boolean;
+  mobileHeaderElements?: AppWindowHeaderElements;
 }
 
 type DragState = {
@@ -54,6 +59,7 @@ export function FolderExplorer({
   onSelect,
   onMove,
   readOnly = false,
+  mobileHeaderElements,
 }: FolderExplorerProps) {
   const drag = useRef<DragState | null>(null);
   const dropTarget = useRef<HTMLElement | null>(null);
@@ -127,6 +133,28 @@ export function FolderExplorer({
 
   return (
     <div className="file-window file-window--embedded folder-explorer folder-explorer--embedded">
+        {mobileHeaderElements?.leading && folder && createPortal(
+          <button className="app-window__control mobile-header-back" type="button" aria-label="Back to parent folder" onClick={() => onNavigate(previousFolder)}>
+            <ArrowLeft size={18} />
+          </button>,
+          mobileHeaderElements.leading,
+        )}
+        {mobileHeaderElements?.actions && createPortal(
+          <MobileHeaderMenu label="Folder actions" icon={<DotsThreeVertical size={19} weight="bold" />}>
+            {(dismiss) => <>
+              <nav className="mobile-folder-path" aria-label="Folder path">
+                <button type="button" data-folder-target="" data-current={!folder || undefined} onClick={() => { dismiss(); onNavigate(null); }}>Desktop</button>
+                {trail.map((item) => <button type="button" key={item.id} data-folder-target={item.id} data-current={item.id === folder?.id || undefined} onClick={() => { dismiss(); onNavigate(item); }}>{item.name}</button>)}
+              </nav>
+              <div className="mobile-header-menu__separator" />
+              <button type="button" disabled={readOnly} onClick={() => { dismiss(); onCreateFolder(parentId); }}><FolderPlus size={17} /> New folder</button>
+              <button type="button" disabled={readOnly} onClick={() => { dismiss(); onCreateFile(parentId); }}><FilePlus size={17} /> New text</button>
+              <button type="button" disabled={readOnly} onClick={() => { dismiss(); onUpload(parentId); }}><UploadSimple size={17} /> Upload</button>
+            </>}
+          </MobileHeaderMenu>,
+          mobileHeaderElements.actions,
+        )}
+        {!mobileHeaderElements && <>
         <div className="folder-explorer__toolbar" aria-label="Folder actions">
           <button className="icon-button icon-button--wide" type="button" aria-label="Back to parent folder" disabled={!folder} onClick={() => onNavigate(previousFolder)}>
             <ArrowLeft size={17} /> <span>Back</span>
@@ -145,6 +173,7 @@ export function FolderExplorer({
             </span>
           ))}
         </nav>
+        </>}
 
         <div className="folder-explorer__content" onContextMenu={(event) => {
           if ((event.target as Element).closest(".folder-explorer__row")) return;

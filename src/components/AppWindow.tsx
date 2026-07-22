@@ -22,9 +22,14 @@ export type AppWindowProps = {
   onBoundsChange: (id: string, bounds: WindowBounds) => void;
   onMinimize: (id: string) => void;
   onClose: (id: string) => void;
-  children: ReactNode | ((headerContentElement: HTMLDivElement | null) => ReactNode);
+  children: ReactNode | ((headerElements: AppWindowHeaderElements) => ReactNode);
   titleArea?: ReactNode;
   headerContent?: ReactNode;
+};
+
+export type AppWindowHeaderElements = {
+  leading: HTMLDivElement | null;
+  actions: HTMLDivElement | null;
 };
 
 type Interaction = {
@@ -60,7 +65,8 @@ export function AppWindow({
   headerContent,
 }: AppWindowProps) {
   const windowRef = useRef<HTMLElement>(null);
-  const [headerContentElement, setHeaderContentElement] = useState<HTMLDivElement | null>(null);
+  const [headerLeadingElement, setHeaderLeadingElement] = useState<HTMLDivElement | null>(null);
+  const [headerActionsElement, setHeaderActionsElement] = useState<HTMLDivElement | null>(null);
   const interactionRef = useRef<Interaction | null>(null);
   const onBoundsChangeRef = useRef(onBoundsChange);
   onBoundsChangeRef.current = onBoundsChange;
@@ -161,10 +167,11 @@ export function AppWindow({
         onPointerCancel={(event) => finishInteraction(event, true)}
         onLostPointerCapture={finishInteraction}
       >
+        {typeof children === "function" && <div ref={setHeaderLeadingElement} className="app-window__header-leading" data-window-no-drag />}
         <div className="app-window__title-area" id={titleArea ? titleId : undefined}>
           {titleArea ?? <h2 id={titleId} className="app-window__title">{title}</h2>}
         </div>
-        {(headerContent || typeof children === "function") && <div ref={setHeaderContentElement} className="app-window__header-content" data-window-no-drag>{headerContent}</div>}
+        {(headerContent || typeof children === "function") && <div ref={setHeaderActionsElement} className="app-window__header-content" data-window-no-drag>{headerContent}</div>}
         <div className="app-window__controls" data-window-no-drag>
           <button className="app-window__control app-window__control--minimize" type="button" onClick={() => onMinimize(id)} aria-label={`Minimize ${title}`}>
             <Minus size={16} />
@@ -174,7 +181,7 @@ export function AppWindow({
           </button>
         </div>
       </header>
-      <div className="app-window__content">{typeof children === "function" ? children(headerContentElement) : children}</div>
+      <div className="app-window__content">{typeof children === "function" ? children({ leading: headerLeadingElement, actions: headerActionsElement }) : children}</div>
       {!mobile && RESIZE_DIRECTIONS.map((direction) => (
         <div
           key={direction}
