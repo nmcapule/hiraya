@@ -14,6 +14,14 @@ export type ExternalPreviewTarget = {
 
 export type EmbeddedPreviewTarget = LocalPreviewTarget | ExternalPreviewTarget;
 
+export type MarkdownLinkTarget = {
+  kind: "local" | "external";
+  destination: string;
+  label: string;
+  from: number;
+  to: number;
+};
+
 const VIDEO_EXTENSIONS = /\.(?:mp4|webm|ogv|mov|m4v)$/i;
 const AUDIO_EXTENSIONS = /\.(?:mp3|wav|ogg|oga|m4a|aac|flac)$/i;
 const IMAGE_EXTENSIONS = /\.(?:avif|bmp|gif|ico|jpe?g|png|svg|webp)$/i;
@@ -35,7 +43,7 @@ function vimeoVideoId(url: URL) {
   return id && /^\d+$/.test(id) ? id : null;
 }
 
-function externalTarget(destination: string, label: string, image: boolean): ExternalPreviewTarget | null {
+function safeExternalUrl(destination: string) {
   let url: URL;
   try {
     url = new URL(destination);
@@ -43,17 +51,21 @@ function externalTarget(destination: string, label: string, image: boolean): Ext
     return null;
   }
   if ((url.protocol !== "http:" && url.protocol !== "https:") || url.username || url.password) return null;
+  return url;
+}
 
+function externalTarget(destination: string, label: string): ExternalPreviewTarget | null {
+  const url = safeExternalUrl(destination);
+  if (!url) return null;
   const sourceUrl = url.href;
   const common = { sourceUrl, label: label || url.hostname, host: url.hostname };
-  if (image || IMAGE_EXTENSIONS.test(url.pathname)) return { ...common, kind: "image", previewUrl: sourceUrl };
-
   const youtubeId = youtubeVideoId(url);
   if (youtubeId && /^[a-z\d_-]+$/i.test(youtubeId)) {
     return { ...common, kind: "youtube", previewUrl: `https://www.youtube-nocookie.com/embed/${youtubeId}` };
   }
   const vimeoId = vimeoVideoId(url);
   if (vimeoId) return { ...common, kind: "vimeo", previewUrl: `https://player.vimeo.com/video/${vimeoId}` };
+  if (IMAGE_EXTENSIONS.test(url.pathname)) return { ...common, kind: "image", previewUrl: sourceUrl };
   if (VIDEO_EXTENSIONS.test(url.pathname)) return { ...common, kind: "video", previewUrl: sourceUrl };
   if (AUDIO_EXTENSIONS.test(url.pathname)) return { ...common, kind: "audio", previewUrl: sourceUrl };
   return { ...common, kind: "site", previewUrl: sourceUrl };
@@ -63,6 +75,7 @@ export function markdownPreviewTargets(text: string, externalEnabled: boolean): 
   const targets: EmbeddedPreviewTarget[] = [];
   const pattern = /(!?)\[([^\]\n]*)\]\(\s*(?:<([^>\n]+)>|([^\s)]+))(?:\s+["'][^"']*["'])?\s*\)/g;
   for (const match of text.matchAll(pattern)) {
+    if (match[1] !== "!") continue;
     const destination = (match[3] ?? match[4]).replace(/\\([\\()])/g, "$1");
     if (!destination || destination.startsWith("#") || destination.startsWith("/") || destination.startsWith("\\")) continue;
     if (!/^[a-z][a-z\d+.-]*:/i.test(destination)) {
@@ -70,8 +83,27 @@ export function markdownPreviewTargets(text: string, externalEnabled: boolean): 
       continue;
     }
     if (!externalEnabled) continue;
-    const target = externalTarget(destination, match[2], match[1] === "!");
+    const target = externalTarget(destination, match[2]);
     if (target) targets.push(target);
+  }
+  return targets;
+}
+
+export function markdownLinkTargets(text: string): MarkdownLinkTarget[] {
+  const targets: MarkdownLinkTarget[] = [];
+  const pattern = /(!?)\[([^\]\n]+)\]\(\s*(?:<([^>\n]+)>|([^\s)]+))(?:\s+["'][^"']*["'])?\s*\)/g;
+  for (const match of text.matchAll(pattern)) {
+    if (match[1] || match.index === undefined) continue;
+    const destination = (match[3] ?? match[4]).replace(/\\([\\()])/g, "$1");
+    if (!destination || destination.startsWith("#") || destination.startsWith("/") || destination.startsWith("\\")) continue;
+    const from = match.index + 1;
+    const common = { label: match[2], from, to: from + match[2].length };
+    if (!/^[a-z][a-z\d+.-]*:/i.test(destination)) {
+      targets.push({ ...common, kind: "local", destination });
+      continue;
+    }
+    const url = safeExternalUrl(destination);
+    if (url) targets.push({ ...common, kind: "external", destination: url.href });
   }
   return targets;
 }

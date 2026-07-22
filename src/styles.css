@@ -1904,6 +1904,19 @@ textarea:focus-visible {
   background: rgba(184, 137, 54, 0.24) !important;
 }
 
+.text-editor .cm-markdown-link {
+  color: var(--theme-accent, #9a6b21);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.text-editor .cm-markdown-link:focus-visible {
+  border-radius: 2px;
+  outline: 2px solid var(--theme-accent, #9a6b21);
+  outline-offset: 2px;
+}
+
 .inline-media-row {
   display: flex;
   box-sizing: border-box;

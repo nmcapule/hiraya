@@ -13,7 +13,7 @@ import { tags } from "@lezer/highlight";
 import { basicSetup } from "codemirror";
 import type { EditorLanguage, EditorSettings, FileEntry } from "../types";
 import type { ThemeDefinition } from "../lib/themes";
-import { markdownPreviewTargets, type EmbeddedPreviewTarget, type ExternalPreviewTarget } from "../lib/embedded-preview";
+import { markdownLinkTargets, markdownPreviewTargets, type EmbeddedPreviewTarget, type ExternalPreviewTarget } from "../lib/embedded-preview";
 import { editorLanguageFor, fileCapabilities } from "../ui/file-capabilities";
 
 type LinkedFile = { file: FileEntry; blob: Blob };
@@ -279,6 +279,71 @@ function inlinePreviews(
   });
 }
 
+function inlineMarkdownLinks(
+  resolveLink: (path: string) => Promise<LinkedFile>,
+  openFile: (file: FileEntry) => void,
+): Extension {
+  function buildDecorations(state: EditorState) {
+    const decorations: Range<Decoration>[] = [];
+    for (let lineNumber = 1; lineNumber <= state.doc.lines; lineNumber += 1) {
+      const line = state.doc.line(lineNumber);
+      for (const target of markdownLinkTargets(line.text)) {
+        decorations.push(Decoration.mark({
+          class: "cm-markdown-link",
+          attributes: {
+            "data-link-destination": target.destination,
+            "data-link-kind": target.kind,
+            role: "link",
+            tabindex: "0",
+            "aria-label": `Open ${target.label}`,
+          },
+        }).range(line.from + target.from, line.from + target.to));
+      }
+    }
+    return Decoration.set(decorations, true);
+  }
+
+  const links = StateField.define<DecorationSet>({
+    create: buildDecorations,
+    update: (decorations, transaction) => transaction.docChanged ? buildDecorations(transaction.state) : decorations,
+    provide: (field) => EditorView.decorations.from(field),
+  });
+
+  const activate = (element: HTMLElement) => {
+    const destination = element.dataset.linkDestination;
+    if (!destination) return;
+    if (element.dataset.linkKind === "external") {
+      window.open(destination, "_blank", "noopener,noreferrer");
+      return;
+    }
+    void resolveLink(destination).then(({ file }) => openFile(file)).catch((error: unknown) => {
+      element.title = error instanceof Error ? error.message : `Could not open ${destination}.`;
+    });
+  };
+
+  return [
+    links,
+    EditorView.domEventHandlers({
+      click(event) {
+        if (event.button !== 0 || !(event.target instanceof Element)) return false;
+        const element = event.target.closest<HTMLElement>(".cm-markdown-link");
+        if (!element) return false;
+        event.preventDefault();
+        activate(element);
+        return true;
+      },
+      keydown(event) {
+        if ((event.key !== "Enter" && event.key !== " ") || !(event.target instanceof Element)) return false;
+        const element = event.target.closest<HTMLElement>(".cm-markdown-link");
+        if (!element) return false;
+        event.preventDefault();
+        activate(element);
+        return true;
+      },
+    }),
+  ];
+}
+
 export function TextEditor({ file, value, settings, theme, externalEmbeddedPreviews, readOnly = false, onChange, onSave, onResolveLink, onOpenLinkedFile }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView>(null);
@@ -320,6 +385,10 @@ export function TextEditor({ file, value, settings, theme, externalEmbeddedPrevi
           (linkedFile) => openLinkedFileRef.current(linkedFile),
           initialConfig.current.externalEmbeddedPreviews,
         )),
+        inlineMarkdownLinks(
+          (path) => resolveLinkRef.current(path),
+          (linkedFile) => openLinkedFileRef.current(linkedFile),
+        ),
       ],
     });
     viewRef.current = view;
