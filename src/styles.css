@@ -1963,6 +1963,12 @@ textarea:focus-visible {
   pointer-events: none;
 }
 
+.inline-media-preview img {
+  height: auto;
+  max-height: 420px;
+  object-position: center;
+}
+
 .inline-media-preview audio {
   width: calc(100% - 20px);
   margin: 18px 10px 8px;
@@ -2024,6 +2030,11 @@ textarea:focus-visible {
 .inline-media-preview--external iframe {
   height: 236px;
   pointer-events: auto;
+}
+
+.inline-media-preview--external img {
+  height: auto;
+  max-height: 420px;
 }
 
 .inline-media-preview--external video {
@@ -2788,6 +2799,12 @@ textarea:focus-visible {
   .inline-media-preview video,
   .inline-media-preview iframe {
     height: 180px;
+  }
+
+  .inline-media-preview img,
+  .inline-media-preview--external img {
+    height: auto;
+    max-height: 320px;
   }
 
   .inline-media-preview--youtube iframe,
