@@ -114,5 +114,5 @@ setInterval(() => {
   if (heartbeatId !== null) return;
   heartbeatId = ++engineRequestId;
   heartbeatSentAt = Date.now();
-  engine.postMessage({ id: heartbeatId, method: "ping", params: undefined });
+  engine.postMessage({ id: heartbeatId, desktopId: null, method: "ping", params: undefined });
 }, 2_000);

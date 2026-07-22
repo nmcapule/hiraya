@@ -3,11 +3,12 @@ import { Desktop, Folder, X } from "@phosphor-icons/react";
 import type { DesktopEntry, FolderEntry } from "../types";
 
 export interface MoveDialogProps {
+  desktops: readonly { id: string; name: string; folders: readonly FolderEntry[] }[];
+  activeDesktopId: string;
   entries: readonly DesktopEntry[];
-  folders: readonly FolderEntry[];
   invalidIds: Set<string>;
   onClose: () => void;
-  onMove: (parentId: string | null) => Promise<void> | void;
+  onMove: (desktopId: string, parentId: string | null) => Promise<void> | void;
   onSubmittingChange?: (submitting: boolean) => void;
 }
 
@@ -36,13 +37,13 @@ function flattenFolders(folders: readonly FolderEntry[], invalidIds: Set<string>
   return flattened;
 }
 
-export function MoveDialog({ entries, folders, invalidIds, onClose, onMove, onSubmittingChange }: MoveDialogProps) {
+export function MoveDialog({ desktops, activeDesktopId, entries, invalidIds, onClose, onMove, onSubmittingChange }: MoveDialogProps) {
   const first = entries[0];
   const initialParent = first?.parentId && !invalidIds.has(first.parentId) ? first.parentId : null;
   const [selectedId, setSelectedId] = useState<string | null>(initialParent);
+  const [selectedDesktopId, setSelectedDesktopId] = useState(activeDesktopId);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
-  const destinations = flattenFolders(folders, invalidIds);
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
@@ -50,7 +51,7 @@ export function MoveDialog({ entries, folders, invalidIds, onClose, onMove, onSu
     onSubmittingChange?.(true);
     setError("");
     try {
-      await onMove(selectedId);
+      await onMove(selectedDesktopId, selectedId);
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : "The item could not be moved.");
       setSubmitting(false);
@@ -72,16 +73,18 @@ export function MoveDialog({ entries, folders, invalidIds, onClose, onMove, onSu
         <form className="move-dialog__form" onSubmit={handleSubmit}>
           <fieldset className="move-dialog__destinations">
             <legend>Choose a destination</legend>
-            <label className="move-dialog__destination" data-selected={selectedId === null || undefined}>
-              <input type="radio" name="destination" checked={selectedId === null} onChange={() => setSelectedId(null)} />
-              <Desktop size={20} weight="duotone" /> <span>Desktop</span>
-            </label>
-            {destinations.map(({ folder, depth }) => (
-              <label className="move-dialog__destination" data-selected={selectedId === folder.id || undefined} key={folder.id} style={{ "--folder-depth": depth } as React.CSSProperties}>
-                <input type="radio" name="destination" checked={selectedId === folder.id} onChange={() => setSelectedId(folder.id)} />
-                <Folder size={20} weight="duotone" /> <span>{folder.name}</span>
+            {desktops.map((desktop) => <div className="move-dialog__desktop-group" key={desktop.id}>
+              <label className="move-dialog__destination move-dialog__desktop" data-selected={selectedDesktopId === desktop.id && selectedId === null || undefined}>
+                <input type="radio" name="destination" checked={selectedDesktopId === desktop.id && selectedId === null} onChange={() => { setSelectedDesktopId(desktop.id); setSelectedId(null); }} />
+                <Desktop size={20} weight="duotone" /> <span>{desktop.name}</span>
               </label>
-            ))}
+              {flattenFolders(desktop.folders, desktop.id === activeDesktopId ? invalidIds : new Set()).map(({ folder, depth }) => (
+                <label className="move-dialog__destination" data-selected={selectedDesktopId === desktop.id && selectedId === folder.id || undefined} key={folder.id} style={{ "--folder-depth": depth + 1 } as React.CSSProperties}>
+                  <input type="radio" name="destination" checked={selectedDesktopId === desktop.id && selectedId === folder.id} onChange={() => { setSelectedDesktopId(desktop.id); setSelectedId(folder.id); }} />
+                  <Folder size={20} weight="duotone" /> <span>{folder.name}</span>
+                </label>
+              ))}
+            </div>)}
           </fieldset>
           {error && <p className="form-error" role="alert">{error}</p>}
           <div className="dialog-actions">

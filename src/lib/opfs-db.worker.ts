@@ -15,9 +15,10 @@ import { applyOutboxOperation, type OutboxOperation, type OutboxRecord } from ".
 import { parseManifestV13 } from "./manifest-codec";
 import { EMPTY_WINDOW_SESSION, parseWindowSession, type WindowSession } from "./window-session";
 import { activityRecord, parseActivityQuery, type ActivityPage, type NewActivityRecord } from "./activity";
+import { canAdoptFreshPlaceholder, desktopIdForManifest } from "./desktop-catalog";
 
 const DATABASE_NAME = "/hiraya.sqlite3";
-const DATABASE_SCHEMA_VERSION = 5;
+const DATABASE_SCHEMA_VERSION = 7;
 const HISTORY_LIMIT = Number(import.meta.env.HIRAYA_HISTORY_LIMIT);
 const DEFAULT_PREFERENCES: StoredPreferences = { autoUpdate: true, externalEmbeddedPreviews: true };
 
@@ -132,6 +133,20 @@ function createSchema(db: Database) {
       singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
       session_json TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS desktops (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      ordinal INTEGER NOT NULL UNIQUE CHECK (ordinal >= 0),
+      manifest_json TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS active_desktop (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+      desktop_id TEXT NOT NULL REFERENCES desktops(id) ON DELETE RESTRICT
+    );
+    CREATE TABLE IF NOT EXISTS desktop_window_sessions (
+      desktop_id TEXT PRIMARY KEY REFERENCES desktops(id) ON DELETE CASCADE,
+      session_json TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS entries (
       id TEXT PRIMARY KEY,
       ordinal INTEGER NOT NULL UNIQUE CHECK (ordinal >= 0),
@@ -161,6 +176,7 @@ function createSchema(db: Database) {
       operation_json TEXT NOT NULL,
       status TEXT NOT NULL CHECK (status IN ('pending', 'blocked')),
       error TEXT
+      ,desktop_id TEXT
     );
     CREATE TABLE IF NOT EXISTS activity (
       revision INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -173,15 +189,18 @@ function createSchema(db: Database) {
     );
     CREATE INDEX IF NOT EXISTS activity_timestamp ON activity(timestamp DESC, revision DESC);
   `);
+  if (version > 0 && version < 6) db.exec("ALTER TABLE outbox ADD COLUMN desktop_id TEXT");
+  if (version < 7) db.exec("ALTER TABLE desktops ADD COLUMN adoptable_placeholder INTEGER NOT NULL DEFAULT 0 CHECK (adoptable_placeholder IN (0, 1))");
   if (version < DATABASE_SCHEMA_VERSION) db.exec(`PRAGMA user_version=${DATABASE_SCHEMA_VERSION}`);
 }
 
-function readOutbox(db: Database): OutboxRecord[] {
-  return rows(db, "SELECT * FROM outbox ORDER BY sequence").map((row) => ({
+function readOutbox(db: Database, desktopId?: string): OutboxRecord[] {
+  return rows(db, desktopId ? "SELECT * FROM outbox WHERE desktop_id=? ORDER BY sequence" : "SELECT * FROM outbox ORDER BY sequence", desktopId ? [desktopId] : undefined).map((row) => ({
     operationId: stringValue(row.operation_id),
     sequence: numberValue(row.sequence),
     clientId: stringValue(row.client_id),
     workspaceId: nullableString(row.workspace_id),
+    desktopId: row.desktop_id === null ? desktopId ?? "legacy" : stringValue(row.desktop_id),
     operation: JSON.parse(stringValue(row.operation_json)) as OutboxOperation,
     status: stringValue(row.status) as OutboxRecord["status"],
     error: nullableString(row.error),
@@ -199,6 +218,8 @@ function reserveOperation(db: Database) {
   db.exec({ sql: "UPDATE client_state SET next_sequence=? WHERE singleton=1", bind: [sequence + 1] });
   return { clientId, sequence, operationId: `${sequence.toString().padStart(16, "0")}` };
 }
+
+let projectedDesktopId: string | null = null;
 
 function replaceManifestRows(db: Database, manifest: PersistedManifestV13) {
     db.exec({
@@ -257,6 +278,7 @@ function replaceManifestRows(db: Database, manifest: PersistedManifestV13) {
     } finally {
       statement.finalize();
     }
+    if (projectedDesktopId) db.exec({ sql: "UPDATE desktops SET manifest_json=? WHERE id=?", bind: [JSON.stringify(manifest), projectedDesktopId] });
 }
 
 function appendActivity(db: Database, value: NewActivityRecord) {
@@ -317,17 +339,17 @@ function writePreferences(db: Database, preferences: StoredPreferences) {
   });
 }
 
-function readWindowSession(db: Database): WindowSession {
-  const value = scalar(db, "SELECT session_json FROM window_session WHERE singleton=1");
+function readWindowSession(db: Database, desktopId: string): WindowSession {
+  const value = rows(db, "SELECT session_json FROM desktop_window_sessions WHERE desktop_id=?", [desktopId])[0]?.session_json;
   return value === undefined ? EMPTY_WINDOW_SESSION : parseWindowSession(JSON.parse(stringValue(value)));
 }
 
-function writeWindowSession(db: Database, session: WindowSession) {
+function writeWindowSession(db: Database, desktopId: string, session: WindowSession) {
   const parsed = parseWindowSession(session);
   db.exec({
-    sql: `INSERT INTO window_session (singleton, session_json) VALUES (1, ?)
-      ON CONFLICT(singleton) DO UPDATE SET session_json=excluded.session_json`,
-    bind: [JSON.stringify(parsed)],
+    sql: `INSERT INTO desktop_window_sessions (desktop_id, session_json) VALUES (?, ?)
+      ON CONFLICT(desktop_id) DO UPDATE SET session_json=excluded.session_json`,
+    bind: [desktopId, JSON.stringify(parsed)],
   });
 }
 
@@ -391,6 +413,15 @@ function readManifest(db: Database): PersistedManifestV13 {
   };
 }
 
+function activateDesktopProjection(db: Database, desktopId: string) {
+  if (projectedDesktopId === desktopId) return true;
+  const value = rows(db, "SELECT manifest_json FROM desktops WHERE id=?", [desktopId])[0]?.manifest_json;
+  if (value === undefined) return false;
+  projectedDesktopId = desktopId;
+  replaceManifestRows(db, parseManifestV13(JSON.parse(stringValue(value))));
+  return true;
+}
+
 let existedBeforeOpen = false;
 const database = (async () => {
   const sqlite3 = await sqlite3InitModule();
@@ -407,26 +438,140 @@ const database = (async () => {
   db.exec("PRAGMA foreign_keys=ON");
   if (numberValue(scalar(db, "PRAGMA foreign_keys")) !== 1) throw new Error("SQLite could not enable foreign keys.");
   createSchema(db);
+  if (scalar(db, "SELECT COUNT(*) FROM desktops") === 0 && scalar(db, "SELECT COUNT(*) FROM workspace") !== 0) {
+    const manifest = readManifest(db);
+    const desktopId = desktopIdForManifest(manifest, crypto.randomUUID());
+    db.transaction("IMMEDIATE", () => {
+      db.exec({ sql: "INSERT INTO desktops (id, name, ordinal, manifest_json) VALUES (?, 'Desktop', 0, ?)", bind: [desktopId, JSON.stringify(manifest)] });
+      db.exec({ sql: "INSERT INTO active_desktop VALUES (1, ?)", bind: [desktopId] });
+      db.exec({ sql: "UPDATE outbox SET desktop_id=? WHERE desktop_id IS NULL", bind: [desktopId] });
+      const legacySession = scalar(db, "SELECT session_json FROM window_session WHERE singleton=1");
+      if (legacySession !== undefined) db.exec({ sql: "INSERT INTO desktop_window_sessions VALUES (?, ?)", bind: [desktopId, legacySession] });
+    });
+  }
+  const fallbackDesktopId = scalar(db, "SELECT desktop_id FROM active_desktop WHERE singleton=1");
+  if (typeof fallbackDesktopId === "string") projectedDesktopId = fallbackDesktopId;
   pruneActivity(db);
   return db;
 })();
 
-async function dispatch<M extends StorageDbMethod>(method: M, params: StorageDbRequests[M]): Promise<StorageDbResponses[M]> {
+const CONTEXT_OPTIONAL_METHODS = new Set<StorageDbMethod>([
+  "ping", "status", "listDesktops", "createDesktop", "renameDesktop", "deleteDesktop", "adoptFreshDesktop", "readDesktop",
+  "transferEntries", "bootstrap", "readPreferences", "writePreferences", "readWindowSession", "writeWindowSession", "reserveOperation",
+  "readOutbox", "acknowledgeMutation", "blockMutation", "pruneDesktops", "listActivity",
+]);
+
+async function dispatch<M extends StorageDbMethod>(method: M, params: StorageDbRequests[M], desktopId: string | null): Promise<StorageDbResponses[M]> {
   const db = await database;
+  if (desktopId && !activateDesktopProjection(db, desktopId) && !CONTEXT_OPTIONAL_METHODS.has(method)) throw new Error("That desktop no longer exists.");
   switch (method) {
     case "ping":
       return undefined as StorageDbResponses[M];
     case "status":
-      return { existedBeforeOpen, needsBootstrap: scalar(db, "SELECT COUNT(*) FROM workspace") === 0 } as StorageDbResponses[M];
+      return { existedBeforeOpen, needsBootstrap: scalar(db, "SELECT COUNT(*) FROM desktops") === 0 } as StorageDbResponses[M];
+    case "listDesktops":
+      return {
+        desktops: rows(db, "SELECT id, name FROM desktops ORDER BY ordinal").map((row) => ({ id: stringValue(row.id), name: stringValue(row.name) })),
+        activeDesktopId: nullableString(scalar(db, "SELECT desktop_id FROM active_desktop WHERE singleton=1")),
+      } as StorageDbResponses[M];
+    case "createDesktop": {
+      const input = params as StorageDbRequests["createDesktop"];
+      const manifest = parseManifestV13(input.manifest);
+      db.transaction("IMMEDIATE", () => db.exec({ sql: "INSERT INTO desktops (id, name, ordinal, manifest_json) VALUES (?, ?, (SELECT COUNT(*) FROM desktops), ?)", bind: [input.desktop.id, input.desktop.name, JSON.stringify(manifest)] }));
+      return input.desktop as StorageDbResponses[M];
+    }
+    case "renameDesktop": {
+      const input = params as StorageDbRequests["renameDesktop"];
+      db.exec({ sql: "UPDATE desktops SET name=? WHERE id=?", bind: [input.name, input.desktopId] });
+      if (db.changes() !== 1) throw new Error("That desktop no longer exists.");
+      return { id: input.desktopId, name: input.name } as StorageDbResponses[M];
+    }
+    case "deleteDesktop": {
+      const { desktopId } = params as StorageDbRequests["deleteDesktop"];
+      if (numberValue(scalar(db, "SELECT COUNT(*) FROM desktops")) <= 1) throw new Error("The last desktop cannot be deleted.");
+      if (projectedDesktopId === desktopId) throw new Error("Switch desktops before deleting the active desktop.");
+      db.transaction("IMMEDIATE", () => {
+        db.exec({ sql: "DELETE FROM outbox WHERE desktop_id=?", bind: [desktopId] });
+        db.exec({ sql: "DELETE FROM desktops WHERE id=?", bind: [desktopId] });
+      });
+      return undefined as StorageDbResponses[M];
+    }
+    case "switchDesktop": {
+      const { desktopId } = params as StorageDbRequests["switchDesktop"];
+      if (!activateDesktopProjection(db, desktopId)) throw new Error("That desktop no longer exists.");
+      return readManifest(db) as StorageDbResponses[M];
+    }
+    case "adoptFreshDesktop": {
+      const input = params as StorageDbRequests["adoptFreshDesktop"];
+      const row = rows(db, "SELECT * FROM desktops WHERE id=?", [input.desktopId])[0];
+      if (!row || rows(db, "SELECT id FROM desktops WHERE id=?", [input.target.id]).length) return { adopted: false } as StorageDbResponses[M];
+      const manifest = parseManifestV13(JSON.parse(stringValue(row.manifest_json)));
+      const adoptable = canAdoptFreshPlaceholder({
+        adoptablePlaceholder: numberValue(row.adoptable_placeholder) === 1,
+        desktopCount: numberValue(scalar(db, "SELECT COUNT(*) FROM desktops")),
+        entryCount: manifest.entries.length,
+        outboxCount: numberValue(rows(db, "SELECT COUNT(*) AS count FROM outbox WHERE desktop_id=?", [input.desktopId])[0].count),
+        workspaceId: manifest.sync.workspaceId,
+      });
+      if (!adoptable) return { adopted: false } as StorageDbResponses[M];
+      const ordinal = numberValue(row.ordinal);
+      db.transaction("IMMEDIATE", () => {
+        db.exec({ sql: "INSERT INTO desktops (id, name, ordinal, manifest_json, adoptable_placeholder) VALUES (?, ?, (SELECT COALESCE(MAX(ordinal), -1) + 1 FROM desktops), ?, 0)", bind: [input.target.id, input.target.name, stringValue(row.manifest_json)] });
+        db.exec({ sql: "INSERT INTO desktop_window_sessions (desktop_id, session_json) SELECT ?, session_json FROM desktop_window_sessions WHERE desktop_id=?", bind: [input.target.id, input.desktopId] });
+        db.exec({ sql: "UPDATE outbox SET desktop_id=? WHERE desktop_id=?", bind: [input.target.id, input.desktopId] });
+        db.exec({ sql: "UPDATE active_desktop SET desktop_id=? WHERE desktop_id=?", bind: [input.target.id, input.desktopId] });
+        db.exec({ sql: "DELETE FROM desktops WHERE id=?", bind: [input.desktopId] });
+        db.exec({ sql: "UPDATE desktops SET ordinal=? WHERE id=?", bind: [ordinal, input.target.id] });
+      });
+      if (projectedDesktopId === input.desktopId) projectedDesktopId = input.target.id;
+      return { adopted: true } as StorageDbResponses[M];
+    }
+    case "readDesktop": {
+      const { desktopId } = params as StorageDbRequests["readDesktop"];
+      const value = rows(db, "SELECT manifest_json FROM desktops WHERE id=?", [desktopId])[0]?.manifest_json;
+      if (value === undefined) throw new Error("That desktop no longer exists.");
+      return parseManifestV13(JSON.parse(stringValue(value))) as StorageDbResponses[M];
+    }
+    case "transferEntries": {
+      const input = params as StorageDbRequests["transferEntries"];
+      if (input.sourceDesktopId === input.destinationDesktopId) throw new Error("Choose a different desktop.");
+      const sourceValue = rows(db, "SELECT manifest_json FROM desktops WHERE id=?", [input.sourceDesktopId])[0]?.manifest_json;
+      const destinationValue = rows(db, "SELECT manifest_json FROM desktops WHERE id=?", [input.destinationDesktopId])[0]?.manifest_json;
+      if (sourceValue === undefined || destinationValue === undefined) throw new Error("A desktop no longer exists.");
+      const source = parseManifestV13(JSON.parse(stringValue(sourceValue)));
+      const destination = parseManifestV13(JSON.parse(stringValue(destinationValue)));
+      const roots = new Set(input.entryIds);
+      if (!roots.size || roots.size !== input.entryIds.length || input.entryIds.some((id) => !source.entries.some((entry) => entry.id === id))) throw new Error("An entry no longer exists.");
+      if (input.parentId !== null && !destination.entries.some((entry) => entry.id === input.parentId && entry.kind === "folder")) throw new Error("The destination folder no longer exists.");
+      const included = new Set(roots);
+      for (let changed = true; changed;) {
+        changed = false;
+        for (const entry of source.entries) if (entry.parentId && included.has(entry.parentId) && !included.has(entry.id)) { included.add(entry.id); changed = true; }
+      }
+      const moving = source.entries.filter((entry) => included.has(entry.id)).map((entry) => roots.has(entry.id) ? { ...entry, parentId: input.parentId, modifiedAt: Date.now() } : entry);
+      const nextSource = parseManifestV13({ ...source, entries: source.entries.filter((entry) => !included.has(entry.id)) });
+      const nextDestination = parseManifestV13({ ...destination, entries: [...destination.entries, ...moving] });
+      db.transaction("IMMEDIATE", () => {
+        db.exec({ sql: "UPDATE desktops SET manifest_json=? WHERE id=?", bind: [JSON.stringify(nextSource), input.sourceDesktopId] });
+        db.exec({ sql: "UPDATE desktops SET manifest_json=? WHERE id=?", bind: [JSON.stringify(nextDestination), input.destinationDesktopId] });
+        if (projectedDesktopId === input.sourceDesktopId) replaceManifestRows(db, nextSource);
+        else if (projectedDesktopId === input.destinationDesktopId) replaceManifestRows(db, nextDestination);
+      });
+      return { source: nextSource, destination: nextDestination } as StorageDbResponses[M];
+    }
     case "readWindowSession":
-      return readWindowSession(db) as StorageDbResponses[M];
+      return readWindowSession(db, (params as StorageDbRequests["readWindowSession"]).desktopId) as StorageDbResponses[M];
     case "writeWindowSession":
-      writeWindowSession(db, (params as StorageDbRequests["writeWindowSession"]).session);
+      writeWindowSession(db, (params as StorageDbRequests["writeWindowSession"]).desktopId, (params as StorageDbRequests["writeWindowSession"]).session);
       return undefined as StorageDbResponses[M];
     case "bootstrap": {
-      if (scalar(db, "SELECT COUNT(*) FROM workspace") === 0) {
+      if (scalar(db, "SELECT COUNT(*) FROM desktops") === 0) {
         const input = params as StorageDbRequests["bootstrap"];
         db.transaction("IMMEDIATE", () => {
+          const desktopId = desktopIdForManifest(input.manifest, crypto.randomUUID());
+          db.exec({ sql: "INSERT INTO desktops (id, name, ordinal, manifest_json, adoptable_placeholder) VALUES (?, 'Desktop', 0, ?, ?)", bind: [desktopId, JSON.stringify(input.manifest), input.adoptablePlaceholder] });
+          db.exec({ sql: "INSERT INTO active_desktop VALUES (1, ?)", bind: [desktopId] });
+          projectedDesktopId = desktopId;
           replaceManifestRows(db, input.manifest);
           writePreferences(db, input.preferences);
         });
@@ -456,12 +601,47 @@ async function dispatch<M extends StorageDbMethod>(method: M, params: StorageDbR
         const manifest = parseManifestV13(applyOutboxOperation(current, input.operation));
         const clientId = stringValue(identity.client_id);
         db.exec({
-          sql: "INSERT INTO outbox (sequence, operation_id, client_id, workspace_id, operation_json, status, error) VALUES (?, ?, ?, ?, ?, 'pending', NULL)",
-          bind: [sequence, input.operationId, clientId, input.workspaceId, JSON.stringify(input.operation)],
+          sql: "INSERT INTO outbox (sequence, operation_id, client_id, workspace_id, operation_json, status, error, desktop_id) VALUES (?, ?, ?, ?, ?, 'pending', NULL, ?)",
+          bind: [sequence, input.operationId, clientId, input.workspaceId, JSON.stringify(input.operation), projectedDesktopId],
         });
         replaceManifestRows(db, manifest);
         const record = readOutbox(db).find((item) => item.operationId === input.operationId)!;
         return { manifest, record };
+      }) as StorageDbResponses[M];
+    }
+    case "enqueueTransfer": {
+      const input = params as StorageDbRequests["enqueueTransfer"];
+      return db.transaction("IMMEDIATE", () => {
+        const identity = rows(db, "SELECT * FROM client_state WHERE singleton=1")[0];
+        if (!identity) throw new Error("The operation identity was not reserved.");
+        const sequence = Number.parseInt(input.operationId, 10);
+        if (!Number.isSafeInteger(sequence) || sequence <= 0 || sequence >= numberValue(identity.next_sequence)) throw new Error("The operation identity is invalid.");
+        const sourceValue = rows(db, "SELECT manifest_json FROM desktops WHERE id=?", [input.sourceDesktopId])[0]?.manifest_json;
+        const destinationValue = rows(db, "SELECT manifest_json FROM desktops WHERE id=?", [input.destinationDesktopId])[0]?.manifest_json;
+        if (sourceValue === undefined || destinationValue === undefined) throw new Error("A desktop no longer exists.");
+        const source = parseManifestV13(JSON.parse(stringValue(sourceValue)));
+        const destination = parseManifestV13(JSON.parse(stringValue(destinationValue)));
+        const roots = new Set(input.entryIds);
+        if (!roots.size || roots.size !== input.entryIds.length) throw new Error("An entry no longer exists.");
+        if (input.parentId !== null && !destination.entries.some((entry) => entry.id === input.parentId && entry.kind === "folder")) throw new Error("The destination folder no longer exists.");
+        const included = new Set(roots);
+        for (let changed = true; changed;) {
+          changed = false;
+          for (const entry of source.entries) if (entry.parentId && included.has(entry.parentId) && !included.has(entry.id)) { included.add(entry.id); changed = true; }
+        }
+        const moving = source.entries.filter((entry) => included.has(entry.id)).map((entry) => roots.has(entry.id) ? { ...entry, parentId: input.parentId, modifiedAt: Date.now() } : entry);
+        if (moving.length < roots.size) throw new Error("An entry no longer exists.");
+        const operation: OutboxOperation = { kind: "transfer", entryIds: input.entryIds, destinationDesktopId: input.destinationDesktopId, parentId: input.parentId };
+        const manifest = parseManifestV13(applyOutboxOperation(source, operation));
+        const nextDestination = parseManifestV13({ ...destination, entries: [...destination.entries, ...moving] });
+        const clientId = stringValue(identity.client_id);
+        db.exec({
+          sql: "INSERT INTO outbox (sequence, operation_id, client_id, workspace_id, operation_json, status, error, desktop_id) VALUES (?, ?, ?, ?, ?, 'pending', NULL, ?)",
+          bind: [sequence, input.operationId, clientId, input.workspaceId, JSON.stringify(operation), input.sourceDesktopId],
+        });
+        db.exec({ sql: "UPDATE desktops SET manifest_json=? WHERE id=?", bind: [JSON.stringify(nextDestination), input.destinationDesktopId] });
+        replaceManifestRows(db, manifest);
+        return { manifest, record: readOutbox(db).find((item) => item.operationId === input.operationId)! };
       }) as StorageDbResponses[M];
     }
     case "readOutbox":
@@ -469,12 +649,14 @@ async function dispatch<M extends StorageDbMethod>(method: M, params: StorageDbR
     case "bindOutboxWorkspace": {
       const { workspaceId } = params as StorageDbRequests["bindOutboxWorkspace"];
       db.transaction("IMMEDIATE", () => {
+        if (!projectedDesktopId) throw new Error("No desktop is active for this request.");
+        const desktopId = projectedDesktopId;
         const error = "Pending changes belong to a different server workspace.";
         db.exec({
-          sql: "UPDATE outbox SET status='blocked', error=? WHERE workspace_id IS NOT NULL AND workspace_id<>?",
-          bind: [error, workspaceId],
+          sql: "UPDATE outbox SET status='blocked', error=? WHERE desktop_id=? AND workspace_id IS NOT NULL AND workspace_id<>?",
+          bind: [error, desktopId, workspaceId],
         });
-        db.exec({ sql: "UPDATE outbox SET workspace_id=? WHERE workspace_id IS NULL", bind: [workspaceId] });
+        db.exec({ sql: "UPDATE outbox SET workspace_id=? WHERE desktop_id=? AND workspace_id IS NULL", bind: [workspaceId, desktopId] });
       });
       return undefined as StorageDbResponses[M];
     }
@@ -484,7 +666,7 @@ async function dispatch<M extends StorageDbMethod>(method: M, params: StorageDbR
       return db.transaction("IMMEDIATE", () => {
         let manifest = remote;
         const blocked: OutboxRecord[] = [];
-        for (const record of readOutbox(db)) {
+        for (const record of readOutbox(db, projectedDesktopId ?? undefined)) {
           if (record.operationId === input.acknowledgedOperationId) continue;
           if (record.workspaceId !== null && record.workspaceId !== remote.sync.workspaceId) {
             const error = "Pending changes belong to a different server workspace.";
@@ -514,6 +696,19 @@ async function dispatch<M extends StorageDbMethod>(method: M, params: StorageDbR
     }
     case "listActivity":
       return listActivity(db, params as StorageDbRequests["listActivity"]) as StorageDbResponses[M];
+    case "pruneDesktops": {
+      const retained = new Set((params as StorageDbRequests["pruneDesktops"]).retainedDesktopIds);
+      const active = projectedDesktopId;
+      db.transaction("IMMEDIATE", () => {
+        for (const row of rows(db, "SELECT id FROM desktops")) {
+          const id = stringValue(row.id);
+          if (id === active || retained.has(id)) continue;
+          db.exec({ sql: "DELETE FROM outbox WHERE desktop_id=?", bind: [id] });
+          db.exec({ sql: "DELETE FROM desktops WHERE id=?", bind: [id] });
+        }
+      });
+      return undefined as StorageDbResponses[M];
+    }
   }
 }
 
@@ -529,7 +724,7 @@ function readPreferences(db: Database): StoredPreferences {
 function attach(port: WorkerPort, ready: Promise<void> = Promise.resolve()) {
   port.onmessage = (event) => {
     const request = event.data;
-    void ready.then(() => dispatch(request.method, request.params)).then(
+    void ready.then(() => dispatch(request.method, request.params, request.desktopId)).then(
       (result) => port.postMessage({ id: request.id, result }),
       (error: unknown) => port.postMessage({ id: request.id, error: error instanceof Error ? error.message : String(error) }),
     );
@@ -572,7 +767,7 @@ if (!("onconnect" in workerScope)) {
       return;
     }
     const request = event.data as StorageDbRequest;
-    void owner.then(() => dispatch(request.method, request.params)).then(
+    void owner.then(() => dispatch(request.method, request.params, request.desktopId)).then(
       (result) => workerScope.postMessage({ id: request.id, result }),
       (error: unknown) => workerScope.postMessage({ id: request.id, error: error instanceof Error ? error.message : String(error) }),
     );

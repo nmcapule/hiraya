@@ -48,6 +48,111 @@ function remoteOptions(snapshot: DesktopSnapshot, fetchImpl: typeof fetch) {
 }
 
 describe("SyncEngine local lifecycle", () => {
+  test("adopts a fresh local placeholder into the remote default catalog identity", async () => {
+    let registry = { desktops: [{ id: "local-placeholder", name: "Desktop" }], activeDesktopId: "local-placeholder" as string | null };
+    const ensured: string[] = [];
+    const storage = {
+      listDesktops: async () => registry,
+      adoptFreshDesktop: async (desktopId: string, target: { id: string; name: string }) => {
+        expect(desktopId).toBe("local-placeholder");
+        registry = { desktops: [{ id: target.id, name: target.name }], activeDesktopId: target.id };
+        return true;
+      },
+      ensureDesktop: async (desktop: { id: string }) => { ensured.push(desktop.id); return desktop; },
+      readOutbox: async () => [],
+    } as unknown as NonNullable<SyncEngineOptions["storage"]>;
+    const fetchImpl = (async () => Response.json({
+      revision: 9,
+      defaultDesktopId: "server-default",
+      desktops: [{ id: "server-default", name: "Desktop", revision: 3 }],
+    })) as typeof fetch;
+    const engine = new SyncEngine({ storage, fetch: fetchImpl });
+
+    expect(await engine.listDesktops()).toEqual({
+      desktops: [{ id: "server-default", name: "Desktop", revision: 3 }],
+      activeDesktopId: "server-default",
+      defaultDesktopId: "server-default",
+    });
+    expect(ensured).toEqual(["server-default"]);
+  });
+
+  test("does not expose a refused local placeholder without a pending create", async () => {
+    const registry = { desktops: [{ id: "offline-work", name: "Offline work" }], activeDesktopId: "offline-work" };
+    const storage = {
+      listDesktops: async () => registry,
+      adoptFreshDesktop: async () => false,
+      ensureDesktop: async (desktop: { id: string }) => desktop,
+      readOutbox: async () => [],
+    } as unknown as NonNullable<SyncEngineOptions["storage"]>;
+    const engine = new SyncEngine({ storage, fetch: (async () => Response.json({
+      revision: 2,
+      defaultDesktopId: "server-default",
+      desktops: [{ id: "server-default", name: "Server", revision: 1 }],
+    })) as typeof fetch });
+
+    expect((await engine.listDesktops()).desktops).toEqual([{ id: "server-default", name: "Server", revision: 1 }]);
+    expect(registry.desktops).toEqual([{ id: "offline-work", name: "Offline work" }]);
+  });
+
+  test("keeps an offline local desktop visible while its create is pending", async () => {
+    const pendingDesktop = { id: "offline-work", name: "Offline work" };
+    const registry = { desktops: [pendingDesktop], activeDesktopId: pendingDesktop.id };
+    const storage = {
+      listDesktops: async () => registry,
+      adoptFreshDesktop: async () => false,
+      ensureDesktop: async (desktop: { id: string }) => desktop,
+      readOutbox: async () => [{
+        operationId: "0000000000000001", sequence: 1, clientId: "client", workspaceId: null, desktopId: pendingDesktop.id,
+        operation: { kind: "create-desktop", desktop: pendingDesktop }, status: "pending", error: null,
+      }],
+    } as unknown as NonNullable<SyncEngineOptions["storage"]>;
+    const engine = new SyncEngine({ storage, fetch: (async () => Response.json({
+      revision: 2,
+      defaultDesktopId: "server-default",
+      desktops: [{ id: "server-default", name: "Server", revision: 1 }],
+    })) as typeof fetch });
+
+    expect((await engine.listDesktops()).desktops).toEqual([
+      { id: "server-default", name: "Server", revision: 1 },
+      pendingDesktop,
+    ]);
+  });
+
+  test("catalog retention prevents pruning desktops with pending edits, transfers, or blocked work", async () => {
+    const localDesktops = [
+      { id: "pending-edit", name: "Pending edit" },
+      { id: "transfer-source", name: "Transfer source" },
+      { id: "transfer-destination", name: "Transfer destination" },
+      { id: "blocked-edit", name: "Blocked edit" },
+      { id: "stale", name: "Stale" },
+    ];
+    const record = (desktopId: string, operation: OutboxRecord["operation"], status: OutboxRecord["status"]): OutboxRecord => ({
+      operationId: `${desktopId}-${status}`, sequence: 1, clientId: "client", workspaceId: "workspace", desktopId, operation, status,
+      error: status === "blocked" ? "conflict" : null,
+    });
+    const storage = {
+      listDesktops: async () => ({ desktops: localDesktops, activeDesktopId: "pending-edit" }),
+      ensureDesktop: async (desktop: { id: string }) => desktop,
+      readOutbox: async () => [
+        record("pending-edit", { kind: "layout", layout: { snapToGrid: true, wallpaper: "dusk" } }, "pending"),
+        record("transfer-source", { kind: "transfer", entryIds: ["tree"], destinationDesktopId: "transfer-destination", parentId: null }, "pending"),
+        record("blocked-edit", { kind: "editor-settings", settings: desktopSnapshot().editorSettings }, "blocked"),
+      ],
+    } as unknown as NonNullable<SyncEngineOptions["storage"]>;
+    const engine = new SyncEngine({ storage, fetch: (async () => Response.json({
+      revision: 4,
+      defaultDesktopId: "server-default",
+      desktops: [{ id: "server-default", name: "Server", revision: 4 }],
+    })) as typeof fetch });
+
+    const catalog = await engine.listDesktops();
+    expect(catalog.desktops.map((desktop) => desktop.id)).toEqual([
+      "server-default", "pending-edit", "transfer-source", "transfer-destination", "blocked-edit",
+    ]);
+    expect(catalog.desktops.some((desktop) => desktop.id === "stale")).toBe(false);
+    expect(catalog.activeDesktopId).toBe("pending-edit");
+  });
+
   test("start is idempotent, local mutations publish, and stop permits restart", async () => {
     let snapshot = desktopSnapshot();
     let loads = 0;
@@ -79,6 +184,32 @@ describe("SyncEngine local lifecycle", () => {
     engine.stop();
     await engine.start({ x: 100, y: 100 });
     expect(loads).toBe(2);
+  });
+
+  test("awaitable stop drains queued storage work before resolving", async () => {
+    let snapshot = desktopSnapshot();
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const storage = {
+      loadDesktop: async () => snapshot,
+      createFolder: async () => {
+        await pending;
+        const folder = { kind: "folder" as const, id: "folder", name: "Folder", parentId: null, modifiedAt: 1, position: { x: 0, y: 0 } };
+        snapshot = { ...snapshot, entries: [folder] };
+        return folder;
+      },
+      readCurrentDesktop: async () => snapshot,
+    } as unknown as NonNullable<SyncEngineOptions["storage"]>;
+    const engine = new SyncEngine({ frontendOnly: true, storage });
+    await engine.start("one", { x: 100, y: 100 });
+    const mutation = engine.createFolder("Folder", null, { x: 0, y: 0 });
+    let stopped = false;
+    const stopping = engine.stop().then(() => { stopped = true; });
+    await Promise.resolve();
+    expect(stopped).toBe(false);
+    release();
+    await Promise.all([mutation, stopping]);
+    expect(stopped).toBe(true);
   });
 
   test("silent optimistic resource saves still update command state", async () => {
@@ -154,6 +285,213 @@ describe("SyncEngine local lifecycle", () => {
 });
 
 describe("SyncEngine remote reconciliation", () => {
+  test("uses the desktop-scoped workspace, content, and positions contract", async () => {
+    const snapshot = desktopSnapshot();
+    const first = remoteWorkspace();
+    const second = remoteWorkspace();
+    second.revision = 2;
+    second.entries[0].revision = 2;
+    second.entries[0].position = { x: 40, y: 50 };
+    let reads = 0;
+    const requests: string[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = `${init?.method ?? "GET"} ${String(input)}`;
+      requests.push(request);
+      if (String(input) === "/api/desktops/desk-1") return Response.json(++reads === 1 ? first : second);
+      if (String(input) === "/api/desktops/desk-1/files/file-1/content") return new Response("note");
+      if (String(input) === "/api/desktops/desk-1/positions") return Response.json({});
+      throw new Error(`Unexpected request: ${request}`);
+    }) as typeof fetch;
+    const engine = new SyncEngine(remoteOptions(snapshot, fetchImpl));
+    await engine.start("desk-1", { x: 100, y: 100 });
+    await engine.updateDesktopPositions([{ entryId: "file-1", position: { x: 40, y: 50 } }]);
+
+    expect(requests).toContain("GET /api/desktops/desk-1");
+    expect(requests).toContain("GET /api/desktops/desk-1/files/file-1/content");
+    expect(requests).toContain("PUT /api/desktops/desk-1/positions");
+    engine.stop();
+  });
+
+  test("replays an atomic cross-desktop move through the global endpoint", async () => {
+    const local = desktopSnapshot();
+    const folder = { kind: "folder" as const, id: "tree", name: "Tree", parentId: null, modifiedAt: 1, position: { x: 0, y: 0 } };
+    const remote = {
+      schemaVersion: 5,
+      workspaceId: "workspace-1",
+      initialized: true as const,
+      revision: 1,
+      entries: [{ ...folder, revision: 1, contentRevision: 0 }],
+      layout: local.layout,
+      layoutRevision: 1,
+      editorSettings: local.editorSettings,
+      settingsRevision: 1,
+      appearance: { selectedThemeId: "hiraya-dusk", selectionRevision: 1, customThemes: [] },
+    };
+    let current = local;
+    let records: OutboxRecord[] = [];
+    let moveBody: unknown;
+    let workspaceReads = 0;
+    const storage = {
+      loadDesktop: async () => current,
+      applyRemoteDesktop: async (next: DesktopSnapshot) => { current = next; return next; },
+      bindOutboxWorkspace: async () => undefined,
+      readOutbox: async () => records,
+      enqueueTransfer: async () => {
+        const operation = { kind: "transfer" as const, entryIds: ["tree"], destinationDesktopId: "destination", parentId: null };
+        const record: OutboxRecord = { operationId: "0000000000000001", sequence: 1, clientId: "client", workspaceId: "workspace-1", desktopId: "source", operation, status: "pending", error: null };
+        records = [record];
+        current = { ...current, entries: [] };
+        return { desktop: current, record };
+      },
+      acknowledgeMutation: async () => { records = []; },
+      blockMutation: async () => undefined,
+    } as unknown as NonNullable<SyncEngineOptions["storage"]>;
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/desktops/source") {
+        workspaceReads += 1;
+        return Response.json(workspaceReads === 1 ? remote : { ...remote, revision: 2, entries: [] });
+      }
+      if (String(input) === "/api/desktop-moves") {
+        moveBody = JSON.parse(String(init?.body));
+        return Response.json({ revision: 2 });
+      }
+      throw new Error(`Unexpected request: ${String(input)}`);
+    }) as typeof fetch;
+    const engine = new SyncEngine({ storage, fetch: fetchImpl, eventSource: FakeEventSource as unknown as typeof EventSource });
+    await engine.start("source", { x: 100, y: 100 });
+    await engine.transferEntries("destination", ["tree"], null);
+
+    expect(moveBody).toEqual({ sourceDesktopId: "source", destinationDesktopId: "destination", entryIds: ["tree"], parentId: null });
+    expect(records).toEqual([]);
+    engine.stop();
+  });
+
+  test("replays an offline source record while another desktop is active", async () => {
+    const empty = desktopSnapshot();
+    const folder = { kind: "folder" as const, id: "offline-folder", name: "Offline", parentId: null, modifiedAt: 1, position: { x: 0, y: 0 } };
+    const operation = { kind: "create" as const, entries: [folder] };
+    let records: OutboxRecord[] = [{ operationId: "0000000000000001", sequence: 1, clientId: "client", workspaceId: "workspace-1", desktopId: "source", operation, status: "pending", error: null }];
+    const requests: string[] = [];
+    const workspace = (revision: number, entries: unknown[] = []) => ({
+      schemaVersion: 5, workspaceId: "workspace-1", initialized: true, revision, entries,
+      layout: empty.layout, layoutRevision: revision, editorSettings: empty.editorSettings, settingsRevision: revision,
+      appearance: { selectedThemeId: "hiraya-dusk", selectionRevision: revision, customThemes: [] },
+    });
+    const storage = {
+      loadDesktop: async () => empty,
+      applyRemoteDesktop: async (next: DesktopSnapshot) => next,
+      readDesktopState: async () => empty,
+      bindOutboxWorkspace: async () => undefined,
+      readOutbox: async () => records,
+      acknowledgeMutation: async () => { records = []; },
+      blockMutation: async () => undefined,
+    } as unknown as NonNullable<SyncEngineOptions["storage"]>;
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = `${init?.method ?? "GET"} ${String(input)}`;
+      requests.push(request);
+      if (String(input) === "/api/desktops/active") return Response.json(workspace(1));
+      if (String(input) === "/api/desktops/source" && !init?.method) return Response.json(workspace(2, [{ ...folder, revision: 2, contentRevision: 0 }]));
+      if (String(input) === "/api/desktops/source/entries") return Response.json({ revision: 2, entry: folder });
+      throw new Error(`Unexpected request: ${request}`);
+    }) as typeof fetch;
+    const engine = new SyncEngine({ storage, fetch: fetchImpl, eventSource: FakeEventSource as unknown as typeof EventSource });
+    await engine.start("active", { x: 100, y: 100 });
+
+    expect(requests).toContain("POST /api/desktops/source/entries");
+    expect(requests).toContain("GET /api/desktops/source");
+    expect(records).toEqual([]);
+    engine.stop();
+  });
+
+  test("creates an offline active desktop before replaying its scoped file edits", async () => {
+    const activeDesktopId = "offline-desktop";
+    const file = { kind: "file" as const, id: "offline-file", name: "note.txt", parentId: null, modifiedAt: 2, position: { x: 0, y: 0 }, mimeType: "text/plain", size: 0 };
+    const editedFile = { ...file, modifiedAt: 3, size: 4 };
+    const base = desktopSnapshot();
+    let current: DesktopSnapshot = { ...base, entries: [editedFile] };
+    const desktop = { id: activeDesktopId, name: "Offline desktop" };
+    let records: OutboxRecord[] = [
+      { operationId: "0000000000000001", sequence: 1, clientId: "client", workspaceId: "workspace-1", desktopId: "source", operation: { kind: "create-desktop", desktop }, status: "pending", error: null },
+      { operationId: "0000000000000002", sequence: 2, clientId: "client", workspaceId: null, desktopId: activeDesktopId, operation: { kind: "create", entries: [file] }, status: "pending", error: null },
+      { operationId: "0000000000000003", sequence: 3, clientId: "client", workspaceId: null, desktopId: activeDesktopId, operation: { kind: "save-content", entry: editedFile }, status: "pending", error: null },
+    ];
+    let remoteExists = false;
+    let remoteRevision = 1;
+    let remoteEntries: typeof file[] = [];
+    let remoteContent = "";
+    const requests: string[] = [];
+    const workspace = (entries: typeof file[] = []) => ({
+      schemaVersion: 5, workspaceId: "workspace-1", initialized: true, revision: remoteRevision,
+      entries: entries.map((entry) => ({ ...entry, revision: remoteRevision, contentRevision: remoteRevision })),
+      layout: base.layout, layoutRevision: remoteRevision, editorSettings: base.editorSettings, settingsRevision: remoteRevision,
+      appearance: { selectedThemeId: "hiraya-dusk", selectionRevision: remoteRevision, customThemes: [] },
+    });
+    const storage = {
+      loadDesktop: async () => current,
+      listDesktops: async () => ({ desktops: [{ id: "source", name: "Source" }, desktop], activeDesktopId }),
+      ensureDesktop: async (value: { id: string }) => value,
+      adoptFreshDesktop: async () => false,
+      readOutbox: async () => records,
+      readDesktopState: async () => base,
+      bindOutboxWorkspace: async () => undefined,
+      readPendingContent: async (operationId: string) => new Blob([operationId.endsWith("3") ? "edit" : ""], { type: "text/plain" }),
+      applyRemoteDesktop: async (next: DesktopSnapshot, _contents: Map<string, Blob>, acknowledgedOperationId?: string, desktopId?: string) => {
+        if (desktopId !== activeDesktopId) return next;
+        let manifest = { version: 13 as const, entries: next.entries, snapToGrid: next.layout.snapToGrid, wallpaper: next.layout.wallpaper, editorSettings: next.editorSettings, appearance: next.appearance, sync: next.sync };
+        for (const record of records) if (record.operationId !== acknowledgedOperationId && record.desktopId === activeDesktopId) manifest = applyOutboxOperation(manifest, record.operation);
+        current = { entries: manifest.entries, layout: { snapToGrid: manifest.snapToGrid, wallpaper: manifest.wallpaper }, editorSettings: manifest.editorSettings, appearance: manifest.appearance, sync: manifest.sync };
+        return current;
+      },
+      acknowledgeMutation: async (operationId: string) => { records = records.filter((record) => record.operationId !== operationId); },
+      blockMutation: async (operationId: string, error: string) => { records = records.map((record) => record.operationId === operationId ? { ...record, status: "blocked", error } : record); },
+    } as unknown as NonNullable<SyncEngineOptions["storage"]>;
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      requests.push(`${method} ${url}`);
+      if (url === "/api/desktops" && method === "GET") {
+        return Response.json({ revision: remoteRevision, defaultDesktopId: "source", desktops: [
+          { id: "source", name: "Source", revision: remoteRevision },
+          ...(remoteExists ? [{ id: activeDesktopId, name: desktop.name, revision: remoteRevision }] : []),
+        ] });
+      }
+      if (url === "/api/desktops" && method === "POST") {
+        remoteExists = true;
+        remoteRevision = 2;
+        return Response.json(workspace());
+      }
+      if (url === `/api/desktops/${activeDesktopId}` && !remoteExists) return Response.json({ error: "desktop not found" }, { status: 404 });
+      if (url === "/api/desktops/source") return Response.json(workspace());
+      if (url === `/api/desktops/${activeDesktopId}`) return Response.json(workspace(remoteEntries));
+      if (url === `/api/desktops/${activeDesktopId}/entries`) {
+        remoteRevision = 3;
+        remoteEntries = [file];
+        return Response.json({ revision: remoteRevision, entry: file });
+      }
+      if (url === `/api/desktops/${activeDesktopId}/files/${file.id}/content` && method === "PUT") {
+        remoteRevision = 4;
+        remoteEntries = [editedFile];
+        remoteContent = await new Response(init?.body).text();
+        return Response.json({ revision: remoteRevision, entry: editedFile });
+      }
+      if (url === `/api/desktops/${activeDesktopId}/files/${file.id}/content`) return new Response(remoteContent, { headers: { "Content-Type": "text/plain" } });
+      throw new Error(`Unexpected request: ${method} ${url}`);
+    }) as typeof fetch;
+    const engine = new SyncEngine({ storage, fetch: fetchImpl, eventSource: FakeEventSource as unknown as typeof EventSource });
+
+    const result = await engine.start(activeDesktopId, { x: 100, y: 100 });
+    const createIndex = requests.indexOf("POST /api/desktops");
+    const entryIndex = requests.indexOf(`POST /api/desktops/${activeDesktopId}/entries`);
+    const editIndex = requests.indexOf(`PUT /api/desktops/${activeDesktopId}/files/${file.id}/content`);
+    expect(createIndex).toBeGreaterThan(-1);
+    expect(entryIndex).toBeGreaterThan(createIndex);
+    expect(editIndex).toBeGreaterThan(entryIndex);
+    expect(records).toEqual([]);
+    expect(result.desktop.entries).toContainEqual(editedFile);
+    expect(result.desktop.sync.revision).toBe(4);
+    engine.stop();
+  });
+
   test("fetches and validates server-owned activity without reading local history", async () => {
     const snapshot = desktopSnapshot();
     const options = remoteOptions(snapshot, (async (input) => {

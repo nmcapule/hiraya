@@ -14,6 +14,11 @@ export type DesktopPositionUpdate = {
   position: EntryPosition;
 };
 
+export type DesktopIdentity = {
+  id: string;
+  name: string;
+};
+
 export type EditorLanguage = "auto" | "plain" | "markdown" | "json" | "javascript" | "typescript" | "jsx" | "tsx" | "css" | "html" | "xml" | "yaml";
 
 export type EditorSettings = {

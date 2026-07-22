@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { applyOutboxOperation } from "../src/lib/outbox";
+import { applyOutboxOperation, outboxDesktopRetentionIds, type OutboxRecord } from "../src/lib/outbox";
 import { BUILTIN_THEMES } from "../src/lib/themes";
 import { desktopSnapshot } from "./fixtures";
 
@@ -46,5 +46,42 @@ describe("entry batch outbox projection", () => {
 
     const deleted = applyOutboxOperation(created, { kind: "batch-delete", entryIds: [folder.id] });
     expect(deleted.entries.some((entry) => entry.id === folder.id || entry.id === file.id)).toBe(false);
+  });
+
+  test("removes an entire transferred subtree from the source projection", () => {
+    const folder = { kind: "folder" as const, id: "folder", name: "Folder", parentId: null, modifiedAt: 1, position: { x: 0, y: 0 } };
+    const file = { kind: "file" as const, id: "file", name: "note.txt", parentId: folder.id, modifiedAt: 1, position: { x: 0, y: 0 }, mimeType: "text/plain", size: 1 };
+    const source = { ...manifest(), entries: [folder, file] };
+    const transferred = applyOutboxOperation(source, { kind: "transfer", entryIds: [folder.id], destinationDesktopId: "other", parentId: null });
+    expect(transferred.entries).toEqual([]);
+    expect(() => applyOutboxOperation(transferred, { kind: "transfer", entryIds: [folder.id], destinationDesktopId: "other", parentId: null })).toThrow("no longer exists");
+  });
+
+  test("desktop management receipts do not alter workspace projection", () => {
+    const source = manifest();
+    expect(applyOutboxOperation(source, { kind: "create-desktop", desktop: { id: "other", name: "Other" } })).toBe(source);
+    expect(applyOutboxOperation(source, { kind: "rename-desktop", desktop: { id: "other", name: "Renamed" } })).toBe(source);
+    expect(applyOutboxOperation(source, { kind: "delete-desktop", desktopId: "other" })).toBe(source);
+  });
+});
+
+describe("outbox desktop retention", () => {
+  test("retains pending and blocked owners plus transfer destinations", () => {
+    const record = (desktopId: string, operation: OutboxRecord["operation"], status: OutboxRecord["status"]): OutboxRecord => ({
+      operationId: `${desktopId}-${status}`,
+      sequence: 1,
+      clientId: "client",
+      workspaceId: "workspace",
+      desktopId,
+      operation,
+      status,
+      error: status === "blocked" ? "conflict" : null,
+    });
+    const retained = outboxDesktopRetentionIds([
+      record("edited", { kind: "layout", layout: { snapToGrid: true, wallpaper: "dusk" } }, "pending"),
+      record("transfer-source", { kind: "transfer", entryIds: ["tree"], destinationDesktopId: "transfer-destination", parentId: null }, "pending"),
+      record("blocked", { kind: "editor-settings", settings: manifest().editorSettings }, "blocked"),
+    ]);
+    expect([...retained].sort()).toEqual(["blocked", "edited", "transfer-destination", "transfer-source"]);
   });
 });

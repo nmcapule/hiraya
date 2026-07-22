@@ -3,6 +3,7 @@ import { isValidId } from "./contracts";
 import { namesMatch } from "./entry-validation";
 
 export type DesktopRoute = {
+  desktopId?: string;
   column: number;
   row: number;
   explorerFolderId?: string | null;
@@ -53,6 +54,13 @@ export function parseDesktopRoute(hash: string): DesktopRoute | null {
   const parts = hash.replace(/^#\/?/, "").split("/").filter(Boolean);
   if (parts.length < 2) return null;
 
+  if (parts[0] === "desktops" && decodeId(parts[1]) && parts[2] === "workspaces" && /^-?\d+$/.test(parts[3] ?? "") && /^-?\d+$/.test(parts[4] ?? "")) {
+    const column = Number(parts[3]);
+    const row = Number(parts[4]);
+    if (!Number.isSafeInteger(column) || !Number.isSafeInteger(row)) return null;
+    return parseSuffix(parts, { desktopId: decodeId(parts[1])!, column, row }, 5);
+  }
+
   if (parts[0] === "workspaces" && /^-?\d+$/.test(parts[1]) && /^-?\d+$/.test(parts[2] ?? "")) {
     const column = Number(parts[1]);
     const row = Number(parts[2]);
@@ -74,7 +82,9 @@ export function parseDesktopRoute(hash: string): DesktopRoute | null {
 }
 
 export function formatDesktopRoute(route: DesktopRoute) {
-  let hash = `#/workspaces/${route.column}/${route.row}`;
+  let hash = route.desktopId
+    ? `#/desktops/${encodeURIComponent(route.desktopId)}/workspaces/${route.column}/${route.row}`
+    : `#/workspaces/${route.column}/${route.row}`;
   if (route.settings) return `${hash}/settings`;
   if (route.explorerFolderId === null) hash += "/explorer/root";
   else if (route.explorerFolderId !== undefined) hash += `/explorer/folder/${encodeURIComponent(route.explorerFolderId)}`;
@@ -82,10 +92,10 @@ export function formatDesktopRoute(route: DesktopRoute) {
   return hash;
 }
 
-export function normalizeDesktopRoute(route: DesktopRoute | null, entries: DesktopEntry[]): DesktopRoute {
+export function normalizeDesktopRoute(route: DesktopRoute | null, entries: DesktopEntry[], desktopId?: string): DesktopRoute {
   const column = route && Number.isSafeInteger(route.column) ? route.column : 0;
   const row = route && Number.isSafeInteger(route.row) ? route.row : 0;
-  const next: DesktopRoute = { column, row };
+  const next: DesktopRoute = { ...(desktopId ? { desktopId } : route?.desktopId ? { desktopId: route.desktopId } : {}), column, row };
   if (route?.settings) return { ...next, settings: true };
   if (route?.explorerFolderId === null) next.explorerFolderId = null;
   else if (route?.explorerFolderId !== undefined && entries.some((entry) => entry.id === route.explorerFolderId && entry.kind === "folder")) {

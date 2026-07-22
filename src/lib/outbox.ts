@@ -1,14 +1,18 @@
-import type { DesktopEntry, DesktopLayout, DesktopPositionUpdate, EditorSettings, FileEntry } from "../types";
+import type { DesktopEntry, DesktopIdentity, DesktopLayout, DesktopPositionUpdate, EditorSettings, FileEntry } from "../types";
 import { parseEditorSettings, parseEntries, parseLayout, parseRootDesktopPositions } from "./contracts";
 import type { PersistedManifestV13 } from "./manifest-codec";
 import { DEFAULT_THEME_ID, parseCustomTheme, parseThemeState, type CustomTheme } from "./themes";
 
 export type OutboxOperation =
+  | { kind: "create-desktop"; desktop: DesktopIdentity }
+  | { kind: "rename-desktop"; desktop: DesktopIdentity }
+  | { kind: "delete-desktop"; desktopId: string }
   | { kind: "create"; entries: DesktopEntry[] }
   | { kind: "update-entry"; entry: DesktopEntry }
   | { kind: "delete"; entryId: string }
   | { kind: "batch-delete"; entryIds: string[] }
   | { kind: "batch-move"; entryIds: string[]; parentId: string | null }
+  | { kind: "transfer"; entryIds: string[]; destinationDesktopId: string; parentId: string | null }
   | { kind: "save-content"; entry: FileEntry }
   | { kind: "desktop-positions"; positions: DesktopPositionUpdate[] }
   | { kind: "layout"; layout: DesktopLayout }
@@ -22,14 +26,29 @@ export type OutboxRecord = {
   sequence: number;
   clientId: string;
   workspaceId: string | null;
+  desktopId?: string;
   operation: OutboxOperation;
   status: "pending" | "blocked";
   error: string | null;
 };
 
+export function outboxDesktopRetentionIds(records: readonly OutboxRecord[]) {
+  const retained = new Set<string>();
+  for (const record of records) {
+    if (record.desktopId) retained.add(record.desktopId);
+    if (record.operation.kind === "create-desktop" || record.operation.kind === "rename-desktop") retained.add(record.operation.desktop.id);
+    if (record.operation.kind === "transfer") retained.add(record.operation.destinationDesktopId);
+  }
+  return retained;
+}
+
 export function applyOutboxOperation(manifest: PersistedManifestV13, operation: OutboxOperation): PersistedManifestV13 {
   let entries = manifest.entries;
   switch (operation.kind) {
+    case "create-desktop":
+    case "rename-desktop":
+    case "delete-desktop":
+      return manifest;
     case "create":
       entries = parseEntries([...entries, ...operation.entries]) as DesktopEntry[];
       break;
@@ -60,6 +79,16 @@ export function applyOutboxOperation(manifest: PersistedManifestV13, operation: 
           removed.add(entry.id);
           changed = true;
         }
+      }
+      entries = entries.filter((entry) => !removed.has(entry.id));
+      break;
+    }
+    case "transfer": {
+      const removed = new Set(operation.entryIds);
+      if (!removed.size || operation.entryIds.some((id) => !entries.some((entry) => entry.id === id))) throw new Error("An entry no longer exists.");
+      for (let changed = true; changed;) {
+        changed = false;
+        for (const entry of entries) if (entry.parentId && removed.has(entry.parentId) && !removed.has(entry.id)) { removed.add(entry.id); changed = true; }
       }
       entries = entries.filter((entry) => !removed.has(entry.id));
       break;

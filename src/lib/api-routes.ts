@@ -1,4 +1,23 @@
+const desktopBase = (desktopId: string) => `/api/desktops/${encodeURIComponent(desktopId)}`;
+const scoped = (desktopId: string, path: string, legacy: string) => desktopId === "legacy" ? legacy : `${desktopBase(desktopId)}${path}`;
+
 export const API_ROUTES = {
+  desktops: "/api/desktops",
+  desktop: (desktopId: string) => desktopBase(desktopId),
+  desktopWorkspace: (desktopId: string) => desktopId === "legacy" ? "/api/workspace" : desktopBase(desktopId),
+  desktopBootstrap: (desktopId: string) => scoped(desktopId, "/bootstrap", "/api/bootstrap"),
+  desktopImports: (desktopId: string) => scoped(desktopId, "/imports", "/api/imports"),
+  desktopEntries: (desktopId: string) => scoped(desktopId, "/entries", "/api/entries"),
+  desktopBatchMoveEntries: (desktopId: string) => scoped(desktopId, "/entries/batch-move", "/api/entries/batch-move"),
+  desktopBatchDeleteEntries: (desktopId: string) => scoped(desktopId, "/entries/batch-delete", "/api/entries/batch-delete"),
+  desktopLayout: (desktopId: string) => scoped(desktopId, "/layout", "/api/layout"),
+  desktopPositionsFor: (desktopId: string) => scoped(desktopId, "/positions", "/api/desktop-positions"),
+  desktopEditorSettings: (desktopId: string) => scoped(desktopId, "/editor-settings", "/api/editor-settings"),
+  desktopThemeSelection: (desktopId: string) => scoped(desktopId, "/theme-selection", "/api/theme-selection"),
+  desktopEntry: (desktopId: string, id: string) => scoped(desktopId, `/entries/${encodeURIComponent(id)}`, `/api/entries/${encodeURIComponent(id)}`),
+  desktopContent: (desktopId: string, id: string) => scoped(desktopId, `/files/${encodeURIComponent(id)}/content`, `/api/files/${encodeURIComponent(id)}/content`),
+  desktopTheme: (desktopId: string, id: string) => scoped(desktopId, `/themes/${encodeURIComponent(id)}`, `/api/themes/${encodeURIComponent(id)}`),
+  desktopMoves: "/api/desktop-moves",
   workspace: "/api/workspace",
   bootstrap: "/api/bootstrap",
   imports: "/api/imports",

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { isValidId, parseLayout, parsePosition, parseRemoteWorkspace, parseRootDesktopPositions } from "../src/lib/contracts";
+import { isValidId, normalizeDesktopName, parseDesktopList, parseLayout, parsePosition, parseRemoteWorkspace, parseRootDesktopPositions } from "../src/lib/contracts";
 import { namesMatch, validateEntryName } from "../src/lib/entry-validation";
 import { remoteWorkspace } from "./fixtures";
 import { BUILTIN_THEMES } from "../src/lib/themes";
@@ -10,6 +10,11 @@ describe("workspace contracts", () => {
     const parsed = parseRemoteWorkspace({ ...input, ignored: true });
     expect(parsed).toEqual(input);
     expect("ignored" in parsed).toBe(false);
+  });
+
+  test("accepts desktop metadata alongside a directly parseable workspace", () => {
+    const input = remoteWorkspace();
+    expect(parseRemoteWorkspace({ ...input, id: "desktop-1", name: "Projects" })).toEqual(input);
   });
 
   test("rejects malformed remote revisions and hierarchy", () => {
@@ -69,5 +74,12 @@ describe("workspace contracts", () => {
     expect(namesMatch("Report.TXT", "report.txt")).toBe(true);
     expect(validateEntryName("  report.txt  ")).toBe("report.txt");
     expect(() => validateEntryName(`bad${String.fromCharCode(127)}`)).toThrow();
+  });
+
+  test("validates stable desktop identities and names", () => {
+    expect(normalizeDesktopName("  Projects  ")).toBe("Projects");
+    expect(parseDesktopList([{ id: "desk-1", name: "Projects" }])).toEqual([{ id: "desk-1", name: "Projects" }]);
+    expect(() => parseDesktopList([])).toThrow("At least one desktop");
+    expect(() => parseDesktopList([{ id: "desk-1", name: "One" }, { id: "desk-1", name: "Two" }])).toThrow("duplicate");
   });
 });

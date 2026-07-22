@@ -3,13 +3,16 @@ import * as storage from "./opfs";
 import { assertUniqueName, namesMatch, validateEntryName } from "./entry-validation";
 import { API_ROUTES } from "./api-routes";
 import { parseLayout, parsePosition, parseRemoteWorkspace, parseRootDesktopPositions, type InitializedRemoteWorkspace, type RemoteEntry, type RemoteWorkspace } from "./contracts";
-import type { DesktopEntry, DesktopLayout, DesktopPositionUpdate, EditorSettings, EntryPosition, FileEntry, FolderEntry } from "../types";
+import type { DesktopEntry, DesktopIdentity, DesktopLayout, DesktopPositionUpdate, EditorSettings, EntryPosition, FileEntry, FolderEntry } from "../types";
 import type { OutboxOperation, OutboxRecord } from "./outbox";
+import { outboxDesktopRetentionIds } from "./outbox";
 import { parseCustomTheme, parseThemeState, type CustomTheme } from "./themes";
 import type { ClipboardEntrySnapshot } from "./clipboard";
 import { parseActivityPage, parseActivityQuery, type ActivityQuery } from "./activity";
+import { parseDesktopCatalog } from "./desktop-catalog";
 
 export type SyncStatus = "connecting" | "online" | "offline" | "blocked" | "local";
+export type DesktopRegistry = { desktops: DesktopIdentity[]; activeDesktopId: string | null; defaultDesktopId: string };
 
 export async function fetchBackendBuildTimestamp(fetchImpl: typeof fetch = globalThis.fetch.bind(globalThis)) {
   const response = await fetchImpl(API_ROUTES.health, { cache: "no-store" });
@@ -22,11 +25,17 @@ export async function fetchBackendBuildTimestamp(fetchImpl: typeof fetch = globa
 type StorageBoundary = Pick<typeof storage,
   "applyRemoteDesktop" | "createEntries" | "createFolder" | "createTextFile" | "deleteEntries" | "deleteEntry" | "importFiles" | "loadDesktop" |
   "moveEntries" | "moveEntry" | "readCurrentDesktop" | "readDesktopSnapshot" | "readFile" | "readFileByRelativePath" |
+  "readDesktopState" |
   "renameEntry" | "saveDesktopLayout" | "saveEditorSettings" | "saveTextFile" | "updateEntryPosition"
   | "updateDesktopPositions" | "enqueueMutation" | "readOutbox" | "bindOutboxWorkspace" |
   "acknowledgeMutation" | "blockMutation" | "readPendingContent" |
   "selectTheme" | "saveCustomTheme" | "deleteCustomTheme"
   | "listActivity"
+  | "transferEntries" | "enqueueTransfer"
+  | "createDesktop" | "renameDesktop" | "deleteDesktop"
+  | "listDesktops" | "ensureDesktop"
+  | "adoptFreshDesktop"
+  | "pruneLocalDesktops"
 >;
 
 export type SyncEngineOptions = {
@@ -96,11 +105,14 @@ export class SyncEngine {
   private startPromise: Promise<{ desktop: storage.DesktopSnapshot; status: SyncStatus }> | null = null;
   private running = false;
   private generation = 0;
+  private desktopId = "";
+  private catalogRevision = 0;
   private pendingWork = 0;
   private readonly desktopListeners = new Set<(next: storage.DesktopSnapshot) => void>();
   private readonly statusListeners = new Set<(next: SyncStatus) => void>();
   private readonly syncActivityListeners = new Set<(syncing: boolean) => void>();
   private readonly activityChangeListeners = new Set<() => void>();
+  private readonly catalogListeners = new Set<(catalog: DesktopRegistry) => void>();
 
   constructor(options: SyncEngineOptions = {}) {
     this.frontendOnly = options.frontendOnly ?? false;
@@ -111,11 +123,17 @@ export class SyncEngine {
     this.storage = options.storage ?? storage;
   }
 
-  start(viewport: EntryPosition, seeded: SeededManifest | null = null) {
+  start(desktopId: string, viewport: EntryPosition, seeded?: SeededManifest | null): Promise<{ desktop: storage.DesktopSnapshot; status: SyncStatus }>;
+  start(viewport: EntryPosition, seeded?: SeededManifest | null): Promise<{ desktop: storage.DesktopSnapshot; status: SyncStatus }>;
+  start(desktopIdOrViewport: string | EntryPosition, viewportOrSeed: EntryPosition | SeededManifest | null = null, seeded: SeededManifest | null = null) {
     if (this.startPromise) return this.startPromise;
+    const desktopId = typeof desktopIdOrViewport === "string" ? desktopIdOrViewport : "legacy";
+    const viewport = typeof desktopIdOrViewport === "string" ? viewportOrSeed as EntryPosition : desktopIdOrViewport;
+    const seed = typeof desktopIdOrViewport === "string" ? seeded : viewportOrSeed as SeededManifest | null;
     this.running = true;
     const generation = ++this.generation;
-    this.startPromise = this.startInternal(viewport, seeded, generation).catch((error) => {
+    this.desktopId = desktopId;
+    this.startPromise = this.startInternal(viewport, seed, generation).catch((error) => {
       if (this.generation === generation) this.startPromise = null;
       throw error;
     });
@@ -146,7 +164,8 @@ export class SyncEngine {
     return { desktop: this.current(), status: this.status };
   }
 
-  stop() {
+  async stop() {
+    const starting = this.startPromise;
     this.running = false;
     this.generation += 1;
     this.startPromise = null;
@@ -154,6 +173,7 @@ export class SyncEngine {
     this.events = null;
     if (this.healthTimer !== null) this.clearIntervalImpl(this.healthTimer);
     this.healthTimer = null;
+    await Promise.all([this.work, starting?.catch(() => undefined)]);
   }
 
   subscribe(onDesktop: (next: storage.DesktopSnapshot) => void, onStatus: (next: SyncStatus) => void, onActivity?: (syncing: boolean) => void) {
@@ -174,6 +194,16 @@ export class SyncEngine {
     return () => {
       this.activityChangeListeners.delete(listener);
     };
+  }
+
+  subscribeDesktopCatalog(listener: (catalog: DesktopRegistry) => void) {
+    this.catalogListeners.add(listener);
+    return () => { this.catalogListeners.delete(listener); };
+  }
+
+  private publishCatalog(catalog: DesktopRegistry) {
+    for (const listener of this.catalogListeners) listener(catalog);
+    return catalog;
   }
 
   private publishActivityChange() {
@@ -240,13 +270,22 @@ export class SyncEngine {
     return parseRemoteWorkspace(await this.requestJson(input, init));
   }
 
-  private fetchWorkspace() {
-    return this.requestWorkspace(API_ROUTES.workspace, { cache: "no-store" });
+  private async fetchWorkspace(desktopId = this.desktopId) {
+    try {
+      return await this.requestWorkspace(API_ROUTES.desktopWorkspace(desktopId), { cache: "no-store" });
+    } catch (error) {
+      if (error instanceof SyncRequestError && error.status === 404 && desktopId === this.desktopId) await this.refreshCatalog();
+      throw error;
+    }
   }
 
-  private async applyWorkspace(workspace: RemoteWorkspace, generation = this.generation, acknowledgedOperationId?: string) {
+  private healthRoute() {
+    return this.desktopId === "legacy" ? API_ROUTES.health : `${API_ROUTES.health}?desktopId=${encodeURIComponent(this.desktopId)}`;
+  }
+
+  private async applyWorkspace(workspace: RemoteWorkspace, generation = this.generation, acknowledgedOperationId?: string, desktopId = this.desktopId) {
     this.assertActive(generation);
-    const desktop = this.current();
+    const desktop = desktopId === this.desktopId ? this.current() : await this.storage.readDesktopState(desktopId);
     if (!workspace.initialized) return desktop;
     const identityChanged = desktop.sync.workspaceId !== workspace.workspaceId;
     if (!identityChanged && workspace.revision <= desktop.sync.revision) return desktop;
@@ -254,16 +293,16 @@ export class SyncEngine {
     const contents = new Map<string, Blob>();
     await Promise.all(workspace.entries.map(async (entry) => {
       if (entry.kind !== "file" || (!identityChanged && desktop.sync.contentRevisions[entry.id] === entry.contentRevision)) return;
-      const response = await this.fetchImpl(API_ROUTES.content(entry.id), { cache: "no-store" });
+      const response = await this.fetchImpl(API_ROUTES.desktopContent(desktopId, entry.id), { cache: "no-store" });
       if (!response.ok) throw new Error(`The server contents of “${entry.name}” could not be loaded.`);
       const blob = await response.blob();
       if (blob.size !== entry.size) throw new Error(`The server contents of “${entry.name}” have an unexpected size.`);
       contents.set(entry.id, blob);
     }));
     this.assertActive(generation);
-    const applied = await this.storage.applyRemoteDesktop(next, contents, acknowledgedOperationId);
+    const applied = await this.storage.applyRemoteDesktop(next, contents, acknowledgedOperationId, desktopId);
     this.assertActive(generation);
-    this.publish(applied);
+    if (desktopId === this.desktopId) this.publish(applied);
     this.publishActivityChange();
     return applied;
   }
@@ -271,7 +310,7 @@ export class SyncEngine {
   private async bootstrap(generation = this.generation) {
     this.assertActive(generation);
     const snapshot = await this.storage.readDesktopSnapshot();
-    const pending = await this.storage.readOutbox();
+    const pending = (await this.storage.readOutbox()).filter((record) => (record.desktopId ?? this.desktopId) === this.desktopId);
     const form = new FormData();
     form.append("workspace", JSON.stringify({ entries: snapshot.entries, layout: snapshot.layout, editorSettings: snapshot.editorSettings, appearance: snapshot.appearance }));
     for (const entry of snapshot.entries) {
@@ -281,7 +320,7 @@ export class SyncEngine {
       form.append(`file-${entry.id}`, content, entry.name);
     }
     const lastPending = pending.at(-1);
-    const workspace = await this.requestWorkspace(API_ROUTES.bootstrap, {
+    const workspace = await this.requestWorkspace(API_ROUTES.desktopBootstrap(this.desktopId), {
       method: "POST",
       headers: lastPending ? this.idempotencyHeaders(lastPending) : undefined,
       body: form,
@@ -293,20 +332,19 @@ export class SyncEngine {
   }
 
   private async ensureServer(generation = this.generation) {
-    const workspace = await this.fetchWorkspace();
-    this.assertActive(generation);
-    if (!workspace.initialized) return this.bootstrap(generation);
-    await this.storage.bindOutboxWorkspace(workspace.workspaceId);
-    return this.applyWorkspace(workspace, generation);
+    return this.reconcileActiveWithCreateRecovery(undefined, generation);
   }
 
-  private async reconcile(acknowledgedOperationId?: string) {
+  private async reconcile(acknowledgedOperationId?: string, desktopId = this.desktopId) {
     const generation = this.generation;
-    const workspace = await this.fetchWorkspace();
+    const workspace = await this.fetchWorkspace(desktopId);
     this.assertActive(generation);
-    if (!workspace.initialized) return this.bootstrap(generation);
-    await this.storage.bindOutboxWorkspace(workspace.workspaceId);
-    return this.applyWorkspace(workspace, generation, acknowledgedOperationId);
+    if (!workspace.initialized) {
+      if (desktopId !== this.desktopId) return this.storage.readDesktopState(desktopId);
+      return this.bootstrap(generation);
+    }
+    await this.storage.bindOutboxWorkspace(workspace.workspaceId, desktopId);
+    return this.applyWorkspace(workspace, generation, acknowledgedOperationId, desktopId);
   }
 
   private idempotencyHeaders(record: OutboxRecord, headers?: HeadersInit) {
@@ -318,83 +356,130 @@ export class SyncEngine {
 
   private async sendOutboxOperation(record: OutboxRecord) {
     const operation = record.operation;
+    const desktopId = record.desktopId ?? this.desktopId;
     const headers = (value?: HeadersInit) => this.idempotencyHeaders(record, value);
     switch (operation.kind) {
+      case "create-desktop":
+        await this.requestJson(API_ROUTES.desktops, { method: "POST", headers: headers({ "Content-Type": "application/json" }), body: JSON.stringify(operation.desktop) });
+        return;
+      case "rename-desktop":
+        await this.requestJson(API_ROUTES.desktop(operation.desktop.id), { method: "PATCH", headers: headers({ "Content-Type": "application/json" }), body: JSON.stringify({ name: operation.desktop.name }) });
+        return;
+      case "delete-desktop":
+        await this.requestJson(API_ROUTES.desktop(operation.desktopId), { method: "DELETE", headers: headers() });
+        return;
       case "create": {
         if (operation.entries.length === 1) {
           const entry = operation.entries[0];
           const form = new FormData();
           form.append("entry", JSON.stringify(entry));
           if (entry.kind === "file") form.append("content", await this.storage.readPendingContent(record.operationId, entry.id), entry.name);
-          await this.requestJson(API_ROUTES.entries, { method: "POST", headers: headers(), body: form });
+          await this.requestJson(API_ROUTES.desktopEntries(desktopId), { method: "POST", headers: headers(), body: form });
         } else {
           const form = new FormData();
           form.append("entries", JSON.stringify(operation.entries));
           for (const entry of operation.entries) if (entry.kind === "file") form.append(`file-${entry.id}`, await this.storage.readPendingContent(record.operationId, entry.id), entry.name);
-          await this.requestJson(API_ROUTES.imports, { method: "POST", headers: headers(), body: form });
+          await this.requestJson(API_ROUTES.desktopImports(desktopId), { method: "POST", headers: headers(), body: form });
         }
         return;
       }
       case "update-entry":
-        await this.requestJson(API_ROUTES.entry(operation.entry.id), { method: "PATCH", headers: headers({ "Content-Type": "application/json" }), body: JSON.stringify(operation.entry) });
+        await this.requestJson(API_ROUTES.desktopEntry(desktopId, operation.entry.id), { method: "PATCH", headers: headers({ "Content-Type": "application/json" }), body: JSON.stringify(operation.entry) });
         return;
       case "delete":
-        await this.requestJson(API_ROUTES.entry(operation.entryId), { method: "DELETE", headers: headers() });
+        await this.requestJson(API_ROUTES.desktopEntry(desktopId, operation.entryId), { method: "DELETE", headers: headers() });
         return;
       case "batch-delete":
-        await this.requestJson(API_ROUTES.batchDeleteEntries, { method: "POST", headers: headers({ "Content-Type": "application/json" }), body: JSON.stringify({ entryIds: operation.entryIds }) });
+        await this.requestJson(API_ROUTES.desktopBatchDeleteEntries(desktopId), { method: "POST", headers: headers({ "Content-Type": "application/json" }), body: JSON.stringify({ entryIds: operation.entryIds }) });
         return;
       case "batch-move":
-        await this.requestJson(API_ROUTES.batchMoveEntries, { method: "POST", headers: headers({ "Content-Type": "application/json" }), body: JSON.stringify({ entryIds: operation.entryIds, parentId: operation.parentId }) });
+        await this.requestJson(API_ROUTES.desktopBatchMoveEntries(desktopId), { method: "POST", headers: headers({ "Content-Type": "application/json" }), body: JSON.stringify({ entryIds: operation.entryIds, parentId: operation.parentId }) });
+        return;
+      case "transfer":
+        await this.requestJson(API_ROUTES.desktopMoves, { method: "POST", headers: headers({ "Content-Type": "application/json" }), body: JSON.stringify({ sourceDesktopId: desktopId, destinationDesktopId: operation.destinationDesktopId, entryIds: operation.entryIds, parentId: operation.parentId }) });
         return;
       case "save-content":
-        await this.requestJson(API_ROUTES.content(operation.entry.id), { method: "PUT", headers: headers({ "Content-Type": operation.entry.mimeType }), body: await this.storage.readPendingContent(record.operationId, operation.entry.id) });
+        await this.requestJson(API_ROUTES.desktopContent(desktopId, operation.entry.id), { method: "PUT", headers: headers({ "Content-Type": operation.entry.mimeType }), body: await this.storage.readPendingContent(record.operationId, operation.entry.id) });
         return;
       case "desktop-positions":
-        await this.requestJson(API_ROUTES.desktopPositions, { method: "PUT", headers: headers({ "Content-Type": "application/json" }), body: JSON.stringify(operation.positions) });
+        await this.requestJson(API_ROUTES.desktopPositionsFor(desktopId), { method: "PUT", headers: headers({ "Content-Type": "application/json" }), body: JSON.stringify(operation.positions) });
         return;
       case "layout":
-        await this.requestJson(API_ROUTES.layout, { method: "PUT", headers: headers({ "Content-Type": "application/json" }), body: JSON.stringify(operation.layout) });
+        await this.requestJson(API_ROUTES.desktopLayout(desktopId), { method: "PUT", headers: headers({ "Content-Type": "application/json" }), body: JSON.stringify(operation.layout) });
         return;
       case "editor-settings":
-        await this.requestJson(API_ROUTES.editorSettings, { method: "PUT", headers: headers({ "Content-Type": "application/json" }), body: JSON.stringify(operation.settings) });
+        await this.requestJson(API_ROUTES.desktopEditorSettings(desktopId), { method: "PUT", headers: headers({ "Content-Type": "application/json" }), body: JSON.stringify(operation.settings) });
         return;
       case "select-theme":
-        await this.requestJson(API_ROUTES.themeSelection, { method: "PUT", headers: headers({ "Content-Type": "application/json" }), body: JSON.stringify({ themeId: operation.themeId }) });
+        await this.requestJson(API_ROUTES.desktopThemeSelection(desktopId), { method: "PUT", headers: headers({ "Content-Type": "application/json" }), body: JSON.stringify({ themeId: operation.themeId }) });
         return;
       case "upsert-theme":
-        await this.requestJson(API_ROUTES.theme(operation.theme.id), { method: "PUT", headers: headers({ "Content-Type": "application/json" }), body: JSON.stringify(operation.theme) });
+        await this.requestJson(API_ROUTES.desktopTheme(desktopId, operation.theme.id), { method: "PUT", headers: headers({ "Content-Type": "application/json" }), body: JSON.stringify(operation.theme) });
         return;
       case "delete-theme":
-        await this.requestJson(API_ROUTES.theme(operation.themeId), { method: "DELETE", headers: headers() });
+        await this.requestJson(API_ROUTES.desktopTheme(desktopId, operation.themeId), { method: "DELETE", headers: headers() });
+    }
+  }
+
+  private async replayRecord(record: OutboxRecord, generation: number) {
+    this.assertActive(generation);
+    if (record.status === "blocked") throw new SyncRequestError(record.error ?? "A pending change is blocked.", 409, true);
+    try {
+      await this.sendOutboxOperation(record);
+      if (record.operation.kind !== "create-desktop" && record.operation.kind !== "rename-desktop" && record.operation.kind !== "delete-desktop") {
+        await this.reconcile(record.operationId, record.desktopId ?? this.desktopId);
+      }
+      await this.storage.acknowledgeMutation(record.operationId);
+    } catch (error) {
+      if (error instanceof SyncRequestError && error.permanent) await this.storage.blockMutation(record.operationId, error.message);
+      throw error;
+    }
+  }
+
+  private async replayThroughActiveDesktopCreation(generation: number) {
+    const records = await this.storage.readOutbox();
+    const createIndex = records.findIndex((record) => record.operation.kind === "create-desktop" && record.operation.desktop.id === this.desktopId);
+    if (createIndex < 0) return false;
+    for (const record of records.slice(0, createIndex + 1)) {
+      const ownerDesktopId = record.desktopId ?? this.desktopId;
+      const createsActiveDesktop = record.operation.kind === "create-desktop" && record.operation.desktop.id === this.desktopId;
+      if (ownerDesktopId === this.desktopId && !createsActiveDesktop) {
+        const message = "A desktop mutation is ordered before its pending desktop creation.";
+        await this.storage.blockMutation(record.operationId, message);
+        throw new SyncRequestError(message, 409, true);
+      }
+      await this.replayRecord(record, generation);
+    }
+    return true;
+  }
+
+  private async reconcileActiveWithCreateRecovery(acknowledgedOperationId?: string, generation = this.generation) {
+    try {
+      return await this.reconcile(acknowledgedOperationId, this.desktopId);
+    } catch (error) {
+      if (!(error instanceof SyncRequestError) || error.status !== 404 || !await this.replayThroughActiveDesktopCreation(generation)) throw error;
+      return this.reconcile(acknowledgedOperationId, this.desktopId);
     }
   }
 
   private async replayOutbox(generation = this.generation) {
     for (const record of await this.storage.readOutbox()) {
-      this.assertActive(generation);
-      if (record.status === "blocked") throw new SyncRequestError(record.error ?? "A pending change is blocked.", 409, true);
-      try {
-        await this.sendOutboxOperation(record);
-        await this.reconcile(record.operationId);
-        await this.storage.acknowledgeMutation(record.operationId);
-      } catch (error) {
-        if (error instanceof SyncRequestError && error.permanent) await this.storage.blockMutation(record.operationId, error.message);
-        throw error;
-      }
+      await this.replayRecord(record, generation);
     }
   }
 
   private startEvents() {
     if (!this.EventSourceImpl) throw new Error("Server events are unavailable in this browser.");
     this.events?.close();
-    const events = new this.EventSourceImpl(API_ROUTES.events);
+    const events = new this.EventSourceImpl(this.desktopId === "legacy" ? API_ROUTES.events : `${API_ROUTES.events}?desktopId=${encodeURIComponent(this.desktopId)}`);
     this.events = events;
     events.onopen = () => {
       if (!this.running) return;
       if (this.status === "blocked") return;
       if (this.status !== "online") this.setStatus("connecting");
-      void this.queue(() => this.reconcile()).then(() => {
+      void this.queue(async () => {
+        const catalog = this.desktopId === "legacy" ? null : await this.refreshCatalog();
+        if (!catalog || catalog.desktops.some((desktop) => desktop.id === this.desktopId)) await this.reconcileActiveWithCreateRecovery();
         return this.replayOutbox();
       }).then(() => {
         if (this.running) this.setStatus("online");
@@ -417,8 +502,18 @@ export class SyncEngine {
       } catch {
         return;
       }
-      if (!Number.isSafeInteger(revision) || (workspaceId === this.current().sync.workspaceId && revision <= this.current().sync.revision)) return;
-      void this.queue(() => this.reconcile()).catch(() => {
+      if (!Number.isSafeInteger(revision)) return;
+      if (this.desktopId === "legacy") {
+        if (workspaceId === this.current().sync.workspaceId && revision <= this.current().sync.revision) return;
+      } else {
+        if (revision <= this.catalogRevision) return;
+        this.catalogRevision = revision;
+      }
+      void this.queue(async () => {
+        const catalog = await this.refreshCatalog();
+        if (catalog.desktops.some((desktop) => desktop.id === this.desktopId)) await this.reconcileActiveWithCreateRecovery();
+        await this.replayOutbox();
+      }).catch(() => {
         if (this.running) this.setStatus("offline");
       });
     });
@@ -429,7 +524,7 @@ export class SyncEngine {
   private async checkHealth() {
     if (!this.running) return;
     try {
-      const response = await this.fetchImpl(API_ROUTES.health, { cache: "no-store" });
+      const response = await this.fetchImpl(this.healthRoute(), { cache: "no-store" });
       if (!response.ok) throw new Error("unhealthy");
       const health = await response.json() as unknown;
       const revision = typeof health === "object" && health !== null && "revision" in health ? Number((health as { revision: unknown }).revision) : Number.NaN;
@@ -438,8 +533,13 @@ export class SyncEngine {
       if (this.status === "blocked") return;
       const wasOffline = this.status === "offline";
       if (wasOffline) this.setStatus("connecting");
-      if (wasOffline || workspaceId !== this.current().sync.workspaceId || revision > this.current().sync.revision) await this.queue(async () => {
-        await this.reconcile();
+      const changed = this.desktopId === "legacy"
+        ? workspaceId !== this.current().sync.workspaceId || revision > this.current().sync.revision
+        : revision > this.catalogRevision;
+      if (this.desktopId !== "legacy" && revision > this.catalogRevision) this.catalogRevision = revision;
+      if (wasOffline || changed) await this.queue(async () => {
+        const catalog = this.desktopId === "legacy" ? null : await this.refreshCatalog();
+        if (!catalog || catalog.desktops.some((desktop) => desktop.id === this.desktopId)) await this.reconcileActiveWithCreateRecovery();
         await this.replayOutbox();
       });
       if (this.running) this.setStatus("online");
@@ -556,6 +656,78 @@ export class SyncEngine {
     if (!unique.length || unique.length !== ids.length || unique.some((id) => !this.current().entries.some((entry) => entry.id === id))) throw new Error("An entry no longer exists.");
     this.assertParent(parentId);
     return this.mutate({ kind: "batch-move", entryIds: unique, parentId }, (next) => unique.map((id) => next.entries.find((entry) => entry.id === id) as DesktopEntry));
+  }
+
+  transferEntries(destinationDesktopId: string, ids: string[], parentId: string | null) {
+    const unique = [...new Set(ids)];
+    if (!unique.length || unique.length !== ids.length || unique.some((id) => !this.current().entries.some((entry) => entry.id === id))) throw new Error("An entry no longer exists.");
+    return this.queue(async () => {
+      const result = this.frontendOnly
+        ? await this.storage.transferEntries(this.desktopId, destinationDesktopId, unique, parentId)
+        : (await this.storage.enqueueTransfer(this.desktopId, destinationDesktopId, unique, parentId)).desktop;
+      this.publish(result);
+      if (!this.frontendOnly && this.status === "online") {
+        try { await this.replayOutbox(); }
+        catch (error) {
+          if (error instanceof SyncRequestError && error.permanent) this.setStatus("blocked");
+          else if (!(error instanceof SyncRequestError)) throw error;
+        }
+      }
+      return result;
+    });
+  }
+
+  async createDesktop(name: string) {
+    const desktop = await this.storage.createDesktop(name);
+    if (!this.frontendOnly) await this.mutate({ kind: "create-desktop", desktop }, () => undefined);
+    return desktop;
+  }
+
+  async listDesktops(seeded: SeededManifest | null = null) {
+    let local = await this.storage.listDesktops(seeded);
+    if (this.frontendOnly) return { ...local, defaultDesktopId: local.desktops[0].id };
+    try {
+      const catalog = parseDesktopCatalog(await this.requestJson(API_ROUTES.desktops, { cache: "no-store" }));
+      this.catalogRevision = catalog.revision;
+      const remoteIds = new Set(catalog.desktops.map((desktop) => desktop.id));
+      if (local.activeDesktopId && local.desktops.length === 1 && !remoteIds.has(local.activeDesktopId)) {
+        const target = catalog.desktops.find((desktop) => desktop.id === catalog.defaultDesktopId)!;
+        if (await this.storage.adoptFreshDesktop(local.activeDesktopId, target)) local = await this.storage.listDesktops();
+      }
+      const records = await this.storage.readOutbox();
+      const retainedLocalIds = outboxDesktopRetentionIds(records);
+      const pendingDeletes = new Set(records.flatMap((record) => record.operation.kind === "delete-desktop" ? [record.operation.desktopId] : []));
+      const pendingRenames = new Map(records.flatMap((record) => record.operation.kind === "rename-desktop" ? [[record.operation.desktop.id, record.operation.desktop.name] as const] : []));
+      for (const desktop of catalog.desktops) if (!pendingDeletes.has(desktop.id)) await this.storage.ensureDesktop(desktop);
+      local = await this.storage.listDesktops();
+      const remoteDesktops = catalog.desktops
+        .filter((desktop) => !pendingDeletes.has(desktop.id))
+        .map((desktop) => pendingRenames.has(desktop.id) ? { ...desktop, name: pendingRenames.get(desktop.id)! } : desktop);
+      return {
+        activeDesktopId: local.activeDesktopId && (remoteIds.has(local.activeDesktopId) || retainedLocalIds.has(local.activeDesktopId))
+          ? local.activeDesktopId
+          : catalog.defaultDesktopId,
+        defaultDesktopId: catalog.defaultDesktopId,
+        desktops: [...remoteDesktops, ...local.desktops.filter((desktop) => !remoteIds.has(desktop.id) && retainedLocalIds.has(desktop.id))],
+      };
+    } catch {
+      return { ...local, defaultDesktopId: local.desktops[0].id };
+    }
+  }
+
+  async refreshCatalog() {
+    return this.publishCatalog(await this.listDesktops());
+  }
+
+  async renameDesktop(desktopId: string, name: string) {
+    const desktop = await this.storage.renameDesktop(desktopId, name);
+    if (!this.frontendOnly) await this.mutate({ kind: "rename-desktop", desktop }, () => undefined);
+    return desktop;
+  }
+
+  async deleteDesktop(desktopId: string) {
+    await this.storage.deleteDesktop(desktopId);
+    if (!this.frontendOnly) await this.mutate({ kind: "delete-desktop", desktopId }, () => undefined);
   }
 
   async captureEntries(rootIds: string[]): Promise<ClipboardEntrySnapshot> {
@@ -702,6 +874,12 @@ export const deleteEntry = defaultEngine.deleteEntry.bind(defaultEngine);
 export const deleteEntries = defaultEngine.deleteEntries.bind(defaultEngine);
 export const moveEntry = defaultEngine.moveEntry.bind(defaultEngine);
 export const moveEntries = defaultEngine.moveEntries.bind(defaultEngine);
+export const transferEntries = defaultEngine.transferEntries.bind(defaultEngine);
+export const createDesktop = defaultEngine.createDesktop.bind(defaultEngine);
+export const listDesktops = defaultEngine.listDesktops.bind(defaultEngine);
+export const subscribeToDesktopCatalog = defaultEngine.subscribeDesktopCatalog.bind(defaultEngine);
+export const renameDesktop = defaultEngine.renameDesktop.bind(defaultEngine);
+export const deleteDesktop = defaultEngine.deleteDesktop.bind(defaultEngine);
 export const captureEntries = defaultEngine.captureEntries.bind(defaultEngine);
 export const pasteEntries = defaultEngine.pasteEntries.bind(defaultEngine);
 export const updateDesktopPositions = defaultEngine.updateDesktopPositions.bind(defaultEngine);

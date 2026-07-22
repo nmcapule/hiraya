@@ -1,6 +1,7 @@
 import {
   WALLPAPERS,
   type DesktopEntry,
+  type DesktopIdentity,
   type DesktopLayout,
   type DesktopPositionUpdate,
   type EditorLanguage,
@@ -62,6 +63,28 @@ export function normalizeEntryName(value: string) {
   const name = value.trim();
   assertCanonicalEntryName(name);
   return name;
+}
+
+export function normalizeDesktopName(value: string) {
+  const name = value.trim();
+  if (!name || name === "." || name === ".." || [...name].length > 180 || name.includes("/") || name.includes("\\") || [...name].some((character) => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    return codePoint < 32 || codePoint === 127;
+  })) throw new Error("A desktop has an invalid name.");
+  return name;
+}
+
+export function parseDesktopIdentity(value: unknown): DesktopIdentity {
+  if (!isRecord(value)) throw new Error("A desktop has an unsupported format.");
+  assertValidId(value.id, "A desktop has an invalid ID.");
+  return { id: value.id, name: normalizeDesktopName(typeof value.name === "string" ? value.name : "") };
+}
+
+export function parseDesktopList(value: unknown): DesktopIdentity[] {
+  if (!Array.isArray(value) || value.length === 0) throw new Error("At least one desktop is required.");
+  const desktops = value.map(parseDesktopIdentity);
+  if (new Set(desktops.map((desktop) => desktop.id)).size !== desktops.length) throw new Error("The desktop list contains duplicate IDs.");
+  return desktops;
 }
 
 export function assertCanonicalEntryName(value: unknown): asserts value is string {

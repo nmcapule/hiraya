@@ -8,25 +8,31 @@ import { FileIcon } from "./components/FileIcon";
 import { FileWindow } from "./components/FileWindow";
 import { FolderExplorer } from "./components/FolderExplorer";
 import { MoveDialog } from "./components/MoveDialog";
+import { DesktopSwitcher } from "./components/DesktopSwitcher";
 import { PasteConflictDialog } from "./components/PasteConflictDialog";
 import { SettingsWindow } from "./components/SettingsWindow";
 import { UpdateToast } from "./components/UpdateToast";
 import {
   createFolder,
+  createDesktop as createDesktopMutation,
   createTextFile,
   deleteCustomTheme,
   captureEntries,
   deleteEntries,
+  deleteDesktop as deleteDesktopMutation,
   fetchBackendBuildTimestamp,
   getOutboxStatus,
   importFiles,
   initializeDesktop,
   listActivity,
+  listDesktops,
   moveEntries,
+  transferEntries,
   pasteEntries,
   readFile,
   readFileByRelativePath,
   renameEntry,
+  renameDesktop as renameDesktopMutation,
   saveCustomTheme,
   saveDesktopLayout,
   saveEditorSettings,
@@ -36,16 +42,17 @@ import {
   updateEntryPosition,
   subscribeToSync,
   subscribeToActivityChanges,
+  subscribeToDesktopCatalog,
   stopDesktopSync,
   type SyncStatus,
 } from "./lib/sync";
-import { DEFAULT_EDITOR_SETTINGS, readLocalPreferences, readWindowSession, saveLocalPreferences, saveWindowSession, type LocalPreferences } from "./lib/opfs";
+import { DEFAULT_EDITOR_SETTINGS, pruneLocalDesktops, readDesktopEntries, readLocalPreferences, readWindowSession, saveLocalPreferences, saveWindowSession, switchDesktop as switchLocalDesktop, type DesktopSnapshot, type LocalPreferences } from "./lib/opfs";
 import { createPwaUpdater, type PwaUpdater } from "./lib/pwa-update";
 import { exportSeededDesktop } from "./lib/seeded";
 import { CLIPBOARD_ARCHIVE_WEB_MIME_TYPE, decodeClipboardArchiveItem, encodeClipboardArchive, snapshotFromClipboardItems, type ClipboardEntrySnapshot } from "./lib/clipboard";
 import { formatDesktopRoute, normalizeDesktopRoute, parseDesktopRoute, resolveOpenFilePath, type DesktopRoute } from "./lib/routes";
 import { DEFAULT_THEME_STATE, isBuiltinThemeId, resolveTheme, themeIconMetrics, themeStyle, type CustomTheme, type ThemeDefinition, type ThemeState } from "./lib/themes";
-import { DEFAULT_WALLPAPER, type ContextMenuState, type DesktopEntry, type DesktopLayout, type DialogState, type EditorSettings, type EntryPosition, type FileEntry } from "./types";
+import { DEFAULT_WALLPAPER, type ContextMenuState, type DesktopEntry, type DesktopIdentity, type DesktopLayout, type DialogState, type EditorSettings, type EntryPosition, type FileEntry } from "./types";
 import { GRID_ORIGIN, nextAvailableDesktopSlot, nextDesktopPosition, projectLogicalPosition, reorderSurfaceSegments, responsiveDesktop, restoreLogicalPosition, segmentKey, snapAxis, type SurfaceSegment } from "./ui/desktop-geometry";
 import { fileCapabilities } from "./ui/file-capabilities";
 import { topOverlay } from "./ui/overlay";
@@ -54,6 +61,7 @@ import { clampWindowBounds, initialWindowBounds, type WindowBounds } from "./ui/
 import { namesMatch } from "./lib/entry-validation";
 import { parseWindowTargets, restoreWindowSession, windowTargetId, type WindowSession, type WindowSessionApp, type WindowTarget } from "./lib/window-session";
 import { parseInternetShortcut } from "./lib/internet-shortcut";
+import { createSerialTaskQueue } from "./lib/serial-task";
 
 type BaseRunningApp = { id: string; bounds: WindowBounds; minimized: boolean; zIndex: number };
 type FileApp = BaseRunningApp & { kind: "file"; fileId: string; file?: FileEntry; blob?: File; editable?: boolean; editMode: boolean; contentRevision: number; remoteChanged: boolean };
@@ -80,6 +88,9 @@ function topRunningAppInSegment(apps: RunningApp[], segment: SurfaceSegment, siz
 
 function App() {
   const [entries, setEntries] = useState<DesktopEntry[]>([]);
+  const [desktops, setDesktops] = useState<DesktopIdentity[]>([]);
+  const [activeDesktopId, setActiveDesktopId] = useState("");
+  const [defaultDesktopId, setDefaultDesktopId] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -90,6 +101,7 @@ function App() {
   const [contextMenu, setContextMenu] = useState<ContextMenuState>(null);
   const [moveDialogEntryIds, setMoveDialogEntryIds] = useState<string[]>([]);
   const [moveDialogSubmitting, setMoveDialogSubmitting] = useState(false);
+  const [desktopMoveFolders, setDesktopMoveFolders] = useState<Record<string, DesktopEntry[]>>({});
   const [runningApps, setRunningApps] = useState<RunningApp[]>([]);
   const [focusedAppId, setFocusedAppId] = useState<string | null>(null);
   const [windowSessionRestored, setWindowSessionRestored] = useState(false);
@@ -184,6 +196,11 @@ function App() {
   const layoutSaveRef = useRef<Promise<void>>(Promise.resolve());
   const editorSettingsSaveRef = useRef<Promise<void>>(Promise.resolve());
   const contentRevisionsRef = useRef<Record<string, number>>({});
+  const activeDesktopIdRef = useRef("");
+  const desktopsRef = useRef<DesktopIdentity[]>([]);
+  const activateDesktopRef = useRef<(desktopId: string) => Promise<boolean>>(async () => false);
+  const activationQueueRef = useRef(createSerialTaskQueue());
+  const activationGenerationRef = useRef(0);
   const fileDirtyRef = useRef<Record<string, boolean>>({});
   const windowSessionReadyRef = useRef(false);
   const windowSessionSaveRef = useRef<Promise<void>>(Promise.resolve());
@@ -194,6 +211,7 @@ function App() {
   const manualUpdateCheckRef = useRef(false);
   const activeSegment = { column: route?.column ?? 0, row: route?.row ?? 0 };
   desktopSizeRef.current = desktopSize;
+  desktopsRef.current = desktops;
   const routeExplorerFolderId = route?.explorerFolderId;
   const routeFileId = route?.fileId;
   const routeSettings = route?.settings;
@@ -236,7 +254,6 @@ function App() {
     return position.x + iconMetrics.width > desktopSize.width - minimapWidth
       && position.y + iconMetrics.height > desktopSize.height - minimapHeight;
   });
-  const folders = workspace.folders;
   const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   selectedIdsRef.current = selectedIds;
   const selectedEntries = selectedIds.map((id) => workspace.byId.get(id)).filter((entry): entry is DesktopEntry => Boolean(entry));
@@ -312,7 +329,7 @@ function App() {
   function applyLocationRoute(entriesValue = entriesRef.current, layoutValue = layoutRef.current) {
     if (!navigationReadyRef.current) return;
     void layoutValue;
-    const normalized = normalizeDesktopRoute(parseDesktopRoute(window.location.hash), entriesValue);
+    const normalized = normalizeDesktopRoute(parseDesktopRoute(window.location.hash), entriesValue, activeDesktopIdRef.current);
     if (!normalized) return;
     const canonicalHash = formatDesktopRoute(normalized);
     if (canonicalHash !== window.location.hash) writeRoute(normalized, "replace");
@@ -320,12 +337,12 @@ function App() {
   }
 
   function navigateRoute(next: DesktopRoute, mode: "push" | "replace" = "push", previousApps?: WindowTarget[]) {
-    const normalized = normalizeDesktopRoute(next, entriesRef.current);
+    const normalized = normalizeDesktopRoute(next, entriesRef.current, activeDesktopIdRef.current);
     if (normalized) writeRoute(normalized, mode, previousApps);
   }
 
   function routeForApp(app: RunningApp | null, current: DesktopRoute): DesktopRoute {
-    const base = { column: current.column, row: current.row };
+    const base = { desktopId: activeDesktopIdRef.current, column: current.column, row: current.row };
     if (!app) return base;
     if (app.kind === "file") return { ...base, fileId: app.fileId };
     if (app.kind === "explorer") return { ...base, explorerFolderId: app.folderId };
@@ -435,7 +452,7 @@ function App() {
 
   function restoreRunningApps(session: WindowSession, loadedEntries: DesktopEntry[]) {
     const byId = new Map(loadedEntries.map((entry) => [entry.id, entry]));
-    const restoredRoute = routeRef.current ?? normalizeDesktopRoute(parseDesktopRoute(window.location.hash), loadedEntries);
+    const restoredRoute = routeRef.current ?? normalizeDesktopRoute(parseDesktopRoute(window.location.hash), loadedEntries, activeDesktopIdRef.current);
     const restored = restoreWindowSession(session, loadedEntries, restoredRoute, desktopSize).map((saved): RunningApp => {
       if (saved.kind === "settings") return { ...saved, id: "settings" };
       if (saved.kind === "explorer") return { ...saved, id: `explorer:${saved.folderId ?? "root"}` };
@@ -458,7 +475,7 @@ function App() {
   }
 
   function restoreHistoryApps(targets: WindowTarget[]) {
-    const historySegment = normalizeDesktopRoute(parseDesktopRoute(window.location.hash), entriesRef.current);
+    const historySegment = normalizeDesktopRoute(parseDesktopRoute(window.location.hash), entriesRef.current, activeDesktopIdRef.current);
     const existing = new Map(runningAppsRef.current.map((app) => [app.id, app]));
     const targetIds = new Set(targets.map(windowTargetId));
     const reusableExplorers = runningAppsRef.current.filter((app): app is ExplorerApp => app.kind === "explorer" && !targetIds.has(app.id));
@@ -518,7 +535,7 @@ function App() {
     }
     try {
       const file = resolveOpenFilePath(loadedEntries, openPath);
-      const current = normalizeDesktopRoute(parseDesktopRoute(url.hash), loadedEntries);
+      const current = normalizeDesktopRoute(parseDesktopRoute(url.hash), loadedEntries, activeDesktopIdRef.current);
       const next: DesktopRoute = {
         column: current.column,
         row: current.row,
@@ -555,12 +572,9 @@ function App() {
   useEffect(() => {
     let active = true;
     let sessionRestoreStarted = false;
-    const savedWindowSession = readWindowSession().then(
-      (session) => ({ session, loaded: true as const }),
-      () => ({ session: null, loaded: false as const }),
-    );
+    let savedWindowSession: Promise<{ session: WindowSession; loaded: true } | { session: null; loaded: false }> | null = null;
     const restoreSavedWindowSession = () => {
-      if (sessionRestoreStarted) return;
+      if (sessionRestoreStarted || !savedWindowSession) return;
       sessionRestoreStarted = true;
       void savedWindowSession.then((result) => {
         if (!active) return;
@@ -607,7 +621,39 @@ function App() {
       applyLocationRouteRef.current(synced.entries, synced.layout);
       restoreSavedWindowSession();
     }, (nextStatus) => { if (active) setSyncStatus(nextStatus); }, (syncing) => { if (active) setIsSyncing(syncing); });
-    void initializeDesktop({ x: window.innerWidth, y: Math.max(1, window.innerHeight - 44) }, seededDesktop)
+    const unsubscribeCatalog = subscribeToDesktopCatalog((registry) => {
+      if (!active) return;
+      setDefaultDesktopId(registry.defaultDesktopId);
+      desktopsRef.current = registry.desktops;
+      setDesktops(registry.desktops);
+      const retainedIds = registry.desktops.map((desktop) => desktop.id);
+      if (activeDesktopIdRef.current && !retainedIds.includes(activeDesktopIdRef.current)) {
+        const fallback = registry.desktops.find((desktop) => desktop.id === registry.defaultDesktopId) ?? registry.desktops[0];
+        if (fallback) void activateDesktopRef.current(fallback.id).then((switched) => { if (switched) return pruneLocalDesktops(retainedIds); });
+      } else {
+        void pruneLocalDesktops(retainedIds);
+      }
+    });
+    void listDesktops(seededDesktop).then((registry) => {
+      if (!active) throw new DOMException("Desktop loading was stopped.", "AbortError");
+      const routeDesktopId = parseDesktopRoute(window.location.hash)?.desktopId;
+      const desktopId = routeDesktopId && registry.desktops.some((desktop) => desktop.id === routeDesktopId)
+        ? routeDesktopId
+        : registry.activeDesktopId && registry.desktops.some((desktop) => desktop.id === registry.activeDesktopId)
+          ? registry.activeDesktopId
+          : registry.desktops[0].id;
+      setDesktops(registry.desktops);
+      setDefaultDesktopId(registry.defaultDesktopId);
+      activeDesktopIdRef.current = desktopId;
+      setActiveDesktopId(desktopId);
+      savedWindowSession = readWindowSession(desktopId).then(
+        (session) => ({ session, loaded: true as const }),
+        () => ({ session: null, loaded: false as const }),
+      );
+      return switchLocalDesktop(desktopId)
+        .then(() => pruneLocalDesktops(registry.desktops.map((desktop) => desktop.id)))
+        .then(() => initializeDesktop(desktopId, { x: window.innerWidth, y: Math.max(1, window.innerHeight - 44) }, seededDesktop));
+    })
       .then(({ desktop: loadedDesktop, status: loadedStatus }) => {
         if (!active) return;
         const { entries: loadedEntries, layout: loadedLayout, editorSettings: loadedEditorSettings, appearance: loadedAppearance, sync } = loadedDesktop;
@@ -639,9 +685,19 @@ function App() {
     return () => {
       active = false;
       unsubscribe();
-      stopDesktopSync();
+      unsubscribeCatalog();
+      void stopDesktopSync();
     };
   }, []);
+
+  useEffect(() => {
+    if (!moveDialogEntryIds.length || !activeDesktopId) return;
+    let active = true;
+    void Promise.all(desktops.map(async (desktop) => [desktop.id, desktop.id === activeDesktopId ? entriesRef.current : await readDesktopEntries(desktop.id)] as const))
+      .then((values) => { if (active) setDesktopMoveFolders(Object.fromEntries(values)); })
+      .catch(() => { if (active) setError("Desktop destinations could not be loaded."); });
+    return () => { active = false; };
+  }, [activeDesktopId, desktops, moveDialogEntryIds.length]);
 
   useEffect(() => {
     if (syncStatus !== "online" || backendBuildTimestamp) return;
@@ -664,7 +720,7 @@ function App() {
         }),
       };
       windowSessionSaveRef.current = windowSessionSaveRef.current
-        .then(() => saveWindowSession(session))
+        .then(() => saveWindowSession(activeDesktopIdRef.current, session))
         .catch(() => { setError("The open app session could not be saved."); });
     }
     if (navigationReadyRef.current && windowSessionRestored && routeHistoryReady) {
@@ -744,6 +800,14 @@ function App() {
       setMoveDialogEntryIds([]);
       setEditingViews(false);
       setDraggedPageKey(null);
+      const requestedRoute = parseDesktopRoute(window.location.hash);
+      const requestedDesktopId = requestedRoute?.desktopId;
+      if (requestedDesktopId && requestedDesktopId !== activeDesktopIdRef.current && desktopsRef.current.some((desktop) => desktop.id === requestedDesktopId)) {
+        void activateDesktopRef.current(requestedDesktopId).then((switched) => {
+          if (switched && requestedRoute) navigateRouteRef.current(requestedRoute, "replace");
+        });
+        return;
+      }
       const apps = historyApps(state);
       if (apps) restoreHistoryAppsRef.current(apps);
       applyLocationRouteRef.current();
@@ -1134,6 +1198,90 @@ function App() {
       setExternalEmbeddedPreviews(previous.externalEmbeddedPreviews);
       setError("The external preview preference could not be saved.");
     }
+  }
+
+  async function applyActivatedDesktopState(desktopId: string, desktop: DesktopSnapshot) {
+    activeDesktopIdRef.current = desktopId;
+    setActiveDesktopId(desktopId);
+    contentRevisionsRef.current = desktop.sync.contentRevisions;
+    entriesRef.current = desktop.entries;
+    layoutRef.current = desktop.layout;
+    setEntries(desktop.entries);
+    setLayout(desktop.layout);
+    setEditorSettings(desktop.editorSettings);
+    setAppearance(desktop.appearance);
+    replaceSelection("desktop", []);
+    updateRunningApps([]);
+    setFocusedApp(null);
+    writeRoute(normalizeDesktopRoute({ desktopId, column: 0, row: 0 }, desktop.entries, desktopId), "replace");
+    restoreRunningApps(await readWindowSession(desktopId), desktop.entries);
+    windowSessionReadyRef.current = true;
+    setWindowSessionRestored(true);
+  }
+
+  async function performDesktopActivation(desktopId: string, token: number) {
+    activationGenerationRef.current = token;
+    if (desktopId === activeDesktopIdRef.current) return true;
+    if (Object.values(fileDirtyRef.current).some(Boolean) && !window.confirm("Switch desktops and discard unsaved editor changes?")) return false;
+    const previousDesktopId = activeDesktopIdRef.current;
+    let syncStopped = false;
+    setLoading(true);
+    setError("");
+    setDialog(null);
+    setContextMenu(null);
+    setMoveDialogEntryIds([]);
+    windowSessionReadyRef.current = false;
+    try {
+      await stopDesktopSync();
+      syncStopped = true;
+      const desktop = await switchLocalDesktop(desktopId);
+      await applyActivatedDesktopState(desktopId, desktop);
+      await initializeDesktop(desktopId, { x: window.innerWidth, y: Math.max(1, window.innerHeight - 44) });
+      if (activationGenerationRef.current !== token || activeDesktopIdRef.current !== desktopId) throw new Error("Desktop activation lost ownership.");
+      return true;
+    } catch (switchError) {
+      if (syncStopped && previousDesktopId && previousDesktopId !== desktopId) {
+        try {
+          await stopDesktopSync();
+          const previous = await switchLocalDesktop(previousDesktopId);
+          await applyActivatedDesktopState(previousDesktopId, previous);
+          await initializeDesktop(previousDesktopId, { x: window.innerWidth, y: Math.max(1, window.innerHeight - 44) });
+        } catch (rollbackError) {
+          setError(rollbackError instanceof Error ? `Desktop activation failed and rollback failed: ${rollbackError.message}` : "Desktop activation and rollback failed.");
+          return false;
+        }
+      }
+      setError(switchError instanceof Error ? switchError.message : "The desktop could not be opened.");
+      return false;
+    } finally { setLoading(false); }
+  }
+  function activateDesktop(desktopId: string) {
+    return activationQueueRef.current.run((token) => performDesktopActivation(desktopId, token));
+  }
+  activateDesktopRef.current = activateDesktop;
+
+  async function createDesktop(name: string) {
+    const desktop = await createDesktopMutation(name);
+    setDesktops((current) => [...current, desktop]);
+    await activateDesktop(desktop.id);
+  }
+
+  async function renameDesktop(desktopId: string, name: string) {
+    const renamed = await renameDesktopMutation(desktopId, name);
+    setDesktops((current) => current.map((desktop) => desktop.id === desktopId ? renamed : desktop));
+  }
+
+  async function deleteDesktop(desktopId: string) {
+    const desktop = desktops.find((candidate) => candidate.id === desktopId);
+    if (!desktop || desktops.length === 1 || desktopId === defaultDesktopId) return;
+    if (!window.confirm(`Delete “${desktop.name}” and every file and folder in it? This cannot be undone.`)) return;
+    if (desktopId === activeDesktopIdRef.current) {
+      const replacement = desktops.find((candidate) => candidate.id !== desktopId)!;
+      if (!await activateDesktop(replacement.id)) return;
+    }
+    await deleteDesktopMutation(desktopId);
+    setDesktops((current) => current.filter((candidate) => candidate.id !== desktopId));
+    setNotice(`${desktop.name} deleted`);
   }
 
   async function activateUpdate() {
@@ -1891,7 +2039,7 @@ function App() {
   return (
     <main className="desktop-shell" data-theme={isBuiltinThemeId(appearance.selectedThemeId) ? appearance.selectedThemeId : "custom"} style={themeStyle(activeTheme)}>
       <header className="menu-bar">
-        <div className="brand-mark" aria-label="Hiraya Desktop"><span className="brand-mark__shape"><span /></span><strong>Hiraya</strong></div>
+        {activeDesktopId && <DesktopSwitcher desktops={desktops} activeDesktopId={activeDesktopId} defaultDesktopId={defaultDesktopId} disabled={loading} onSwitch={(id) => void activateDesktop(id)} onCreate={createDesktop} onRename={renameDesktop} onDelete={deleteDesktop} />}
         <nav className="taskbar" aria-label="Running apps">
           {activeApps.map((app) => {
             const entry = app.kind === "file" ? workspace.byId.get(app.fileId) : app.kind === "explorer" && app.folderId ? workspace.byId.get(app.folderId) : null;
@@ -2258,11 +2406,23 @@ function App() {
       {dialog && (!(dialog.type === "rename" || dialog.type === "delete") || dialogEntry) && <FileDialog dialog={dialog} entry={dialogEntry} entryCount={dialog.type === "delete" ? dialog.entryIds.length : 1} onClose={() => setDialog(null)} onSubmit={handleDialogSubmit} />}
       {moveDialogEntries.length > 0 && (
         <MoveDialog
+          desktops={desktops.map((desktop) => ({ ...desktop, folders: (desktopMoveFolders[desktop.id] ?? []).filter((entry): entry is Extract<DesktopEntry, { kind: "folder" }> => entry.kind === "folder") }))}
+          activeDesktopId={activeDesktopId}
           entries={moveDialogEntries}
-          folders={folders}
           invalidIds={invalidMoveIds(moveDialogEntries)}
           onClose={() => { setMoveDialogSubmitting(false); setMoveDialogEntryIds([]); }}
-          onMove={async (parentId) => { await handleMoveTo(moveDialogEntries, parentId, true); setMoveDialogSubmitting(false); setMoveDialogEntryIds([]); }}
+          onMove={async (desktopId, parentId) => {
+            if (desktopId === activeDesktopId) await handleMoveTo(moveDialogEntries, parentId, true);
+            else {
+              const next = await transferEntries(desktopId, moveDialogEntries.map((entry) => entry.id), parentId);
+              entriesRef.current = next.entries;
+              setEntries(next.entries);
+              replaceSelection(selectionSurface, []);
+              setNotice(`${moveDialogEntries.length === 1 ? moveDialogEntries[0].name : `${moveDialogEntries.length} items`} moved to ${desktops.find((desktop) => desktop.id === desktopId)?.name ?? "desktop"}`);
+            }
+            setMoveDialogSubmitting(false);
+            setMoveDialogEntryIds([]);
+          }}
           onSubmittingChange={setMoveDialogSubmitting}
         />
       )}

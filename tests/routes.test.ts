@@ -25,6 +25,13 @@ describe("routes", () => {
     });
   });
 
+  test("round-trips desktop identity and normalizes legacy links", () => {
+    const route = { desktopId: "desk one", column: -2, row: 3, fileId: "file #3" };
+    expect(formatDesktopRoute(route)).toBe("#/desktops/desk%20one/workspaces/-2/3/file/file%20%233");
+    expect(parseDesktopRoute(formatDesktopRoute(route))).toEqual(route);
+    expect(normalizeDesktopRoute(parseDesktopRoute("#/workspaces/1/2"), entries, "desk one")).toEqual({ desktopId: "desk one", column: 1, row: 2 });
+  });
+
   test("round-trips the settings app", () => {
     const route = { column: -2, row: 4, settings: true as const };
     expect(formatDesktopRoute(route)).toBe("#/workspaces/-2/4/settings");
@@ -71,6 +78,10 @@ describe("routes", () => {
     expect(API_ROUTES.entry("a/b")).toBe("/api/entries/a%2Fb");
     expect(API_ROUTES.content("a b")).toBe("/api/files/a%20b/content");
     expect(API_ROUTES.desktopPositions).toBe("/api/desktop-positions");
+    expect(API_ROUTES.desktopWorkspace("desk/a")).toBe("/api/desktops/desk%2Fa");
+    expect(API_ROUTES.desktopContent("desk one", "a/b")).toBe("/api/desktops/desk%20one/files/a%2Fb/content");
+    expect(API_ROUTES.desktopPositionsFor("desk one")).toBe("/api/desktops/desk%20one/positions");
+    expect(API_ROUTES.desktopMoves).toBe("/api/desktop-moves");
   });
 
   test("resolves root-relative file paths using workspace name rules", () => {
