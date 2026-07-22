@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Check, DownloadSimple, FloppyDisk } from "@phosphor-icons/react";
+import { createPortal } from "react-dom";
 import type { EditorLanguage, EditorSettings, FileEntry } from "../types";
 import { fileCapabilities } from "../ui/file-capabilities";
 import { TextEditor } from "./TextEditor";
@@ -25,12 +26,39 @@ const LANGUAGE_OPTIONS: Array<{ value: EditorLanguage; label: string }> = [
 
 const IMAGE_ZOOM_OPTIONS = [25, 50, 75, 100, 125, 150, 200];
 
+type ImageZoom = "fit" | number;
+
+type ImageZoomControlProps = {
+  value: ImageZoom;
+  onChange: (zoom: ImageZoom) => void;
+};
+
+function ImageZoomControl({ value, onChange }: ImageZoomControlProps) {
+  return (
+    <label className="image-zoom-control">
+      <span>Zoom</span>
+      <select
+        value={value}
+        aria-label="Image zoom"
+        onChange={(event) => onChange(event.target.value === "fit" ? "fit" : Number(event.target.value))}
+      >
+        <option value="fit">Fit</option>
+        {typeof value === "number" && !IMAGE_ZOOM_OPTIONS.includes(Math.round(value * 100)) && (
+          <option value={value}>{Math.round(value * 100)}%</option>
+        )}
+        {IMAGE_ZOOM_OPTIONS.map((percent) => <option key={percent} value={percent / 100}>{percent}%</option>)}
+      </select>
+    </label>
+  );
+}
+
 type Props = {
   file: FileEntry;
   blob: File;
   editable: boolean;
   readOnly?: boolean;
   remoteChanged?: boolean;
+  imageHeaderTarget?: HTMLDivElement | null;
   editorSettings: EditorSettings;
   theme: ThemeDefinition;
   onSave: (content: string) => Promise<void>;
@@ -41,14 +69,14 @@ type Props = {
   onDirtyChange?: (dirty: boolean) => void;
 };
 
-export function FileWindow({ file, blob, editable, readOnly = false, remoteChanged = false, editorSettings, theme, onSave, onDownload, onEditorSettingsChange, onResolveLink, onOpenLinkedFile, onDirtyChange }: Props) {
+export function FileWindow({ file, blob, editable, readOnly = false, remoteChanged = false, imageHeaderTarget, editorSettings, theme, onSave, onDownload, onEditorSettingsChange, onResolveLink, onOpenLinkedFile, onDirtyChange }: Props) {
   const [content, setContent] = useState("");
   const [savedContent, setSavedContent] = useState("");
   const [contentLoaded, setContentLoaded] = useState(false);
   const [objectUrl, setObjectUrl] = useState("");
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
-  const [imageZoom, setImageZoom] = useState<"fit" | number>("fit");
+  const [imageZoom, setImageZoom] = useState<ImageZoom>("fit");
   const savingRef = useRef(false);
   const onSaveRef = useRef(onSave);
   const lastAutoSaveAttemptRef = useRef<string | null>(null);
@@ -112,37 +140,36 @@ export function FileWindow({ file, blob, editable, readOnly = false, remoteChang
 
   return (
     <div className="file-window file-window--embedded">
-      <div className="file-window__actions">
-        <span className="file-window__mode">{preview === "url" ? readOnly ? "URL preview" : "URL editor" : editable ? readOnly ? "Text preview" : "Text editor" : "Preview"}{dirty ? " / Unsaved" : ""}</span>
-        <div className="window-controls">
-          <button className="icon-button icon-button--wide" type="button" onClick={onDownload} aria-label="Download file">
-            <DownloadSimple size={17} /> <span>Download</span>
+      {imageHeaderTarget && preview === "image" && createPortal(
+        <div className="mobile-image-header" aria-label="Image preview settings">
+          <ImageZoomControl value={imageZoom} onChange={setImageZoom} />
+          <button className="icon-button mobile-image-header__download" type="button" onClick={onDownload} aria-label="Download file">
+            <DownloadSimple size={17} />
           </button>
-          {editable && !readOnly && (
-            <button className="button button--primary button--save" type="button" onClick={() => void save(content)} disabled={saving || !dirty || !validContent}>
-              {saving ? <FloppyDisk size={17} /> : <Check size={17} />}
-              {saving ? "Saving" : dirty ? "Save" : "Saved"}
+        </div>,
+        imageHeaderTarget,
+      )}
+      {!(imageHeaderTarget && preview === "image") && (
+        <div className="file-window__actions">
+          <span className="file-window__mode">{preview === "url" ? readOnly ? "URL preview" : "URL editor" : editable ? readOnly ? "Text preview" : "Text editor" : "Preview"}{dirty ? " / Unsaved" : ""}</span>
+          <div className="window-controls">
+            <button className="icon-button icon-button--wide" type="button" onClick={onDownload} aria-label="Download file">
+              <DownloadSimple size={17} /> <span>Download</span>
             </button>
-          )}
+            {editable && !readOnly && (
+              <button className="button button--primary button--save" type="button" onClick={() => void save(content)} disabled={saving || !dirty || !validContent}>
+                {saving ? <FloppyDisk size={17} /> : <Check size={17} />}
+                {saving ? "Saving" : dirty ? "Save" : "Saved"}
+              </button>
+            )}
+          </div>
         </div>
-      </div>
+      )}
         {saveError && <div className="window-error">{saveError}</div>}
         {remoteChanged && <div className="window-error">This file changed on the server. Your unsaved text is preserved; saving it will become the latest version.</div>}
-        {!editable && preview === "image" && (
+        {!editable && preview === "image" && !imageHeaderTarget && (
           <div className="editor-toolbar image-preview-toolbar" aria-label="Image preview settings">
-            <label>
-              <span>Zoom</span>
-              <select
-                value={imageZoom}
-                onChange={(event) => setImageZoom(event.target.value === "fit" ? "fit" : Number(event.target.value))}
-              >
-                <option value="fit">Fit</option>
-                {typeof imageZoom === "number" && !IMAGE_ZOOM_OPTIONS.includes(Math.round(imageZoom * 100)) && (
-                  <option value={imageZoom}>{Math.round(imageZoom * 100)}%</option>
-                )}
-                {IMAGE_ZOOM_OPTIONS.map((percent) => <option key={percent} value={percent / 100}>{percent}%</option>)}
-              </select>
-            </label>
+            <ImageZoomControl value={imageZoom} onChange={setImageZoom} />
           </div>
         )}
         {editable && preview === "text" && !readOnly && (

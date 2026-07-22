@@ -1808,6 +1808,7 @@ function App() {
             const folder = folderEntry?.kind === "folder" ? folderEntry : null;
             const fileEntry = app.kind === "file" ? app.file ?? workspace.byId.get(app.fileId) : null;
             const file = fileEntry?.kind === "file" ? fileEntry : null;
+            const compactImageHeader = Boolean(isMobile && app.kind === "file" && file && !app.editable && fileCapabilities(file).preview === "image");
             const title = app.kind === "settings" ? "Settings" : app.kind === "explorer" ? folder?.name ?? "Desktop" : file?.name ?? "Opening file";
             return (
               <AppWindow
@@ -1828,6 +1829,7 @@ function App() {
                 onClose={closeApp}
                 titleArea={<div><span className="window-kicker">{app.kind === "file" ? file && fileCapabilities(file).preview === "url" ? "URL editor" : app.editable ? "Text editor" : "Preview" : app.kind === "explorer" ? "Folder" : "Hiraya desktop"}</span><h2 id={titleId}>{title}</h2></div>}
               >
+                {(headerContentElement) => <>
                 {app.kind === "file" && file && app.blob ? (
                   <FileWindow
                     file={file}
@@ -1835,6 +1837,7 @@ function App() {
                     editable={Boolean(app.editable)}
                     readOnly={!canMutate}
                     remoteChanged={app.remoteChanged}
+                    imageHeaderTarget={compactImageHeader ? headerContentElement : null}
                     editorSettings={editorSettings}
                     theme={activeTheme}
                     onSave={(content) => save(app.id, file.id, content)}
@@ -1897,6 +1900,7 @@ function App() {
                     onAutoUpdateChange={(enabled) => void changeAutoUpdate(enabled)}
                   />
                 )}
+                </>}
               </AppWindow>
             );
           })}
