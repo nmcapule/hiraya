@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
-import { ArrowClockwise, ArrowsOut, CornersIn, CornersOut, ExportIcon, GridFour, PaintBrush } from "@phosphor-icons/react";
+import { useEffect, useRef, useState } from "react";
+import { ArrowClockwise, ArrowLeft, ArrowsOut, CaretRight, CornersIn, CornersOut, ExportIcon, GridFour, PaintBrush } from "@phosphor-icons/react";
 import {
   BUILTIN_THEME_IDS,
   BUILTIN_THEMES,
+  isBuiltinThemeId,
   type CustomTheme,
   type ThemeColors,
   type ThemeDefinition,
@@ -128,10 +129,17 @@ export function SettingsWindow({
   onCheckForUpdate,
   onAutoUpdateChange,
 }: Props) {
+  const [page, setPage] = useState<"main" | "themes">("main");
   const [draft, setDraft] = useState<CustomTheme | null>(null);
   const [saving, setSaving] = useState(false);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const mainThemesButtonRef = useRef<HTMLButtonElement>(null);
+  const themesHeadingRef = useRef<HTMLHeadingElement>(null);
   const mutationsDisabled = !canMutate || saving;
   const contrastIssues = draft ? themeContrastIssues(draft.definition) : [];
+  const selectedThemeName = isBuiltinThemeId(appearance.selectedThemeId)
+    ? BUILTIN_THEMES[appearance.selectedThemeId].name
+    : appearance.customThemes.find((theme) => theme.id === appearance.selectedThemeId)?.name ?? "Custom theme";
 
   useEffect(() => () => onThemePreview(null), [onThemePreview]);
 
@@ -200,9 +208,98 @@ export function SettingsWindow({
     onThemePreview(null);
   };
 
+  const openThemes = () => {
+    contentRef.current?.scrollTo({ top: 0 });
+    setPage("themes");
+    requestAnimationFrame(() => themesHeadingRef.current?.focus());
+  };
+
+  const closeThemes = () => {
+    cancelDraft();
+    contentRef.current?.scrollTo({ top: 0 });
+    setPage("main");
+    requestAnimationFrame(() => mainThemesButtonRef.current?.focus());
+  };
+
   return (
     <div className="settings-window settings-window--embedded">
-      <div className="settings-window__content">
+      <div className="settings-window__content" ref={contentRef}>
+        {page === "main" ? (
+          <>
+            <section className="settings-section" aria-labelledby="themes-link-heading">
+              <button className="settings-row settings-row--navigation" type="button" ref={mainThemesButtonRef} onClick={openThemes}>
+                <span className="settings-row__icon"><PaintBrush size={17} /></span>
+                <span className="settings-row__copy">
+                  <strong id="themes-link-heading">Themes</strong>
+                  <small>{selectedThemeName} theme with {WALLPAPER_LABELS[layout.wallpaper].name.toLowerCase()} wallpaper.</small>
+                </span>
+                <CaretRight className="settings-row__chevron" size={17} aria-hidden="true" />
+              </button>
+            </section>
+
+            <section className="settings-section" aria-labelledby="desktop-heading">
+              <div className="settings-section__heading">
+                <ArrowsOut size={18} />
+                <div><h3 id="desktop-heading">Desktop</h3><p>Adjust icon placement and the viewing area.</p></div>
+              </div>
+              <div className="settings-list">
+                <label className="settings-row">
+                  <span className="settings-row__icon"><GridFour size={17} weight={layout.snapToGrid ? "fill" : "regular"} /></span>
+                  <span className="settings-row__copy"><strong>Snap to grid</strong><small>Align icons when they are moved.</small></span>
+                  <input type="checkbox" checked={layout.snapToGrid} disabled={!canMutate} onChange={(event) => onLayoutChange({ ...layout, snapToGrid: event.target.checked })} />
+                </label>
+                {fullscreenEnabled && (
+                  <div className="settings-row">
+                    <span className="settings-row__icon">{isFullscreen ? <CornersIn size={17} /> : <CornersOut size={17} />}</span>
+                    <span className="settings-row__copy"><strong>{isFullscreen ? "Exit fullscreen" : "Fullscreen"}</strong><small>Use all available screen space.</small></span>
+                    <button className="button button--quiet" type="button" onClick={onToggleFullscreen}>{isFullscreen ? "Exit" : "Enter"}</button>
+                  </div>
+                )}
+              </div>
+            </section>
+
+            <section className="settings-section" aria-labelledby="updates-heading">
+              <div className="settings-section__heading">
+                <ArrowClockwise size={18} />
+                <div><h3 id="updates-heading">Updates</h3><p>Keep this installed frontend current.</p></div>
+              </div>
+              <div className="settings-list">
+                <div className="settings-row">
+                  <span className="settings-row__icon"><ArrowClockwise size={17} weight={updateReady ? "bold" : "regular"} /></span>
+                  <span className="settings-row__copy"><strong>Update to latest version</strong><small>{!updateSupported ? "Available in production PWA builds." : updateReady ? "A new version is ready to install." : "Check for a newer frontend release."}</small></span>
+                  <button className="button button--quiet" type="button" disabled={!updateSupported || updateChecking} onClick={onCheckForUpdate}>{updateChecking ? "Checking" : updateReady ? "Review" : "Check now"}</button>
+                </div>
+                <label className="settings-row">
+                  <span className="settings-row__icon"><ArrowClockwise size={17} /></span>
+                  <span className="settings-row__copy"><strong>Auto-update to latest version</strong><small>Check automatically, then ask before reloading.</small></span>
+                  <input type="checkbox" checked={autoUpdate} disabled={!updateSupported} onChange={(event) => onAutoUpdateChange(event.target.checked)} />
+                </label>
+              </div>
+            </section>
+
+            <section className="settings-section" aria-labelledby="data-heading">
+              <div className="settings-section__heading">
+                <ExportIcon size={18} />
+                <div><h3 id="data-heading">Saved desktop</h3><p>Package saved files and settings for another Hiraya build.</p></div>
+              </div>
+              <div className="settings-export">
+                <span>Unsaved editor changes are not included.</span>
+                <button className="button button--quiet" type="button" disabled={exportDisabled || exporting} onClick={onExport}><ExportIcon size={16} /> {exporting ? "Exporting" : "Export desktop"}</button>
+              </div>
+            </section>
+
+            {!canMutate && <p className="settings-window__offline" role="status">Connecting to the shared workspace. Settings will be available shortly.</p>}
+          </>
+        ) : (
+          <div className="settings-page">
+            <header className="settings-page__header">
+              <button className="settings-page__back" type="button" aria-label="Back to settings" disabled={saving} onClick={closeThemes}><ArrowLeft size={17} /></button>
+              <div>
+                <h3 ref={themesHeadingRef} tabIndex={-1}>Themes</h3>
+                <p>Change the workspace appearance and backdrop.</p>
+              </div>
+            </header>
+
         <section className="settings-section" aria-labelledby="appearance-heading">
           <div className="settings-section__heading">
             <PaintBrush size={18} />
@@ -324,59 +421,9 @@ export function SettingsWindow({
             ))}
           </div>
         </section>
-
-        <section className="settings-section" aria-labelledby="desktop-heading">
-          <div className="settings-section__heading">
-            <ArrowsOut size={18} />
-            <div><h3 id="desktop-heading">Desktop</h3><p>Adjust icon placement and the viewing area.</p></div>
+            {!canMutate && <p className="settings-window__offline" role="status">Connecting to the shared workspace. Appearance controls will be available shortly.</p>}
           </div>
-          <div className="settings-list">
-            <label className="settings-row">
-              <span className="settings-row__icon"><GridFour size={17} weight={layout.snapToGrid ? "fill" : "regular"} /></span>
-              <span className="settings-row__copy"><strong>Snap to grid</strong><small>Align icons when they are moved.</small></span>
-              <input type="checkbox" checked={layout.snapToGrid} disabled={!canMutate} onChange={(event) => onLayoutChange({ ...layout, snapToGrid: event.target.checked })} />
-            </label>
-            {fullscreenEnabled && (
-              <div className="settings-row">
-                <span className="settings-row__icon">{isFullscreen ? <CornersIn size={17} /> : <CornersOut size={17} />}</span>
-                <span className="settings-row__copy"><strong>{isFullscreen ? "Exit fullscreen" : "Fullscreen"}</strong><small>Use all available screen space.</small></span>
-                <button className="button button--quiet" type="button" onClick={onToggleFullscreen}>{isFullscreen ? "Exit" : "Enter"}</button>
-              </div>
-            )}
-          </div>
-        </section>
-
-        <section className="settings-section" aria-labelledby="updates-heading">
-          <div className="settings-section__heading">
-            <ArrowClockwise size={18} />
-            <div><h3 id="updates-heading">Updates</h3><p>Keep this installed frontend current.</p></div>
-          </div>
-          <div className="settings-list">
-            <div className="settings-row">
-              <span className="settings-row__icon"><ArrowClockwise size={17} weight={updateReady ? "bold" : "regular"} /></span>
-              <span className="settings-row__copy"><strong>Update to latest version</strong><small>{!updateSupported ? "Available in production PWA builds." : updateReady ? "A new version is ready to install." : "Check for a newer frontend release."}</small></span>
-              <button className="button button--quiet" type="button" disabled={!updateSupported || updateChecking} onClick={onCheckForUpdate}>{updateChecking ? "Checking" : updateReady ? "Review" : "Check now"}</button>
-            </div>
-            <label className="settings-row">
-              <span className="settings-row__icon"><ArrowClockwise size={17} /></span>
-              <span className="settings-row__copy"><strong>Auto-update to latest version</strong><small>Check automatically, then ask before reloading.</small></span>
-              <input type="checkbox" checked={autoUpdate} disabled={!updateSupported} onChange={(event) => onAutoUpdateChange(event.target.checked)} />
-            </label>
-          </div>
-        </section>
-
-        <section className="settings-section" aria-labelledby="data-heading">
-          <div className="settings-section__heading">
-            <ExportIcon size={18} />
-            <div><h3 id="data-heading">Saved desktop</h3><p>Package saved files and settings for another Hiraya build.</p></div>
-          </div>
-          <div className="settings-export">
-            <span>Unsaved editor changes are not included.</span>
-            <button className="button button--quiet" type="button" disabled={exportDisabled || exporting} onClick={onExport}><ExportIcon size={16} /> {exporting ? "Exporting" : "Export desktop"}</button>
-          </div>
-        </section>
-
-        {!canMutate && <p className="settings-window__offline" role="status">Connecting to the shared workspace. Appearance controls will be available shortly.</p>}
+        )}
       </div>
     </div>
   );
