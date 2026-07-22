@@ -126,7 +126,7 @@ export function FolderExplorer({
   const previousFolder = trail.length > 1 ? trail.at(-2)! : null;
 
   return (
-    <div className="file-window folder-explorer folder-explorer--embedded">
+    <div className="file-window file-window--embedded folder-explorer folder-explorer--embedded">
         <div className="folder-explorer__toolbar" aria-label="Folder actions">
           <button className="icon-button icon-button--wide" type="button" aria-label="Back to parent folder" disabled={!folder} onClick={() => onNavigate(previousFolder)}>
             <ArrowLeft size={17} /> <span>Back</span>
