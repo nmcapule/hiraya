@@ -3,7 +3,7 @@ import { Desktop, Folder, X } from "@phosphor-icons/react";
 import type { DesktopEntry, FolderEntry } from "../types";
 
 export interface MoveDialogProps {
-  entry: DesktopEntry;
+  entries: readonly DesktopEntry[];
   folders: readonly FolderEntry[];
   invalidIds: Set<string>;
   onClose: () => void;
@@ -36,8 +36,9 @@ function flattenFolders(folders: readonly FolderEntry[], invalidIds: Set<string>
   return flattened;
 }
 
-export function MoveDialog({ entry, folders, invalidIds, onClose, onMove, onSubmittingChange }: MoveDialogProps) {
-  const initialParent = entry.parentId && !invalidIds.has(entry.parentId) ? entry.parentId : null;
+export function MoveDialog({ entries, folders, invalidIds, onClose, onMove, onSubmittingChange }: MoveDialogProps) {
+  const first = entries[0];
+  const initialParent = first?.parentId && !invalidIds.has(first.parentId) ? first.parentId : null;
   const [selectedId, setSelectedId] = useState<string | null>(initialParent);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
@@ -62,8 +63,8 @@ export function MoveDialog({ entry, folders, invalidIds, onClose, onMove, onSubm
       <section className="file-window move-dialog" role="dialog" aria-modal="true" aria-labelledby="move-dialog-title">
         <header className="window-header move-dialog__header">
           <div>
-            <span className="window-kicker">Move item</span>
-            <h2 id="move-dialog-title">Move {entry.name}</h2>
+             <span className="window-kicker">Move {entries.length === 1 ? "item" : "items"}</span>
+             <h2 id="move-dialog-title">{entries.length === 1 ? `Move ${first?.name ?? "item"}` : `Move ${entries.length} items`}</h2>
           </div>
           <button className="icon-button" type="button" onClick={onClose} disabled={submitting} aria-label="Close move dialog"><X size={18} /></button>
         </header>

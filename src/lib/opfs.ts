@@ -579,6 +579,29 @@ async function importFilesUnsafe(
   return imported;
 }
 
+async function createEntriesUnsafe(entries: DesktopEntry[], contents: Map<string, Blob>) {
+  const manifest = await readManifest();
+  const next = { ...manifest, entries: [...manifest.entries, ...entries] };
+  assertValidManifest(next);
+  const files = entries.filter((entry): entry is FileEntry => entry.kind === "file");
+  if (contents.size !== files.length || files.some((entry) => contents.get(entry.id)?.size !== entry.size)) throw new Error("Copied file content is incomplete.");
+  const written: string[] = [];
+  try {
+    for (const entry of files) {
+      await writeContent(entry.id, contents.get(entry.id)!);
+      written.push(entry.id);
+    }
+    await writeManifest(next);
+  } catch (error) {
+    try {
+      const directory = await getFilesDirectory();
+      for (const id of written) await directory.removeEntry(id).catch(() => undefined);
+    } catch { /* best-effort rollback */ }
+    throw error;
+  }
+  return entries;
+}
+
 async function renameEntryUnsafe(id: string, nameValue: string) {
   const name = validateEntryName(nameValue);
   const manifest = await readManifest();
@@ -630,6 +653,28 @@ async function deleteEntryUnsafe(id: string): Promise<DesktopEntry[]> {
   return deleted;
 }
 
+async function deleteEntriesUnsafe(ids: string[]): Promise<DesktopEntry[]> {
+  if (!ids.length) return [];
+  const manifest = await readManifest();
+  const selected = new Set(ids);
+  if (selected.size !== ids.length || ids.some((id) => !manifest.entries.some((entry) => entry.id === id))) throw new Error("An entry no longer exists.");
+  const deletedIds = new Set(ids);
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const entry of manifest.entries) if (entry.parentId && deletedIds.has(entry.parentId) && !deletedIds.has(entry.id)) {
+      deletedIds.add(entry.id);
+      changed = true;
+    }
+  }
+  const deleted = manifest.entries.filter((entry) => deletedIds.has(entry.id));
+  await writeManifest({ ...manifest, entries: manifest.entries.filter((entry) => !deletedIds.has(entry.id)) });
+  try {
+    const directory = await getFilesDirectory();
+    for (const entry of deleted) if (entry.kind === "file") await directory.removeEntry(entry.id).catch(() => undefined);
+  } catch (error) { console.warn("Hiraya could not clean up deleted file content.", error); }
+  return deleted;
+}
+
 async function moveEntryUnsafe(id: string, parentId: string | null, position: EntryPosition) {
   const manifest = await readManifest();
   const existing = getEntry(manifest.entries, id);
@@ -649,6 +694,18 @@ async function moveEntryUnsafe(id: string, parentId: string | null, position: En
     entries: manifest.entries.map((entry) => (entry.id === id ? moved : entry)),
   });
   return moved;
+}
+
+async function moveEntriesUnsafe(ids: string[], parentId: string | null) {
+  const manifest = await readManifest();
+  findParent(manifest.entries, parentId);
+  const moving = new Set(ids);
+  if (!ids.length || moving.size !== ids.length || ids.some((id) => !manifest.entries.some((entry) => entry.id === id))) throw new Error("An entry no longer exists.");
+  const modifiedAt = Date.now();
+  const next: Manifest = { ...manifest, entries: manifest.entries.map((entry) => moving.has(entry.id) ? { ...entry, parentId, modifiedAt } : entry) };
+  assertValidManifest(next);
+  await writeManifest(next);
+  return next.entries.filter((entry) => moving.has(entry.id));
 }
 
 async function updateDesktopPositionsUnsafe(positionValues: DesktopPositionUpdate[]) {
@@ -798,9 +855,12 @@ export function deleteCustomTheme(themeId: string) { return serializeStorage(() 
 export function createTextFile(name: string, parentId: string | null, position: EntryPosition) { return serializeStorage(() => createTextFileUnsafe(name, parentId, position)); }
 export function createFolder(name: string, parentId: string | null, position: EntryPosition) { return serializeStorage(() => createFolderUnsafe(name, parentId, position)); }
 export function importFiles(files: File[], parentId: string | null, positions: EntryPosition[]) { return serializeStorage(() => importFilesUnsafe(files, parentId, positions)); }
+export function createEntries(entries: DesktopEntry[], contents: Map<string, Blob>) { return serializeStorage(() => createEntriesUnsafe(entries, contents)); }
 export function renameEntry(id: string, name: string) { return serializeStorage(() => renameEntryUnsafe(id, name)); }
 export function deleteEntry(id: string) { return serializeStorage(() => deleteEntryUnsafe(id)); }
+export function deleteEntries(ids: string[]) { return serializeStorage(() => deleteEntriesUnsafe(ids)); }
 export function moveEntry(id: string, parentId: string | null, position: EntryPosition) { return serializeStorage(() => moveEntryUnsafe(id, parentId, position)); }
+export function moveEntries(ids: string[], parentId: string | null) { return serializeStorage(() => moveEntriesUnsafe(ids, parentId)); }
 export function updateDesktopPositions(positions: DesktopPositionUpdate[]) { return serializeStorage(() => updateDesktopPositionsUnsafe(positions)); }
 export function updateEntryPosition(id: string, position: EntryPosition) { return serializeStorage(() => updateEntryPositionUnsafe(id, position)); }
 export function readFile(id: FileEntry["id"]) { return serializeStorage(() => readFileUnsafe(id)); }

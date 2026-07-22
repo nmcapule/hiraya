@@ -1,4 +1,4 @@
-import { DownloadSimple, FilePlus, FolderOpen, FolderPlus, FolderSimplePlus, GearSix, PencilSimple, Trash, UploadSimple } from "@phosphor-icons/react";
+import { Copy, DownloadSimple, FilePlus, FolderOpen, FolderPlus, FolderSimplePlus, GearSix, PencilSimple, Trash, UploadSimple, ClipboardText } from "@phosphor-icons/react";
 import type { ContextMenuState, DesktopEntry } from "../types";
 
 type Props = {
@@ -7,29 +7,34 @@ type Props = {
   onOpen: () => void;
   onRename: () => void;
   onDownload?: () => void;
+  onCopy: () => void;
+  onPasteInto?: () => void;
   onMove: () => void;
   onDelete: () => void;
   readOnly?: boolean;
+  selectionCount?: number;
 };
 
-export function ContextMenu({ menu, entry, onOpen, onRename, onDownload, onMove, onDelete, readOnly = false }: Props) {
+export function ContextMenu({ menu, entry, onOpen, onRename, onDownload, onCopy, onPasteInto, onMove, onDelete, readOnly = false, selectionCount = 1 }: Props) {
   const left = Math.min(menu.x, window.innerWidth - 190);
-  const top = Math.min(menu.y, window.innerHeight - 210);
+  const top = Math.min(menu.y, window.innerHeight - 270);
 
   return (
     <div className="context-menu" role="menu" style={{ left: Math.max(8, left), top: Math.max(48, top) }}>
-      <button type="button" role="menuitem" autoFocus onClick={onOpen}>
+      {selectionCount === 1 && <button type="button" role="menuitem" autoFocus onClick={onOpen}>
         <FolderOpen size={17} /> Open
-      </button>
-      <button type="button" role="menuitem" disabled={readOnly} onClick={onRename}>
+      </button>}
+      {selectionCount === 1 && <button type="button" role="menuitem" disabled={readOnly} onClick={onRename}>
         <PencilSimple size={17} /> Rename
         <kbd>R</kbd>
-      </button>
-      {entry.kind === "file" && onDownload && (
+      </button>}
+      {selectionCount === 1 && entry.kind === "file" && onDownload && (
         <button type="button" role="menuitem" onClick={onDownload}>
           <DownloadSimple size={17} /> Download
         </button>
       )}
+      <button type="button" role="menuitem" onClick={onCopy}><Copy size={17} /> Copy {selectionCount > 1 ? `${selectionCount} items` : ""}<kbd>⌘C</kbd></button>
+      {onPasteInto && <button type="button" role="menuitem" disabled={readOnly} onClick={onPasteInto}><ClipboardText size={17} /> Paste into</button>}
       <button type="button" role="menuitem" disabled={readOnly} onClick={onMove}>
         <FolderSimplePlus size={17} /> Move to...
       </button>
@@ -46,12 +51,13 @@ type DesktopProps = {
   onCreateFolder: () => void;
   onUpload: () => void;
   onSettings: () => void;
+  onPaste?: () => void;
   readOnly?: boolean;
 };
 
-export function DesktopContextMenu({ menu, onCreateFile, onCreateFolder, onUpload, onSettings, readOnly = false }: DesktopProps) {
+export function DesktopContextMenu({ menu, onCreateFile, onCreateFolder, onUpload, onSettings, onPaste, readOnly = false }: DesktopProps) {
   const left = Math.min(menu.x, window.innerWidth - 190);
-  const top = Math.min(menu.y, window.innerHeight - 166);
+  const top = Math.min(menu.y, window.innerHeight - 220);
 
   return (
     <div className="context-menu" role="menu" style={{ left: Math.max(8, left), top: Math.max(48, top) }}>
@@ -64,6 +70,7 @@ export function DesktopContextMenu({ menu, onCreateFile, onCreateFolder, onUploa
       <button type="button" role="menuitem" disabled={readOnly} onClick={onUpload}>
         <UploadSimple size={17} /> Upload files
       </button>
+      {onPaste && <button type="button" role="menuitem" disabled={readOnly} onClick={onPaste}><ClipboardText size={17} /> Paste<kbd>⌘V</kbd></button>}
       <button className="context-menu__separated" type="button" role="menuitem" autoFocus={readOnly} onClick={onSettings}>
         <GearSix size={17} /> Settings
       </button>

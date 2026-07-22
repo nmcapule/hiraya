@@ -5,11 +5,12 @@ import type { DesktopEntry, DialogState } from "../types";
 type Props = {
   dialog: Exclude<DialogState, null>;
   entry: DesktopEntry | null;
+  entryCount?: number;
   onClose: () => void;
   onSubmit: (name: string) => Promise<void>;
 };
 
-export function FileDialog({ dialog, entry, onClose, onSubmit }: Props) {
+export function FileDialog({ dialog, entry, entryCount = 1, onClose, onSubmit }: Props) {
   const creatingFile = dialog.type === "create-file";
   const creatingFolder = dialog.type === "create-folder";
   const [name, setName] = useState(creatingFile ? "untitled.txt" : creatingFolder ? "New folder" : entry?.name ?? "");
@@ -29,7 +30,7 @@ export function FileDialog({ dialog, entry, onClose, onSubmit }: Props) {
   }
 
   const noun = entry?.kind === "folder" || creatingFolder ? "folder" : "file";
-  const title = creatingFile ? "New text file" : creatingFolder ? "New folder" : dialog.type === "rename" ? `Rename ${noun}` : `Delete ${noun}`;
+  const title = creatingFile ? "New text file" : creatingFolder ? "New folder" : dialog.type === "rename" ? `Rename ${noun}` : entryCount > 1 ? `Delete ${entryCount} items` : `Delete ${noun}`;
 
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
@@ -46,8 +47,8 @@ export function FileDialog({ dialog, entry, onClose, onSubmit }: Props) {
         <form onSubmit={handleSubmit}>
           {dialog.type === "delete" ? (
             <p className="dialog-message">
-              Delete <strong>{entry?.name}</strong>?
-              {entry?.kind === "folder" ? " Everything inside this folder will also be deleted. This cannot be undone." : " This cannot be undone."}
+              {entryCount > 1 ? <>Delete <strong>{entryCount} selected items</strong>?</> : <>Delete <strong>{entry?.name}</strong>?</>}
+              {entryCount > 1 || entry?.kind === "folder" ? " Everything inside selected folders will also be deleted. This cannot be undone." : " This cannot be undone."}
             </p>
           ) : (
             <>

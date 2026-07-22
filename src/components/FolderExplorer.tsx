@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useRef } from "react";
 import {
   ArrowLeft,
   CaretRight,
@@ -21,6 +21,9 @@ export interface FolderExplorerProps {
   onCreateFile: (parentId: string | null) => void;
   onUpload: (parentId: string | null) => void;
   onContextMenu: (entry: DesktopEntry, x: number, y: number) => void;
+  onBlankContextMenu: (parentId: string | null, x: number, y: number) => void;
+  selectedIds: ReadonlySet<string>;
+  onSelect: (entry: DesktopEntry, options: { toggle: boolean; range: boolean; orderedIds: string[] }) => void;
   onMove: (entry: DesktopEntry, targetParentId: string | null) => void;
   readOnly?: boolean;
 }
@@ -46,14 +49,17 @@ export function FolderExplorer({
   onCreateFile,
   onUpload,
   onContextMenu,
+  onBlankContextMenu,
+  selectedIds,
+  onSelect,
   onMove,
   readOnly = false,
 }: FolderExplorerProps) {
-  const [selectedId, setSelectedId] = useState<string | null>(null);
   const drag = useRef<DragState | null>(null);
   const dropTarget = useRef<HTMLElement | null>(null);
   const suppressClick = useRef(false);
   const parentId = folder?.id ?? null;
+  const orderedChildren = [...children].sort(byKindAndName);
   const trail = folder && breadcrumbs.at(-1)?.id !== folder.id ? [...breadcrumbs, folder] : breadcrumbs;
 
   function open(entry: DesktopEntry) {
@@ -140,35 +146,39 @@ export function FolderExplorer({
           ))}
         </nav>
 
-        <div className="folder-explorer__content">
+        <div className="folder-explorer__content" onContextMenu={(event) => {
+          if ((event.target as Element).closest(".folder-explorer__row")) return;
+          event.preventDefault();
+          onBlankContextMenu(parentId, event.clientX, event.clientY);
+        }}>
           {children.length === 0 ? (
             <div className="folder-explorer__empty">
               <Folder size={38} weight="duotone" aria-hidden="true" />
               <p>This folder is empty.</p>
             </div>
           ) : (
-            <div className="folder-explorer__list" role="listbox" aria-label={`Contents of ${folder?.name ?? "Desktop"}`}>
-              {[...children].sort(byKindAndName).map((entry) => (
+            <div className="folder-explorer__list" role="listbox" aria-multiselectable="true" aria-label={`Contents of ${folder?.name ?? "Desktop"}`}>
+              {orderedChildren.map((entry) => (
                 <button
                   className="folder-explorer__row"
                   key={entry.id}
                   type="button"
                   role="option"
-                  aria-selected={selectedId === entry.id}
-                  data-selected={selectedId === entry.id || undefined}
+                  aria-selected={selectedIds.has(entry.id)}
+                  data-selected={selectedIds.has(entry.id) || undefined}
                   data-folder-target={entry.kind === "folder" ? entry.id : undefined}
-                  onClick={() => {
+                  onClick={(event) => {
                     if (suppressClick.current) {
                       suppressClick.current = false;
                       return;
                     }
-                    setSelectedId(entry.id);
+                    onSelect(entry, { toggle: event.metaKey || event.ctrlKey, range: event.shiftKey, orderedIds: orderedChildren.map((item) => item.id) });
                   }}
                   onDoubleClick={() => open(entry)}
                   onKeyDown={(event) => event.key === "Enter" && open(entry)}
                   onContextMenu={(event) => {
                     event.preventDefault();
-                    setSelectedId(entry.id);
+                    if (!selectedIds.has(entry.id)) onSelect(entry, { toggle: false, range: false, orderedIds: orderedChildren.map((item) => item.id) });
                     onContextMenu(entry, event.clientX, event.clientY);
                   }}
                   onPointerDown={(event) => handlePointerDown(event, entry)}

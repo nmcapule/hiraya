@@ -523,6 +523,22 @@ textarea:focus-visible {
   filter: drop-shadow(0 12px 16px rgba(8, 18, 18, 0.24));
 }
 
+.file-icon[data-group-dragging] {
+  z-index: 4;
+  transition: none;
+  filter: drop-shadow(0 10px 14px rgba(8, 18, 18, 0.2));
+}
+
+.desktop-marquee {
+  position: absolute;
+  z-index: 6;
+  pointer-events: none;
+  border: 1px solid color-mix(in srgb, var(--theme-selection) 80%, white);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--theme-selection) 20%, transparent);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.12);
+}
+
 .file-icon-snap-preview {
   position: absolute;
   z-index: 1;
@@ -1204,6 +1220,13 @@ textarea:focus-visible {
 
 .file-dialog form {
   padding: 22px 20px 20px;
+}
+
+.paste-conflict-dialog__fields {
+  display: grid;
+  max-height: min(42vh, 360px);
+  gap: 12px;
+  overflow: auto;
 }
 
 .dialog-message {

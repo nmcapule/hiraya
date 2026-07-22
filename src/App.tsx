@@ -8,17 +8,20 @@ import { FileIcon } from "./components/FileIcon";
 import { FileWindow } from "./components/FileWindow";
 import { FolderExplorer } from "./components/FolderExplorer";
 import { MoveDialog } from "./components/MoveDialog";
+import { PasteConflictDialog } from "./components/PasteConflictDialog";
 import { SettingsWindow } from "./components/SettingsWindow";
 import { UpdateToast } from "./components/UpdateToast";
 import {
   createFolder,
   createTextFile,
   deleteCustomTheme,
-  deleteEntry,
+  captureEntries,
+  deleteEntries,
   getOutboxStatus,
   importFiles,
   initializeDesktop,
-  moveEntry,
+  moveEntries,
+  pasteEntries,
   readFile,
   readFileByRelativePath,
   renameEntry,
@@ -36,6 +39,7 @@ import {
 import { DEFAULT_EDITOR_SETTINGS, readLocalPreferences, saveLocalPreferences } from "./lib/opfs";
 import { createPwaUpdater, type PwaUpdater } from "./lib/pwa-update";
 import { exportSeededDesktop } from "./lib/seeded";
+import { CLIPBOARD_ARCHIVE_WEB_MIME_TYPE, decodeClipboardArchiveItem, encodeClipboardArchive, snapshotFromClipboardItems, type ClipboardEntrySnapshot } from "./lib/clipboard";
 import { formatDesktopRoute, normalizeDesktopRoute, parseDesktopRoute, type DesktopRoute } from "./lib/routes";
 import { DEFAULT_THEME_STATE, isBuiltinThemeId, resolveTheme, themeIconMetrics, themeStyle, type CustomTheme, type ThemeDefinition, type ThemeState } from "./lib/themes";
 import { DEFAULT_WALLPAPER, type ContextMenuState, type DesktopEntry, type DesktopLayout, type DialogState, type EditorSettings, type EntryPosition, type FileEntry } from "./types";
@@ -44,6 +48,7 @@ import { fileCapabilities } from "./ui/file-capabilities";
 import { topOverlay } from "./ui/overlay";
 import { createWorkspaceIndex } from "./ui/workspace-index";
 import { clampWindowBounds, initialWindowBounds, type WindowBounds } from "./ui/window-manager";
+import { namesMatch } from "./lib/entry-validation";
 
 type BaseRunningApp = { id: string; bounds: WindowBounds; minimized: boolean; zIndex: number };
 type FileApp = BaseRunningApp & { kind: "file"; fileId: string; file?: FileEntry; blob?: File; editable?: boolean; contentRevision: number; remoteChanged: boolean };
@@ -51,6 +56,7 @@ type ExplorerApp = BaseRunningApp & { kind: "explorer"; folderId: string | null 
 type SettingsApp = BaseRunningApp & { kind: "settings" };
 type RunningApp = FileApp | ExplorerApp | SettingsApp;
 type RouteHistoryState = { hiraya: true; parentHash?: string };
+type PendingPaste = { snapshot: ClipboardEntrySnapshot; parentId: string | null; position?: EntryPosition };
 const MINIMAP_LONG_PRESS_MS = 500;
 const DESKTOP_LONG_PRESS_MS = 500;
 
@@ -63,10 +69,12 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [selectionSurface, setSelectionSurface] = useState("desktop");
+  const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null);
   const [dialog, setDialog] = useState<DialogState>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState>(null);
-  const [moveDialogEntryId, setMoveDialogEntryId] = useState<string | null>(null);
+  const [moveDialogEntryIds, setMoveDialogEntryIds] = useState<string[]>([]);
   const [moveDialogSubmitting, setMoveDialogSubmitting] = useState(false);
   const [runningApps, setRunningApps] = useState<RunningApp[]>([]);
   const [focusedAppId, setFocusedAppId] = useState<string | null>(null);
@@ -91,6 +99,8 @@ function App() {
   const [showUpdateToast, setShowUpdateToast] = useState(false);
   const [updateBlocked, setUpdateBlocked] = useState(false);
   const [updateApplying, setUpdateApplying] = useState(false);
+  const [pendingPaste, setPendingPaste] = useState<PendingPaste | null>(null);
+  const [marquee, setMarquee] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
   const desktopRef = useRef<HTMLElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
   const uploadRef = useRef<HTMLInputElement>(null);
@@ -114,6 +124,11 @@ function App() {
     timer: number;
   } | null>(null);
   const suppressClickRef = useRef(false);
+  const selectedIdsRef = useRef<string[]>([]);
+  const clipboardRef = useRef<ClipboardEntrySnapshot | null>(null);
+  const marqueeRef = useRef<{ pointerId: number; startX: number; startY: number; additive: boolean; initial: string[] } | null>(null);
+  const beginPasteRef = useRef<(parentId: string | null, position?: EntryPosition, snapshot?: ClipboardEntrySnapshot) => Promise<void>>(async () => undefined);
+  const handleImportRef = useRef<(files: File[], parentId: string | null, base?: EntryPosition) => Promise<void>>(async () => undefined);
   const edgeDragRef = useRef({ direction: "", time: 0 });
   const edgeNavigationRef = useRef<{
     route: DesktopRoute;
@@ -173,12 +188,42 @@ function App() {
       && position.y + iconMetrics.height > desktopSize.height - minimapHeight;
   });
   const folders = workspace.folders;
-  const dialogEntry = dialog && (dialog.type === "rename" || dialog.type === "delete") ? workspace.byId.get(dialog.entryId) ?? null : null;
+  const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+  selectedIdsRef.current = selectedIds;
+  const selectedEntries = selectedIds.map((id) => workspace.byId.get(id)).filter((entry): entry is DesktopEntry => Boolean(entry));
+  const dialogEntry = dialog?.type === "rename" ? workspace.byId.get(dialog.entryId) ?? null : dialog?.type === "delete" ? workspace.byId.get(dialog.entryIds[0]) ?? null : null;
   const contextMenuEntry = contextMenu?.type === "entry" ? workspace.byId.get(contextMenu.entryId) ?? null : null;
-  const moveDialogEntry = moveDialogEntryId ? workspace.byId.get(moveDialogEntryId) ?? null : null;
+  const contextMenuEntries = contextMenuEntry && selectedIdSet.has(contextMenuEntry.id) ? selectedEntries : contextMenuEntry ? [contextMenuEntry] : [];
+  const moveDialogEntries = moveDialogEntryIds.map((id) => workspace.byId.get(id)).filter((entry): entry is DesktopEntry => Boolean(entry));
   function setCurrentRoute(next: DesktopRoute) {
     routeRef.current = next;
     setRoute(next);
+  }
+
+  function replaceSelection(surface: string, ids: string[], anchorId = ids.at(-1) ?? null) {
+    const unique = [...new Set(ids)];
+    selectedIdsRef.current = unique;
+    setSelectedIds(unique);
+    setSelectionSurface(surface);
+    setSelectionAnchorId(anchorId);
+  }
+
+  function selectEntry(surface: string, entry: DesktopEntry, options: { toggle?: boolean; range?: boolean; orderedIds?: string[] } = {}) {
+    const current = selectionSurface === surface ? selectedIdsRef.current : [];
+    if (options.range && selectionSurface === surface && selectionAnchorId && options.orderedIds) {
+      const start = options.orderedIds.indexOf(selectionAnchorId);
+      const end = options.orderedIds.indexOf(entry.id);
+      if (start >= 0 && end >= 0) {
+        replaceSelection(surface, options.orderedIds.slice(Math.min(start, end), Math.max(start, end) + 1), selectionAnchorId);
+        return;
+      }
+    }
+    if (options.toggle) {
+      replaceSelection(surface, current.includes(entry.id) ? current.filter((id) => id !== entry.id) : [...current, entry.id], entry.id);
+      return;
+    }
+    if (current.includes(entry.id)) return;
+    replaceSelection(surface, [entry.id], entry.id);
   }
 
   function writeRoute(next: DesktopRoute, mode: "push" | "replace" = "push") {
@@ -297,16 +342,16 @@ function App() {
       setEditorSettings(synced.editorSettings);
       setAppearance(synced.appearance);
       setLoading(false);
-      setSelectedId((current) => current && !synced.entries.some((entry) => entry.id === current) ? null : current);
       const syncedIds = new Set(synced.entries.map((entry) => entry.id));
+      setSelectedIds((current) => current.filter((id) => syncedIds.has(id)));
       setContextMenu((current) => current?.type === "entry" && !syncedIds.has(current.entryId) ? null : current);
-      setMoveDialogEntryId((current) => current && !syncedIds.has(current) ? null : current);
+      setMoveDialogEntryIds((current) => current.filter((id) => syncedIds.has(id)));
       setDialog((current) => {
         if (!current) return null;
         if (current.type === "create-file" || current.type === "create-folder") {
           return current.parentId && !synced.entries.some((entry) => entry.id === current.parentId && entry.kind === "folder") ? null : current;
         }
-        return syncedIds.has(current.entryId) ? current : null;
+        return current.type === "rename" ? syncedIds.has(current.entryId) ? current : null : current.entryIds.some((id) => syncedIds.has(id)) ? { ...current, entryIds: current.entryIds.filter((id) => syncedIds.has(id)) } : null;
       });
       const availableApps = runningAppsRef.current.filter((app) => app.kind === "settings" || app.kind === "explorer" && app.folderId === null || syncedIds.has(app.kind === "file" ? app.fileId : app.folderId!));
       updateRunningApps(availableApps);
@@ -411,7 +456,7 @@ function App() {
       if (!navigationReadyRef.current) return;
       setDialog(null);
       setContextMenu(null);
-      setMoveDialogEntryId(null);
+      setMoveDialogEntryIds([]);
       setEditingViews(false);
       setDraggedPageKey(null);
       applyLocationRouteRef.current();
@@ -559,11 +604,59 @@ function App() {
   }, [canMutate, contextMenuEntry]);
 
   useEffect(() => {
+    function editableTarget(target: EventTarget | null) {
+      const element = target as Element | null;
+      return Boolean(element?.closest?.("input, textarea, [contenteditable='true'], .cm-editor"));
+    }
+    function activeExplorer() {
+      const app = runningAppsRef.current.find((candidate) => candidate.id === focusedAppIdRef.current);
+      return app?.kind === "explorer" ? app : null;
+    }
+    function onKeyDown(event: KeyboardEvent) {
+      if (editableTarget(event.target) || dialog || pendingPaste || moveDialogEntryIds.length) return;
+      const focused = runningAppsRef.current.find((candidate) => candidate.id === focusedAppIdRef.current);
+      if (focused && focused.kind !== "explorer") return;
+      const modifier = event.metaKey || event.ctrlKey;
+      const key = event.key.toLowerCase();
+      if (modifier && key === "a") {
+        const explorer = activeExplorer();
+        const surface = explorer?.id ?? "desktop";
+        const ids = explorer ? workspace.children.get(explorer.folderId)?.map((entry) => entry.id) ?? [] : activeDesktopPage.entries.map((entry) => entry.id);
+        event.preventDefault();
+        replaceSelection(surface, ids);
+      } else if (modifier && key === "c" && selectedIdsRef.current.length) {
+        event.preventDefault();
+        void copySelection();
+      } else if (modifier && key === "v") {
+        event.preventDefault();
+        const explorer = activeExplorer();
+        void beginPasteRef.current(explorer?.folderId ?? null);
+      } else if ((event.key === "Delete" || event.key === "Backspace") && selectedIdsRef.current.length && canMutate) {
+        event.preventDefault();
+        setDialog({ type: "delete", entryIds: [...selectedIdsRef.current] });
+      }
+    }
+    function onPaste(event: ClipboardEvent) {
+      if (editableTarget(event.target) || !canMutate) return;
+      const files = Array.from(event.clipboardData?.files ?? []);
+      if (!files.length || !event.clipboardData) return;
+      event.preventDefault();
+      const explorer = activeExplorer();
+      void snapshotFromClipboardItems(event.clipboardData.items).then((snapshot) => snapshot
+        ? beginPasteRef.current(explorer?.folderId ?? null, undefined, snapshot)
+        : handleImportRef.current(files, explorer?.folderId ?? null)).catch((pasteError) => setError(pasteError instanceof Error ? pasteError.message : "Clipboard files could not be pasted."));
+    }
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("paste", onPaste);
+    return () => { window.removeEventListener("keydown", onKeyDown); window.removeEventListener("paste", onPaste); };
+  }, [activeDesktopPage.entries, canMutate, dialog, moveDialogEntryIds.length, pendingPaste, selectionSurface, workspace]);
+
+  useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       if (event.key !== "Escape") return;
       const owner = topOverlay({
         dialog: Boolean(dialog),
-        moveDialog: Boolean(moveDialogEntry),
+        moveDialog: moveDialogEntries.length > 0,
         settings: false,
         contextMenu: Boolean(contextMenu),
         file: false,
@@ -571,17 +664,17 @@ function App() {
         viewEditor: editingViews,
       });
       if (!owner && !focusedAppIdRef.current) return;
-      if (owner === "moveDialog" && moveDialogSubmitting) return;
+       if (owner === "moveDialog" && moveDialogSubmitting) return;
       event.preventDefault();
       if (owner === "dialog") setDialog(null);
-      else if (owner === "moveDialog") setMoveDialogEntryId(null);
+       else if (owner === "moveDialog") setMoveDialogEntryIds([]);
       else if (owner === "contextMenu") setContextMenu(null);
       else if (owner === "viewEditor") { setEditingViews(false); setDraggedPageKey(null); }
       else if (focusedAppIdRef.current) closeAppRef.current(focusedAppIdRef.current);
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [contextMenu, dialog, editingViews, moveDialogEntry, moveDialogSubmitting]);
+  }, [contextMenu, dialog, editingViews, moveDialogEntries.length, moveDialogSubmitting]);
 
   useEffect(() => {
     if (!notice) return;
@@ -629,8 +722,8 @@ function App() {
   }
 
   function openDesktopContextMenu(clientX: number, clientY: number) {
-    setSelectedId(null);
-    setContextMenu({ type: "desktop", x: clientX, y: clientY, position: positionAtDesktopPoint(clientX, clientY) });
+    replaceSelection("desktop", []);
+    setContextMenu({ type: "desktop", parentId: null, x: clientX, y: clientY, position: positionAtDesktopPoint(clientX, clientY) });
   }
 
   function chooseUpload(parentId: string | null, position?: EntryPosition) {
@@ -754,7 +847,7 @@ function App() {
         ? await createTextFile(name, parentId, dialog.position ?? positionFor(parentId))
         : await createFolder(name, parentId, dialog.position ?? positionFor(parentId));
       setEntries((current) => current.some((entry) => entry.id === created.id) ? current : [...current, created]);
-      setSelectedId(created.id);
+      replaceSelection(parentId === null ? "desktop" : `explorer:${parentId}`, [created.id]);
       setNotice(`${created.name} created`);
     } else if (dialog.type === "rename") {
       if (!dialogEntry) { setDialog(null); return; }
@@ -768,11 +861,12 @@ function App() {
       setNotice(`${renamed.kind === "folder" ? "Folder" : "File"} renamed`);
     } else {
       if (!dialogEntry) { setDialog(null); return; }
-      const deleted = await deleteEntry(dialogEntry.id);
+      const ids = dialog.type === "delete" ? dialog.entryIds : [];
+      const deleted = await deleteEntries(ids);
       const deletedIds = new Set(deleted.map((entry) => entry.id));
       setEntries((current) => current.filter((entry) => !deletedIds.has(entry.id)));
-      setSelectedId((current) => current && deletedIds.has(current) ? null : current);
-      setNotice(`${dialogEntry.name} deleted`);
+      replaceSelection(selectionSurface, selectedIdsRef.current.filter((id) => !deletedIds.has(id)));
+      setNotice(`${ids.length === 1 ? dialogEntry.name : `${ids.length} items`} deleted`);
     }
     setDialog(null);
   }
@@ -798,17 +892,18 @@ function App() {
         const existingIds = new Set(current.map((entry) => entry.id));
         return [...current, ...imported.filter((entry) => !existingIds.has(entry.id))];
       });
-      setSelectedId(imported.at(-1)?.id ?? null);
+      replaceSelection(parentId === null ? "desktop" : `explorer:${parentId}`, imported.map((entry) => entry.id));
       setNotice(`${imported.length} ${imported.length === 1 ? "file" : "files"} added`);
     } catch (importError) {
       setError(importError instanceof Error ? importError.message : "The upload could not be completed.");
     }
   }
+  handleImportRef.current = handleImport;
 
   async function handleDesktopMove(entry: DesktopEntry, position: EntryPosition, targetParentId: string | null) {
     if (!canMutate) return false;
     if (targetParentId) {
-      return handleMoveTo(entry, targetParentId, true);
+      return handleMoveTo(selectedIdSet.has(entry.id) ? selectedEntries : [entry], targetParentId, true);
     }
     const finalPosition = layoutRef.current.snapToGrid ? snapDesktopPosition(position) : position;
     const logicalCanvasPosition = {
@@ -822,6 +917,20 @@ function App() {
       y: Math.min(Math.max(8, desktopSize.height - iconMetrics.height), Math.max(8, logicalCanvasPosition.y - targetSegment.row * desktopSize.height)),
     };
     const logicalPosition = restoreLogicalPosition(localPosition, targetSegment, desktopSize);
+    const group = selectedIdSet.has(entry.id) ? selectedEntries.filter((item) => item.parentId === null) : [entry];
+    if (group.length > 1) {
+      const delta = { x: logicalPosition.x - entry.position.x, y: logicalPosition.y - entry.position.y };
+      const updates = group.map((item) => ({ entryId: item.id, position: { x: item.position.x + delta.x, y: item.position.y + delta.y } }));
+      const previous = new Map(group.map((item) => [item.id, item.position]));
+      const nextPositions = new Map(updates.map((item) => [item.entryId, item.position]));
+      setEntries((current) => current.map((item) => nextPositions.has(item.id) ? { ...item, position: nextPositions.get(item.id)! } : item));
+      try { await updateDesktopPositions(updates); return true; }
+      catch {
+        setEntries((current) => current.map((item) => previous.has(item.id) ? { ...item, position: previous.get(item.id)! } : item));
+        setError("The selected icon positions could not be saved.");
+        return false;
+      }
+    }
     setEntries((current) => current.map((item) => item.id === entry.id ? { ...item, position: logicalPosition } : item));
     try {
       await updateEntryPosition(entry.id, logicalPosition);
@@ -833,16 +942,17 @@ function App() {
     }
   }
 
-  async function handleMoveTo(entry: DesktopEntry, parentId: string | null, bubbleError = false) {
+  async function handleMoveTo(items: readonly DesktopEntry[], parentId: string | null, bubbleError = false) {
     if (!canMutate) return false;
     setError("");
     try {
-      if (entry.parentId === parentId) return true;
-      const moved = await moveEntry(entry.id, parentId, positionFor(parentId));
-      setEntries((current) => current.map((item) => item.id === moved.id ? moved : item));
-      setSelectedId(null);
+      if (items.every((entry) => entry.parentId === parentId)) return true;
+      const moved = await moveEntries(items.map((entry) => entry.id), parentId);
+      const movedById = new Map(moved.map((entry) => [entry.id, entry]));
+      setEntries((current) => current.map((item) => movedById.get(item.id) ?? item));
+      replaceSelection(selectionSurface, []);
       setContextMenu(null);
-      setNotice(`${entry.name} moved`);
+      setNotice(items.length === 1 ? `${items[0].name} moved` : `${items.length} items moved`);
       return true;
     } catch (moveError) {
       const message = moveError instanceof Error ? moveError.message : "The item could not be moved.";
@@ -954,6 +1064,72 @@ function App() {
     }
   }
 
+  async function copySelection() {
+    if (!selectedIdsRef.current.length) return;
+    setError("");
+    try {
+      const snapshot = await captureEntries(selectedIdsRef.current);
+      clipboardRef.current = snapshot;
+      if (navigator.clipboard?.write && "ClipboardItem" in window) {
+        try {
+          const archive = await encodeClipboardArchive(snapshot);
+          const summary = snapshot.selectedRootIds.map((id) => snapshot.entries.find((entry) => entry.id === id)?.name).filter(Boolean).join("\n");
+          await navigator.clipboard.write([new ClipboardItem({ [CLIPBOARD_ARCHIVE_WEB_MIME_TYPE]: archive, "text/plain": new Blob([summary], { type: "text/plain" }) })]);
+        } catch { /* The durable in-app clipboard remains available. */ }
+      }
+      setContextMenu(null);
+      setNotice(`${snapshot.selectedRootIds.length} ${snapshot.selectedRootIds.length === 1 ? "item" : "items"} copied`);
+    } catch (copyError) {
+      setError(copyError instanceof Error ? copyError.message : "The selected items could not be copied.");
+    }
+  }
+
+  function pastePositions(snapshot: ClipboardEntrySnapshot, parentId: string | null, base?: EntryPosition) {
+    const roots = snapshot.selectedRootIds.map((id) => snapshot.entries.find((entry) => entry.id === id)!);
+    const positions = new Map<string, EntryPosition>();
+    if (parentId !== null) {
+      roots.forEach((entry, index) => positions.set(entry.id, nextDesktopPosition(childrenCount(parentId) + index, window.innerHeight, undefined, iconMetrics)));
+      return positions;
+    }
+    const first = roots[0];
+    const origin = base ? restoreLogicalPosition(base, activeSegment, desktopSize) : positionFor(null);
+    for (const entry of roots) positions.set(entry.id, { x: origin.x + entry.position.x - first.position.x, y: origin.y + entry.position.y - first.position.y });
+    return positions;
+  }
+
+  async function commitPaste(snapshot: ClipboardEntrySnapshot, parentId: string | null, position: EntryPosition | undefined, names: Map<string, string>) {
+    const pasted = await pasteEntries(snapshot, parentId, names, pastePositions(snapshot, parentId, position));
+    const pastedIds = new Set(pasted.map((entry) => entry.id));
+    const rootIds = pasted.filter((entry) => !pastedIds.has(entry.parentId ?? "")).map((entry) => entry.id);
+    replaceSelection(parentId === null ? "desktop" : `explorer:${parentId}`, rootIds);
+    setPendingPaste(null);
+    setContextMenu(null);
+    setNotice(`${rootIds.length} ${rootIds.length === 1 ? "item" : "items"} pasted`);
+  }
+
+  async function beginPaste(parentId: string | null, position?: EntryPosition, supplied?: ClipboardEntrySnapshot) {
+    if (!canMutate) return;
+    setError("");
+    let snapshot = supplied ?? clipboardRef.current;
+    if (!supplied && navigator.clipboard?.read) {
+      try {
+        const item = (await navigator.clipboard.read()).find((candidate) => candidate.types.some((type) => type.includes("x-hiraya-entry-archive")));
+        if (item) snapshot = await decodeClipboardArchiveItem(item);
+      } catch { /* Permission denial falls back to the in-app clipboard. */ }
+    }
+    if (!snapshot) { setError("Nothing has been copied in Hiraya yet."); return; }
+    const roots = snapshot.selectedRootIds.map((id) => snapshot!.entries.find((entry) => entry.id === id)!);
+    const existingNames = entriesRef.current.filter((entry) => entry.parentId === parentId).map((entry) => entry.name);
+    const conflicts = roots.some((entry, index) => existingNames.some((name) => namesMatch(name, entry.name)) || roots.slice(0, index).some((previous) => namesMatch(previous.name, entry.name)));
+    if (conflicts) { setPendingPaste({ snapshot, parentId, position }); setContextMenu(null); return; }
+    try {
+      await commitPaste(snapshot, parentId, position, new Map(roots.map((entry) => [entry.id, entry.name])));
+    } catch (pasteError) {
+      setError(pasteError instanceof Error ? pasteError.message : "The copied items could not be pasted.");
+    }
+  }
+  beginPasteRef.current = beginPaste;
+
   async function handleExport() {
     setError("");
     setExporting(true);
@@ -997,6 +1173,15 @@ function App() {
     if (event.button !== 0) return;
     const target = event.target as Element;
     if (target.closest(".file-icon, .empty-state__actions, .app-window")) return;
+    if (event.pointerType !== "touch") {
+      event.preventDefault();
+      const additive = event.metaKey || event.ctrlKey;
+      const initial = additive && selectionSurface === "desktop" ? [...selectedIdsRef.current] : [];
+      if (!additive) replaceSelection("desktop", []);
+      marqueeRef.current = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, additive, initial };
+      event.currentTarget.setPointerCapture(event.pointerId);
+      return;
+    }
     event.preventDefault();
     swipeRef.current = { axis: null, pointerId: event.pointerId, startSegment: activeSegment, startTime: performance.now(), startX: event.clientX, startY: event.clientY, x: event.clientX, y: event.clientY };
     if (event.pointerType !== "touch") return;
@@ -1080,6 +1265,22 @@ function App() {
   }
 
   function handleDesktopPointerMove(event: React.PointerEvent<HTMLElement>) {
+    const marqueePress = marqueeRef.current;
+    if (marqueePress?.pointerId === event.pointerId) {
+      const left = Math.min(marqueePress.startX, event.clientX);
+      const top = Math.min(marqueePress.startY, event.clientY);
+      const right = Math.max(marqueePress.startX, event.clientX);
+      const bottom = Math.max(marqueePress.startY, event.clientY);
+      if (Math.hypot(event.clientX - marqueePress.startX, event.clientY - marqueePress.startY) < 4) return;
+      const bounds = event.currentTarget.getBoundingClientRect();
+      setMarquee({ left: left - bounds.left, top: top - bounds.top, width: right - left, height: bottom - top });
+      const hits = Array.from(event.currentTarget.querySelectorAll<HTMLElement>(".file-icon[data-entry-id]")).filter((icon) => {
+        const rect = icon.getBoundingClientRect();
+        return rect.right >= left && rect.left <= right && rect.bottom >= top && rect.top <= bottom;
+      }).map((icon) => icon.dataset.entryId!).filter(Boolean);
+      replaceSelection("desktop", [...marqueePress.initial, ...hits]);
+      return;
+    }
     const press = desktopPressRef.current;
     if (press?.pointerId === event.pointerId) {
       if (press.activated) {
@@ -1111,6 +1312,14 @@ function App() {
   }
 
   function finishDesktopSwipe(event: React.PointerEvent<HTMLElement>) {
+    if (marqueeRef.current?.pointerId === event.pointerId) {
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+      marqueeRef.current = null;
+      setMarquee(null);
+      suppressClickRef.current = true;
+      window.setTimeout(() => { suppressClickRef.current = false; }, 0);
+      return;
+    }
     const press = desktopPressRef.current;
     if (press?.pointerId === event.pointerId) {
       window.clearTimeout(press.timer);
@@ -1234,8 +1443,8 @@ function App() {
     }
   }
 
-  function invalidMoveIds(entry: DesktopEntry) {
-    return new Set([entry.id, ...workspace.descendants(entry.id).map((descendant) => descendant.id)]);
+  function invalidMoveIds(items: readonly DesktopEntry[]) {
+    return new Set(items.flatMap((entry) => [entry.id, ...workspace.descendants(entry.id).map((descendant) => descendant.id)]));
   }
 
   async function toggleFullscreen() {
@@ -1298,7 +1507,7 @@ function App() {
           event.preventDefault();
           event.stopPropagation();
         }}
-        onClick={(event) => { if (!(event.target as Element).closest(".file-icon, .empty-state__actions, .app-window")) setSelectedId(null); }}
+        onClick={(event) => { if (!(event.target as Element).closest(".file-icon, .empty-state__actions, .app-window")) replaceSelection("desktop", []); }}
         onContextMenu={(event) => {
           if ((event.target as Element).closest(".file-icon, .empty-state__actions, .app-window")) return;
           event.preventDefault();
@@ -1343,8 +1552,8 @@ function App() {
             return <FileIcon
               key={entry.id}
               entry={renderedEntry}
-              selected={selectedId === entry.id}
-              onSelect={() => setSelectedId(entry.id)}
+              selected={selectedIdSet.has(entry.id)}
+              onSelect={(event) => selectEntry("desktop", entry, { toggle: event.metaKey || event.ctrlKey })}
               onOpen={() => void handleOpen(entry)}
               onMove={(position, targetParentId) => handleDesktopMove(entry, position, targetParentId)}
               onDragAtEdge={(clientX, clientY) => handleIconDragAtEdge(entry, clientX, clientY)}
@@ -1353,12 +1562,13 @@ function App() {
               onExternalDrop={(sources) => void handleImport(sources, entry.id)}
               onContextMenu={(event) => {
                 event.preventDefault();
-                setSelectedId(entry.id);
+                if (!selectedIdSet.has(entry.id)) replaceSelection("desktop", [entry.id]);
                 setContextMenu({ type: "entry", entryId: entry.id, x: event.clientX, y: event.clientY });
               }}
             />;
           }))}
         </div>
+        {marquee && <div className="desktop-marquee" aria-hidden="true" style={{ left: marquee.left, top: marquee.top, width: marquee.width, height: marquee.height }} />}
 
         {loading && <div className="desktop-state desktop-state--loading" aria-live="polite"><span className="loading-line" /><span className="loading-line loading-line--short" /></div>}
         {!loading && !error && rootEntries.length === 0 && (
@@ -1424,13 +1634,22 @@ function App() {
                     folder={folder}
                     breadcrumbs={folder ? workspace.ancestors(folder.id) : []}
                     children={workspace.children.get(folder?.id ?? null) ?? []}
+                    selectedIds={selectionSurface === app.id ? selectedIdSet : new Set()}
+                    onSelect={(entry, options) => selectEntry(app.id, entry, options)}
                     onNavigate={(nextFolder) => navigateExplorerWindow(app.id, nextFolder?.id ?? null)}
                     onOpen={handleOpen}
                     onCreateFolder={(parentId) => setDialog({ type: "create-folder", parentId })}
                     onCreateFile={(parentId) => setDialog({ type: "create-file", parentId })}
                     onUpload={chooseUpload}
-                    onMove={(entry, parentId) => void handleMoveTo(entry, parentId)}
-                    onContextMenu={(entry, x, y) => setContextMenu({ type: "entry", entryId: entry.id, x, y })}
+                    onMove={(entry, parentId) => void handleMoveTo(selectionSurface === app.id && selectedIdSet.has(entry.id) ? selectedEntries : [entry], parentId)}
+                    onContextMenu={(entry, x, y) => {
+                      if (selectionSurface !== app.id || !selectedIdSet.has(entry.id)) replaceSelection(app.id, [entry.id]);
+                      setContextMenu({ type: "entry", entryId: entry.id, x, y });
+                    }}
+                    onBlankContextMenu={(parentId, x, y) => {
+                      replaceSelection(app.id, []);
+                      setContextMenu({ type: "desktop", parentId, x, y, position: positionFor(parentId) });
+                    }}
                     readOnly={!canMutate}
                   />
                 )}
@@ -1549,8 +1768,11 @@ function App() {
           onOpen={() => handleOpen(contextMenuEntry)}
           onRename={() => { setDialog({ type: "rename", entryId: contextMenuEntry.id }); setContextMenu(null); }}
           onDownload={contextMenuEntry.kind === "file" ? () => void download(contextMenuEntry) : undefined}
-          onMove={() => { setMoveDialogSubmitting(false); setMoveDialogEntryId(contextMenuEntry.id); setContextMenu(null); }}
-          onDelete={() => { setDialog({ type: "delete", entryId: contextMenuEntry.id }); setContextMenu(null); }}
+          onCopy={() => void copySelection()}
+          onPasteInto={contextMenuEntry.kind === "folder" && clipboardRef.current ? () => void beginPaste(contextMenuEntry.id) : undefined}
+          onMove={() => { setMoveDialogSubmitting(false); setMoveDialogEntryIds(contextMenuEntries.map((entry) => entry.id)); setContextMenu(null); }}
+          onDelete={() => { setDialog({ type: "delete", entryIds: contextMenuEntries.map((entry) => entry.id) }); setContextMenu(null); }}
+          selectionCount={contextMenuEntries.length}
           readOnly={!canMutate}
         />
       )}
@@ -1558,35 +1780,37 @@ function App() {
         <DesktopContextMenu
           menu={contextMenu}
           onCreateFile={() => {
-            setDialog({ type: "create-file", parentId: null, position: restoreLogicalPosition(contextMenu.position, activeSegment, desktopSize) });
+            setDialog({ type: "create-file", parentId: contextMenu.parentId, position: contextMenu.parentId === null ? restoreLogicalPosition(contextMenu.position, activeSegment, desktopSize) : contextMenu.position });
             setContextMenu(null);
           }}
           onCreateFolder={() => {
-            setDialog({ type: "create-folder", parentId: null, position: restoreLogicalPosition(contextMenu.position, activeSegment, desktopSize) });
+            setDialog({ type: "create-folder", parentId: contextMenu.parentId, position: contextMenu.parentId === null ? restoreLogicalPosition(contextMenu.position, activeSegment, desktopSize) : contextMenu.position });
             setContextMenu(null);
           }}
           onUpload={() => {
-            chooseUpload(null, contextMenu.position);
+            chooseUpload(contextMenu.parentId, contextMenu.position);
             setContextMenu(null);
           }}
           onSettings={() => {
             openSettingsWindow();
             setContextMenu(null);
           }}
+          onPaste={clipboardRef.current ? () => void beginPaste(contextMenu.parentId, contextMenu.parentId === null ? contextMenu.position : undefined) : undefined}
           readOnly={!canMutate}
         />
       )}
-      {dialog && (!(dialog.type === "rename" || dialog.type === "delete") || dialogEntry) && <FileDialog dialog={dialog} entry={dialogEntry} onClose={() => setDialog(null)} onSubmit={handleDialogSubmit} />}
-      {moveDialogEntry && (
+      {dialog && (!(dialog.type === "rename" || dialog.type === "delete") || dialogEntry) && <FileDialog dialog={dialog} entry={dialogEntry} entryCount={dialog.type === "delete" ? dialog.entryIds.length : 1} onClose={() => setDialog(null)} onSubmit={handleDialogSubmit} />}
+      {moveDialogEntries.length > 0 && (
         <MoveDialog
-          entry={moveDialogEntry}
+          entries={moveDialogEntries}
           folders={folders}
-          invalidIds={invalidMoveIds(moveDialogEntry)}
-          onClose={() => { setMoveDialogSubmitting(false); setMoveDialogEntryId(null); }}
-          onMove={async (parentId) => { await handleMoveTo(moveDialogEntry, parentId, true); setMoveDialogSubmitting(false); setMoveDialogEntryId(null); }}
+          invalidIds={invalidMoveIds(moveDialogEntries)}
+          onClose={() => { setMoveDialogSubmitting(false); setMoveDialogEntryIds([]); }}
+          onMove={async (parentId) => { await handleMoveTo(moveDialogEntries, parentId, true); setMoveDialogSubmitting(false); setMoveDialogEntryIds([]); }}
           onSubmittingChange={setMoveDialogSubmitting}
         />
       )}
+      {pendingPaste && <PasteConflictDialog roots={pendingPaste.snapshot.selectedRootIds.map((id) => pendingPaste.snapshot.entries.find((entry) => entry.id === id)!)} existingNames={entries.filter((entry) => entry.parentId === pendingPaste.parentId).map((entry) => entry.name)} onClose={() => setPendingPaste(null)} onPaste={(names) => commitPaste(pendingPaste.snapshot, pendingPaste.parentId, pendingPaste.position, names)} />}
     </main>
   );
 }

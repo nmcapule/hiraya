@@ -7,6 +7,8 @@ export type OutboxOperation =
   | { kind: "create"; entries: DesktopEntry[] }
   | { kind: "update-entry"; entry: DesktopEntry }
   | { kind: "delete"; entryId: string }
+  | { kind: "batch-delete"; entryIds: string[] }
+  | { kind: "batch-move"; entryIds: string[]; parentId: string | null }
   | { kind: "save-content"; entry: FileEntry }
   | { kind: "desktop-positions"; positions: DesktopPositionUpdate[] }
   | { kind: "layout"; layout: DesktopLayout }
@@ -47,6 +49,25 @@ export function applyOutboxOperation(manifest: PersistedManifestV13, operation: 
         }
       }
       entries = entries.filter((entry) => !removed.has(entry.id));
+      break;
+    }
+    case "batch-delete": {
+      if (operation.entryIds.some((id) => !entries.some((entry) => entry.id === id))) throw new Error("An entry no longer exists.");
+      const removed = new Set(operation.entryIds);
+      for (let changed = true; changed;) {
+        changed = false;
+        for (const entry of entries) if (entry.parentId && removed.has(entry.parentId) && !removed.has(entry.id)) {
+          removed.add(entry.id);
+          changed = true;
+        }
+      }
+      entries = entries.filter((entry) => !removed.has(entry.id));
+      break;
+    }
+    case "batch-move": {
+      const moving = new Set(operation.entryIds);
+      if (moving.size !== operation.entryIds.length || operation.entryIds.some((id) => !entries.some((entry) => entry.id === id))) throw new Error("An entry no longer exists.");
+      entries = parseEntries(entries.map((entry) => moving.has(entry.id) ? { ...entry, parentId: operation.parentId, modifiedAt: Date.now() } : entry)) as DesktopEntry[];
       break;
     }
     case "save-content":

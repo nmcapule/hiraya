@@ -567,6 +567,70 @@ func TestImportMultipleFilesAtomically(t *testing.T) {
 	}
 }
 
+func TestImportNestedMixedTreeAtomically(t *testing.T) {
+	store, server := initializedTestServer(t)
+	if response := multipartEntryRequest(t, server, http.MethodPost, "/api/entries", folder("destination", "Destination", nil, nil), nil); response.Code != http.StatusOK {
+		t.Fatal(response.Body.String())
+	}
+	events, unsubscribe := store.subscribe()
+	defer unsubscribe()
+	<-events
+	entries := []Entry{
+		file("nested-file", "notes.txt", ptr("nested-folder"), nil, "text/plain", 5),
+		folder("empty-folder", "Empty", ptr("import-root"), nil),
+		folder("import-root", "Copied", ptr("destination"), nil),
+		folder("nested-folder", "Docs", ptr("import-root"), nil),
+	}
+	response := idempotentImportRequest(t, server, entries, map[string]string{"nested-file": "hello"}, "browser-1", "tree-import")
+	if response.Code != http.StatusOK {
+		t.Fatalf("import status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var result importResponse
+	decodeResponse(t, response, &result)
+	if result.Revision != 3 || len(result.Entries) != len(entries) {
+		t.Fatalf("import response = %+v", result)
+	}
+	for _, entry := range result.Entries {
+		if entry.Revision != 3 || entry.Kind == "folder" && entry.ContentRevision != 0 || entry.Kind == "file" && entry.ContentRevision != 3 {
+			t.Errorf("imported revisions for %s = %+v", entry.ID, entry)
+		}
+	}
+	content, err := os.ReadFile(filepath.Join(store.filesDir, "Destination", "Copied", "Docs", "notes.txt"))
+	if err != nil || string(content) != "hello" {
+		t.Fatalf("nested content = %q, %v", content, err)
+	}
+	if info, err := os.Stat(filepath.Join(store.filesDir, "Destination", "Copied", "Empty")); err != nil || !info.IsDir() {
+		t.Fatalf("empty imported folder = %v, %v", info, err)
+	}
+	if revision := <-events; revision != 3 {
+		t.Fatalf("import SSE revision = %d", revision)
+	}
+	retry := idempotentImportRequest(t, server, entries, map[string]string{"nested-file": "hello"}, "browser-1", "tree-import")
+	if retry.Code != http.StatusOK || retry.Header().Get(replayHeader) != "true" || retry.Body.String() != response.Body.String() || store.snapshot().Revision != 3 {
+		t.Fatalf("import retry = %d %q headers=%v", retry.Code, retry.Body.String(), retry.Header())
+	}
+}
+
+func TestFailedNestedImportRemovesPromotedTree(t *testing.T) {
+	store, server := initializedTestServer(t)
+	before := store.snapshot()
+	store.persistWorkspace = func(Workspace, bool) error { return errors.New("injected persistence failure") }
+	entries := []Entry{
+		folder("root", "Copied", nil, nil),
+		file("child", "child.txt", ptr("root"), nil, "text/plain", 5),
+	}
+	response := importRequest(t, server, entries, map[string]string{"child": "hello"})
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("failed import status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if after := store.snapshot(); after.Revision != before.Revision || len(after.Entries) != len(before.Entries) {
+		t.Fatalf("failed import changed workspace: before=%+v after=%+v", before, after)
+	}
+	if _, err := os.Stat(filepath.Join(store.filesDir, "Copied")); !os.IsNotExist(err) {
+		t.Fatalf("failed import left promoted tree: %v", err)
+	}
+}
+
 func TestImportInvalidBatchIsAllOrNothing(t *testing.T) {
 	store, server := initializedTestServer(t)
 	tests := []struct {
@@ -586,6 +650,11 @@ func TestImportInvalidBatchIsAllOrNothing(t *testing.T) {
 			name:    "declared size mismatch",
 			entries: []Entry{file("wrong-size", "wrong.txt", nil, ptr("view-1"), "text/plain", 20)},
 			files:   map[string]string{"wrong-size": "short"},
+		},
+		{
+			name:    "folder with file part",
+			entries: []Entry{folder("folder-content", "Folder", nil, nil)},
+			files:   map[string]string{"folder-content": "unexpected"},
 		},
 	}
 	for _, test := range tests {
@@ -815,6 +884,68 @@ func TestDesktopPositionsValidateBatchAndFailureChangesNothing(t *testing.T) {
 	}
 }
 
+func TestBatchMoveIsAtomicAndRollsBackFilesystem(t *testing.T) {
+	store, server := initializedTestServer(t)
+	for _, item := range []struct {
+		entry   Entry
+		content *string
+	}{
+		{folder("destination", "Destination", nil, nil), nil},
+		{folder("folder", "Folder", nil, nil), nil},
+		{file("nested", "nested.txt", ptr("folder"), nil, "text/plain", 0), ptr("nested")},
+		{file("loose", "loose.txt", nil, nil, "text/plain", 0), ptr("loose")},
+	} {
+		if response := multipartEntryRequest(t, server, http.MethodPost, "/api/entries", item.entry, item.content); response.Code != http.StatusOK {
+			t.Fatalf("create %s: %s", item.entry.ID, response.Body.String())
+		}
+	}
+	events, unsubscribe := store.subscribe()
+	defer unsubscribe()
+	<-events
+	before := store.snapshot()
+	response := jsonRequest(t, server, http.MethodPost, "/api/entries/batch-move", batchMoveRequest{EntryIDs: []string{"folder", "loose"}, ParentID: ptr("destination")})
+	if response.Code != http.StatusOK {
+		t.Fatalf("move status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var result batchMoveResponse
+	decodeResponse(t, response, &result)
+	if result.Revision != before.Revision+1 || len(result.Entries) != 2 || result.Entries[0].Revision != result.Revision || result.Entries[1].Revision != result.Revision {
+		t.Fatalf("move response = %+v", result)
+	}
+	for _, path := range []string{
+		filepath.Join(store.filesDir, "Destination", "Folder", "nested.txt"),
+		filepath.Join(store.filesDir, "Destination", "loose.txt"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("moved path %q: %v", path, err)
+		}
+	}
+	if revision := <-events; revision != result.Revision {
+		t.Fatalf("move SSE revision = %d", revision)
+	}
+
+	store.persistWorkspace = func(Workspace, bool) error { return errors.New("injected persistence failure") }
+	failed := jsonRequest(t, server, http.MethodPost, "/api/entries/batch-move", batchMoveRequest{EntryIDs: []string{"folder", "loose"}, ParentID: nil})
+	if failed.Code != http.StatusInternalServerError {
+		t.Fatalf("failed move status = %d, body = %s", failed.Code, failed.Body.String())
+	}
+	after := store.snapshot()
+	if after.Revision != result.Revision || findEntry(t, after.Entries, "folder").ParentID == nil || *findEntry(t, after.Entries, "folder").ParentID != "destination" {
+		t.Fatalf("failed move changed workspace = %+v", after)
+	}
+	if _, err := os.Stat(filepath.Join(store.filesDir, "Destination", "Folder", "nested.txt")); err != nil {
+		t.Fatalf("failed move did not restore folder: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(store.filesDir, "Destination", "loose.txt")); err != nil {
+		t.Fatalf("failed move did not restore file: %v", err)
+	}
+	select {
+	case revision := <-events:
+		t.Fatalf("failed move published revision %d", revision)
+	default:
+	}
+}
+
 func TestMutationResponseDoesNotHoldStoreLock(t *testing.T) {
 	store, server := initializedTestServer(t)
 	w := &blockingResponseWriter{header: make(http.Header), started: make(chan struct{}), release: make(chan struct{})}
@@ -892,6 +1023,55 @@ func TestRecursiveDeletionCommitsBeforeBlobCleanup(t *testing.T) {
 	}
 	if entries := store.snapshot().Entries; len(entries) != 1 || entries[0].ID != "keep" {
 		t.Fatalf("remaining entries = %+v", entries)
+	}
+}
+
+func TestBatchDeleteRecursesOnceAndIsIdempotent(t *testing.T) {
+	store, server := initializedTestServer(t)
+	for _, item := range []struct {
+		entry   Entry
+		content *string
+	}{
+		{folder("parent", "Parent", nil, nil), nil},
+		{file("child", "child.txt", ptr("parent"), nil, "text/plain", 0), ptr("child")},
+		{file("other", "other.txt", nil, nil, "text/plain", 0), ptr("other")},
+		{file("keep", "keep.txt", nil, nil, "text/plain", 0), ptr("keep")},
+	} {
+		if response := multipartEntryRequest(t, server, http.MethodPost, "/api/entries", item.entry, item.content); response.Code != http.StatusOK {
+			t.Fatal(response.Body.String())
+		}
+	}
+	events, unsubscribe := store.subscribe()
+	defer unsubscribe()
+	<-events
+	body, err := json.Marshal(batchDeleteRequest{EntryIDs: []string{"parent", "other"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := store.snapshot().Revision
+	response := idempotentRequest(server, http.MethodPost, "/api/entries/batch-delete", "application/json", body, "browser-1", "batch-delete")
+	if response.Code != http.StatusOK {
+		t.Fatalf("delete status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var result deleteResponse
+	decodeResponse(t, response, &result)
+	if result.Revision != before+1 || strings.Join(result.DeletedIDs, ",") != "parent,child,other" {
+		t.Fatalf("delete response = %+v", result)
+	}
+	if got := store.snapshot().Entries; len(got) != 1 || got[0].ID != "keep" {
+		t.Fatalf("remaining entries = %+v", got)
+	}
+	for _, path := range []string{filepath.Join(store.filesDir, "Parent"), filepath.Join(store.filesDir, "other.txt")} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("deleted path %q remains: %v", path, err)
+		}
+	}
+	if revision := <-events; revision != result.Revision {
+		t.Fatalf("delete SSE revision = %d", revision)
+	}
+	retry := idempotentRequest(server, http.MethodPost, "/api/entries/batch-delete", "application/json", body, "browser-1", "batch-delete")
+	if retry.Code != http.StatusOK || retry.Header().Get(replayHeader) != "true" || retry.Body.String() != response.Body.String() || store.snapshot().Revision != result.Revision {
+		t.Fatalf("delete retry = %d %q headers=%v", retry.Code, retry.Body.String(), retry.Header())
 	}
 }
 

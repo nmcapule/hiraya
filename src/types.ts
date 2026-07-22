@@ -46,10 +46,10 @@ export type DialogState =
   | { type: "create-file"; parentId: string | null; position?: EntryPosition }
   | { type: "create-folder"; parentId: string | null; position?: EntryPosition }
   | { type: "rename"; entryId: string }
-  | { type: "delete"; entryId: string }
+  | { type: "delete"; entryIds: string[] }
   | null;
 
 export type ContextMenuState =
   | { type: "entry"; entryId: string; x: number; y: number }
-  | { type: "desktop"; x: number; y: number; position: EntryPosition }
+  | { type: "desktop"; parentId: string | null; x: number; y: number; position: EntryPosition }
   | null;

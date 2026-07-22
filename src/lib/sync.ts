@@ -6,12 +6,13 @@ import { parseLayout, parsePosition, parseRemoteWorkspace, parseRootDesktopPosit
 import type { DesktopEntry, DesktopLayout, DesktopPositionUpdate, EditorSettings, EntryPosition, FileEntry, FolderEntry } from "../types";
 import type { OutboxOperation, OutboxRecord } from "./outbox";
 import { parseCustomTheme, parseThemeState, type CustomTheme } from "./themes";
+import type { ClipboardEntrySnapshot } from "./clipboard";
 
 export type SyncStatus = "connecting" | "online" | "offline" | "blocked" | "local";
 
 type StorageBoundary = Pick<typeof storage,
-  "applyRemoteDesktop" | "createFolder" | "createTextFile" | "deleteEntry" | "importFiles" | "loadDesktop" |
-  "moveEntry" | "readCurrentDesktop" | "readDesktopSnapshot" | "readFile" | "readFileByRelativePath" |
+  "applyRemoteDesktop" | "createEntries" | "createFolder" | "createTextFile" | "deleteEntries" | "deleteEntry" | "importFiles" | "loadDesktop" |
+  "moveEntries" | "moveEntry" | "readCurrentDesktop" | "readDesktopSnapshot" | "readFile" | "readFileByRelativePath" |
   "renameEntry" | "saveDesktopLayout" | "saveEditorSettings" | "saveTextFile" | "updateEntryPosition"
   | "updateDesktopPositions" | "enqueueMutation" | "readOutbox" | "bindOutboxWorkspace" |
   "acknowledgeMutation" | "blockMutation" | "readPendingContent" |
@@ -317,6 +318,12 @@ export class SyncEngine {
       case "delete":
         await this.requestJson(API_ROUTES.entry(operation.entryId), { method: "DELETE", headers: headers() });
         return;
+      case "batch-delete":
+        await this.requestJson(API_ROUTES.batchDeleteEntries, { method: "POST", headers: headers({ "Content-Type": "application/json" }), body: JSON.stringify({ entryIds: operation.entryIds }) });
+        return;
+      case "batch-move":
+        await this.requestJson(API_ROUTES.batchMoveEntries, { method: "POST", headers: headers({ "Content-Type": "application/json" }), body: JSON.stringify({ entryIds: operation.entryIds, parentId: operation.parentId }) });
+        return;
       case "save-content":
         await this.requestJson(API_ROUTES.content(operation.entry.id), { method: "PUT", headers: headers({ "Content-Type": operation.entry.mimeType }), body: await this.storage.readPendingContent(record.operationId, operation.entry.id) });
         return;
@@ -501,6 +508,14 @@ export class SyncEngine {
     return this.mutate({ kind: "delete", entryId: id }, (next) => before.filter((entry) => !next.entries.some((item) => item.id === entry.id)));
   }
 
+  deleteEntries(ids: string[]) {
+    if (this.frontendOnly) return this.localMutation(() => this.storage.deleteEntries(ids));
+    const unique = [...new Set(ids)];
+    const before = this.current().entries;
+    if (!unique.length || unique.length !== ids.length || unique.some((id) => !before.some((entry) => entry.id === id))) throw new Error("An entry no longer exists.");
+    return this.mutate({ kind: "batch-delete", entryIds: unique }, (next) => before.filter((entry) => !next.entries.some((item) => item.id === entry.id)));
+  }
+
   moveEntry(id: string, parentId: string | null, position: EntryPosition) {
     if (this.frontendOnly) return this.localMutation(() => this.storage.moveEntry(id, parentId, position));
     const parsedPosition = parsePosition(position);
@@ -509,6 +524,57 @@ export class SyncEngine {
     this.assertParent(parentId);
     const entry = { ...existing, parentId, position: parsedPosition };
     return this.mutate({ kind: "update-entry", entry }, (next) => next.entries.find((item) => item.id === id) as DesktopEntry);
+  }
+
+  moveEntries(ids: string[], parentId: string | null) {
+    if (this.frontendOnly) return this.localMutation(() => this.storage.moveEntries(ids, parentId));
+    const unique = [...new Set(ids)];
+    if (!unique.length || unique.length !== ids.length || unique.some((id) => !this.current().entries.some((entry) => entry.id === id))) throw new Error("An entry no longer exists.");
+    this.assertParent(parentId);
+    return this.mutate({ kind: "batch-move", entryIds: unique, parentId }, (next) => unique.map((id) => next.entries.find((entry) => entry.id === id) as DesktopEntry));
+  }
+
+  async captureEntries(rootIds: string[]): Promise<ClipboardEntrySnapshot> {
+    return this.queue(async () => {
+      const desktop = this.current();
+      const roots = [...new Set(rootIds)].map((id) => desktop.entries.find((entry) => entry.id === id));
+      if (!roots.length || roots.some((entry) => !entry)) throw new Error("An entry no longer exists.");
+      const included = new Set(rootIds);
+      for (let changed = true; changed;) {
+        changed = false;
+        for (const entry of desktop.entries) if (entry.parentId && included.has(entry.parentId) && !included.has(entry.id)) { included.add(entry.id); changed = true; }
+      }
+      const entries = desktop.entries.filter((entry) => included.has(entry.id)).map((entry) => rootIds.includes(entry.id) ? { ...entry, parentId: null } : { ...entry });
+      const contents = new Map<string, Blob>();
+      await Promise.all(entries.map(async (entry) => { if (entry.kind === "file") contents.set(entry.id, await this.storage.readFile(entry.id)); }));
+      return { selectedRootIds: [...rootIds], entries, contents };
+    });
+  }
+
+  pasteEntries(snapshot: ClipboardEntrySnapshot, parentId: string | null, rootNames: Map<string, string>, rootPositions: Map<string, EntryPosition>) {
+    this.assertParent(parentId);
+    const idMap = new Map(snapshot.entries.map((entry) => [entry.id, crypto.randomUUID()]));
+    const now = Date.now();
+    const entries = snapshot.entries.map((entry): DesktopEntry => {
+      const isRoot = snapshot.selectedRootIds.includes(entry.id);
+      const name = validateEntryName(isRoot ? rootNames.get(entry.id) ?? entry.name : entry.name);
+      const nextParent = isRoot ? parentId : idMap.get(entry.parentId!);
+      const position = parsePosition(isRoot ? rootPositions.get(entry.id) ?? entry.position : entry.position);
+      return { ...entry, id: idMap.get(entry.id)!, name, parentId: nextParent ?? null, position, modifiedAt: now };
+    });
+    const rootEntries = entries.filter((entry) => snapshot.selectedRootIds.some((id) => idMap.get(id) === entry.id));
+    for (const [index, entry] of rootEntries.entries()) {
+      assertUniqueName(this.current().entries, entry.name, parentId);
+      if (rootEntries.slice(0, index).some((candidate) => namesMatch(candidate.name, entry.name))) throw new Error(`More than one copied item is named “${entry.name}”.`);
+    }
+    const contents = new Map<string, Blob>();
+    for (const entry of snapshot.entries) if (entry.kind === "file") {
+      const content = snapshot.contents.get(entry.id);
+      if (!content || content.size !== entry.size) throw new Error(`The copied contents of “${entry.name}” are unavailable.`);
+      contents.set(idMap.get(entry.id)!, content);
+    }
+    if (this.frontendOnly) return this.localMutation(() => this.storage.createEntries(entries, contents));
+    return this.mutate({ kind: "create", entries }, (next) => entries.map((entry) => next.entries.find((item) => item.id === entry.id)!), contents);
   }
 
   updateEntryPosition(id: string, position: EntryPosition) {
@@ -592,7 +658,11 @@ export const createFolder = defaultEngine.createFolder.bind(defaultEngine);
 export const importFiles = defaultEngine.importFiles.bind(defaultEngine);
 export const renameEntry = defaultEngine.renameEntry.bind(defaultEngine);
 export const deleteEntry = defaultEngine.deleteEntry.bind(defaultEngine);
+export const deleteEntries = defaultEngine.deleteEntries.bind(defaultEngine);
 export const moveEntry = defaultEngine.moveEntry.bind(defaultEngine);
+export const moveEntries = defaultEngine.moveEntries.bind(defaultEngine);
+export const captureEntries = defaultEngine.captureEntries.bind(defaultEngine);
+export const pasteEntries = defaultEngine.pasteEntries.bind(defaultEngine);
 export const updateDesktopPositions = defaultEngine.updateDesktopPositions.bind(defaultEngine);
 export const updateEntryPosition = defaultEngine.updateEntryPosition.bind(defaultEngine);
 export const saveTextFile = defaultEngine.saveTextFile.bind(defaultEngine);

@@ -3,6 +3,8 @@ export const API_ROUTES = {
   bootstrap: "/api/bootstrap",
   imports: "/api/imports",
   entries: "/api/entries",
+  batchMoveEntries: "/api/entries/batch-move",
+  batchDeleteEntries: "/api/entries/batch-delete",
   layout: "/api/layout",
   desktopPositions: "/api/desktop-positions",
   editorSettings: "/api/editor-settings",

@@ -17,9 +17,9 @@ import { fileCapabilities } from "../ui/file-capabilities";
 type Props = {
   entry: DesktopEntry;
   selected: boolean;
-  onSelect: () => void;
+  onSelect: (event: React.MouseEvent | React.PointerEvent) => void;
   onOpen: () => void;
-  onMove: (position: EntryPosition, targetParentId: string | null) => Promise<boolean>;
+  onMove: (position: EntryPosition, targetParentId: string | null, delta: EntryPosition) => Promise<boolean>;
   onDragAtEdge: (clientX: number, clientY: number) => {
     deltaX: number;
     deltaY: number;
@@ -95,7 +95,7 @@ export function FileIcon({ entry, selected, onSelect, onOpen, onMove, onDragAtEd
   function findDropTarget(clientX: number, clientY: number) {
     const folders = Array.from(document.querySelectorAll<HTMLElement>(".file-icon[data-folder-id]"));
     for (const folder of folders.reverse()) {
-      if (folder.dataset.folderId === entry.id) continue;
+      if (folder.dataset.folderId === entry.id || folder.dataset.selected) continue;
       const bounds = folder.getBoundingClientRect();
       if (clientX >= bounds.left && clientX <= bounds.right && clientY >= bounds.top && clientY <= bounds.bottom) {
         return folder.dataset.folderId ?? null;
@@ -142,7 +142,7 @@ export function FileIcon({ entry, selected, onSelect, onOpen, onMove, onDragAtEd
     };
     canvas.dataset.iconDragging = "true";
     event.currentTarget.setPointerCapture(event.pointerId);
-    onSelect();
+    onSelect(event);
   }
 
   function handlePointerMove(event: React.PointerEvent<HTMLButtonElement>) {
@@ -172,6 +172,14 @@ export function FileIcon({ entry, selected, onSelect, onOpen, onMove, onDragAtEd
     updateSnapPreview(getSnapPreview && !drag.current.targetFolderId ? getSnapPreview({ x, y }) : null);
     iconRef.current.style.transform = `translate3d(${x - drag.current.baseX}px, ${y - drag.current.baseY}px, 0)`;
     iconRef.current.dataset.dragging = "true";
+    if (iconRef.current.dataset.selected) {
+      const groupDelta = { x: x - drag.current.originX, y: y - drag.current.originY };
+      document.querySelectorAll<HTMLElement>(".file-icon[data-selected]").forEach((icon) => {
+        if (icon === iconRef.current) return;
+        icon.style.transform = `translate3d(${groupDelta.x}px, ${groupDelta.y}px, 0)`;
+        icon.dataset.groupDragging = "true";
+      });
+    }
   }
 
   async function finishDrag(event: Pick<PointerEvent, "pointerId" | "clientX" | "clientY">, cancelled = false) {
@@ -183,7 +191,7 @@ export function FileIcon({ entry, selected, onSelect, onOpen, onMove, onDragAtEd
     const position = { x: Math.round(completed.x), y: Math.round(completed.y) };
     const preview = getSnapPreviewRef.current;
     const move = completed.moved && !cancelled
-      ? Promise.resolve().then(() => onMoveRef.current(preview && !targetFolderId ? preview(position) : position, targetFolderId))
+      ? Promise.resolve().then(() => onMoveRef.current(preview && !targetFolderId ? preview(position) : position, targetFolderId, { x: position.x - completed.originX, y: position.y - completed.originY }))
       : Promise.resolve(!cancelled);
     setDropTarget(null);
     updateSnapPreview(null);
@@ -193,6 +201,10 @@ export function FileIcon({ entry, selected, onSelect, onOpen, onMove, onDragAtEd
       delete completed.canvas.dataset.iconDragging;
       iconRef.current?.style.removeProperty("transform");
       if (iconRef.current) delete iconRef.current.dataset.dragging;
+      document.querySelectorAll<HTMLElement>(".file-icon[data-group-dragging]").forEach((icon) => {
+        icon.style.removeProperty("transform");
+        delete icon.dataset.groupDragging;
+      });
     };
     if (completed.moved) requestAnimationFrame(cleanUp);
     else cleanUp();
@@ -219,10 +231,11 @@ export function FileIcon({ entry, selected, onSelect, onOpen, onMove, onDragAtEd
           "--file-y": `${entry.position.y}px`,
         } as React.CSSProperties}
         data-selected={selected || undefined}
+        data-entry-id={entry.id}
         data-folder-id={entry.kind === "folder" ? entry.id : undefined}
         type="button"
         aria-label={`${entry.name}, ${entry.kind === "folder" ? "folder" : entry.mimeType || "file"}`}
-        onClick={onSelect}
+        onClick={(event) => { if (event.detail === 0) onSelect(event); }}
         onDoubleClick={onOpen}
         onContextMenu={onContextMenu}
         onDragOver={entry.kind === "folder" ? (event) => {
