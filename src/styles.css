@@ -1715,67 +1715,8 @@ textarea:focus-visible {
   height: 100%;
 }
 
-.folder-explorer__header,
 .move-dialog__header {
   flex: 0 0 auto;
-}
-
-.folder-explorer__title {
-  min-width: 0;
-}
-
-.folder-explorer__toolbar {
-  display: flex;
-  flex: 0 0 auto;
-  gap: 7px;
-  padding: 10px 12px;
-  overflow-x: auto;
-  border-bottom: 1px solid #d7d8d1;
-  background: #e7e7e1;
-}
-
-.folder-explorer__toolbar .button--quiet {
-  color: #343c39;
-  background: #d8d9d3;
-}
-
-.folder-explorer__breadcrumbs {
-  display: flex;
-  min-height: 39px;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 2px;
-  padding: 5px 14px;
-  overflow-x: auto;
-  border-bottom: 1px solid #d7d8d1;
-  color: #59615e;
-  background: #f7f6f1;
-  scrollbar-width: thin;
-}
-
-.folder-explorer__breadcrumbs button {
-  min-height: 27px;
-  padding: 0 8px;
-  border: 0;
-  border-radius: 7px;
-  color: #4b5551;
-  background: transparent;
-  font-size: 11px;
-  font-weight: 650;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.folder-explorer__breadcrumbs button:hover,
-.folder-explorer__breadcrumbs button[data-current],
-.folder-explorer__breadcrumbs button[data-drop-target] {
-  color: #242d2a;
-  background: #e3d1aa;
-}
-
-.folder-explorer__crumb {
-  display: flex;
-  align-items: center;
 }
 
 .folder-explorer__content {
@@ -2721,12 +2662,6 @@ textarea:focus-visible {
     height: 100%;
   }
 
-  .folder-explorer__toolbar .button {
-    min-height: 34px;
-    padding: 0 10px;
-    font-size: 10px;
-  }
-
   .folder-explorer__row {
     min-height: 52px;
     grid-template-columns: 34px minmax(0, 1fr);
@@ -2999,8 +2934,7 @@ textarea:focus-visible {
 .button--quiet,
 .file-dialog .button--quiet,
 .settings-row .button,
-.settings-export .button,
-.folder-explorer__toolbar .button--quiet { color: var(--theme-text); background: var(--theme-window-muted); }
+.settings-export .button { color: var(--theme-text); background: var(--theme-window-muted); }
 .button--quiet:hover { background: color-mix(in srgb, var(--theme-text) 10%, var(--theme-window-muted)); }
 .modal-backdrop { background: color-mix(in srgb, var(--theme-shell) 42%, transparent); backdrop-filter: blur(calc(var(--theme-blur) * 0.23)); -webkit-backdrop-filter: blur(calc(var(--theme-blur) * 0.23)); animation-duration: calc(160ms * var(--theme-motion)); }
 
@@ -3137,22 +3071,11 @@ textarea:focus-visible {
 .url-editor__error { color: var(--theme-danger); }
 .dialog-actions { gap: calc(8px * var(--theme-density)); margin-top: calc(22px * var(--theme-density)); }
 
-.folder-explorer__toolbar {
-  border-bottom: var(--theme-border-width) solid var(--theme-border);
-  color: var(--theme-text);
-  background: var(--theme-window-muted);
-}
 .image-zoom-control { color: var(--theme-text-muted); font-size: calc(9px * var(--theme-type-scale)); }
 .image-zoom-control select { border: var(--theme-border-width) solid var(--theme-border); border-radius: var(--theme-radius-small); color: var(--theme-text); background: var(--theme-window); font-size: calc(10px * var(--theme-type-scale)); }
 .image-zoom-control select:focus-visible { outline-color: var(--theme-selection); }
 .file-window__content { background: color-mix(in srgb, var(--theme-window-muted) 78%, var(--theme-window)); }
 
-.folder-explorer__toolbar { gap: calc(7px * var(--theme-density)); padding: calc(10px * var(--theme-density)) calc(12px * var(--theme-density)); }
-.folder-explorer__breadcrumbs { min-height: calc(39px * var(--theme-density)); border-bottom: var(--theme-border-width) solid var(--theme-border); color: var(--theme-text-muted); background: var(--theme-window); }
-.folder-explorer__breadcrumbs button { min-height: calc(27px * var(--theme-density)); border-radius: var(--theme-radius-small); color: var(--theme-text-muted); font-size: calc(11px * var(--theme-type-scale)); }
-.folder-explorer__breadcrumbs button:hover,
-.folder-explorer__breadcrumbs button[data-current],
-.folder-explorer__breadcrumbs button[data-drop-target] { color: var(--theme-text); background: var(--theme-selected); }
 .folder-explorer__content { background: color-mix(in srgb, var(--theme-window-muted) 60%, var(--theme-window)); }
 .folder-explorer__row { min-height: calc(48px * var(--theme-density)); border: 0; color: var(--theme-text); }
 .folder-explorer__row:hover,

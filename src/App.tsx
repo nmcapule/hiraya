@@ -2021,7 +2021,7 @@ function App() {
                       setContextMenu({ type: "desktop", parentId, x, y, position: positionFor(parentId) });
                     }}
                     readOnly={!canMutate}
-                    mobileHeaderElements={isMobile ? headerElements : undefined}
+                    headerElements={headerElements}
                   />
                 )}
                 {app.kind === "settings" && (
