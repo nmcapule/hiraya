@@ -90,13 +90,23 @@ export function ActivityLog({ onListActivity, onSubscribe }: Props) {
               <li className="activity-item" key={activity.revision}>
                 <div className="activity-item__rail" aria-hidden="true"><span /></div>
                 <div className="activity-item__content">
-                  <div className="activity-item__meta">
-                    <span className="activity-item__action">{formatAction(activity.action)}</span>
-                    <time dateTime={new Date(activity.timestamp).toISOString()}>{new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(activity.timestamp)}</time>
-                  </div>
-                  <strong>{activity.summary}</strong>
-                  {activity.details.length > 0 && <p>{activity.details.join(" · ")}</p>}
-                  <small>{formatSource(activity.source)} · Revision {activity.revision}</small>
+                  {"broken" in activity ? (
+                    <>
+                      <div className="activity-item__meta"><span className="activity-item__action">broken</span></div>
+                      <strong>This activity record could not be read.</strong>
+                      <small>Revision {activity.revision}</small>
+                    </>
+                  ) : (
+                    <>
+                      <div className="activity-item__meta">
+                        <span className="activity-item__action">{formatAction(activity.action)}</span>
+                        <time dateTime={new Date(activity.timestamp).toISOString()}>{new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(activity.timestamp)}</time>
+                      </div>
+                      <strong>{activity.summary}</strong>
+                      {activity.details.length > 0 && <p>{activity.details.join(" · ")}</p>}
+                      <small>{formatSource(activity.source)} · Revision {activity.revision}</small>
+                    </>
+                  )}
                 </div>
               </li>
             ))}

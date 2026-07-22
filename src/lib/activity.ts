@@ -4,7 +4,7 @@ export const DEFAULT_ACTIVITY_PAGE_LIMIT = 50;
 export const MAX_ACTIVITY_PAGE_LIMIT = 100;
 export const MAX_ACTIVITY_QUERY_LENGTH = 200;
 
-export type ActivityRecord = {
+export type ValidActivityRecord = {
   revision: number;
   action: string;
   source: string;
@@ -12,6 +12,13 @@ export type ActivityRecord = {
   summary: string;
   details: string[];
 };
+
+export type BrokenActivityRecord = {
+  revision: number;
+  broken: true;
+};
+
+export type ActivityRecord = ValidActivityRecord | BrokenActivityRecord;
 
 export type ActivityPage = {
   activities: ActivityRecord[];
@@ -24,14 +31,14 @@ export type ActivityQuery = {
   limit?: number;
 };
 
-export type NewActivityRecord = Omit<ActivityRecord, "revision">;
+export type NewActivityRecord = Omit<ValidActivityRecord, "revision">;
 
 function positiveInteger(value: unknown, message: string) {
   if (!Number.isSafeInteger(value) || (value as number) <= 0) throw new Error(message);
   return value as number;
 }
 
-function parseRecord(value: unknown): ActivityRecord {
+function parseValidRecord(value: unknown): ValidActivityRecord {
   if (!isRecord(value) || typeof value.action !== "string" || !value.action.trim() || value.action.length > 120 || typeof value.source !== "string" || !value.source.trim() || value.source.length > 120 || typeof value.summary !== "string" || !value.summary.trim() || value.summary.length > 500 || !Array.isArray(value.details)) {
     throw new Error("An activity record has an unsupported format.");
   }
@@ -48,6 +55,17 @@ function parseRecord(value: unknown): ActivityRecord {
     summary: value.summary,
     details,
   };
+}
+
+function parseRecord(value: unknown): ActivityRecord {
+  if (!isRecord(value)) throw new Error("An activity record has an unsupported format.");
+  const revision = positiveInteger(value.revision, "An activity record has an invalid revision.");
+  if (value.broken === true) return { revision, broken: true };
+  try {
+    return parseValidRecord(value);
+  } catch {
+    return { revision, broken: true };
+  }
 }
 
 export function parseActivityPage(value: unknown): ActivityPage {
@@ -89,7 +107,7 @@ function localAction(summary: string) {
 }
 
 export function activityRecord(summary: string, details: string[], timestamp = Date.now(), action = localAction(summary)): NewActivityRecord {
-  const { revision: _revision, ...record } = parseRecord({ revision: 1, action, source: "frontend", timestamp, summary, details });
+  const { revision: _revision, ...record } = parseValidRecord({ revision: 1, action, source: "frontend", timestamp, summary, details });
   void _revision;
   return record;
 }

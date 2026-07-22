@@ -24,6 +24,28 @@ describe("activity contracts", () => {
     ], nextBefore: null })).toThrow("newest-first");
   });
 
+  test("isolates malformed records with valid revisions", () => {
+    expect(parseActivityPage({
+      activities: [
+        { revision: 3, timestamp: 20, action: "move", source: "api", summary: "Moved file", details: [] },
+        { revision: 2, timestamp: 10, action: "update", source: "api", summary: "Broken details", details: null },
+        { revision: 1, broken: true, action: "broken", source: "storage", timestamp: 0, summary: "Unreadable", details: [] },
+      ],
+      nextBefore: null,
+    })).toEqual({
+      activities: [
+        { revision: 3, timestamp: 20, action: "move", source: "api", summary: "Moved file", details: [] },
+        { revision: 2, broken: true },
+        { revision: 1, broken: true },
+      ],
+      nextBefore: null,
+    });
+    expect(() => parseActivityPage({
+      activities: [{ revision: "broken", timestamp: 10, action: "update", source: "api", summary: "Broken revision", details: [] }],
+      nextBefore: null,
+    })).toThrow("invalid revision");
+  });
+
   test("normalizes queries and builds the server route", () => {
     const query = parseActivityQuery({ q: "  report final  ", before: 42, limit: 25 });
     expect(query).toEqual({ q: "report final", before: 42, limit: 25 });

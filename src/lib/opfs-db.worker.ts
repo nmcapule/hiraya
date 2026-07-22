@@ -14,7 +14,7 @@ import type {
 import { applyOutboxOperation, type OutboxOperation, type OutboxRecord } from "./outbox";
 import { parseManifestV13 } from "./manifest-codec";
 import { EMPTY_WINDOW_SESSION, parseWindowSession, type WindowSession } from "./window-session";
-import { activityRecord, parseActivityQuery, type ActivityPage, type NewActivityRecord } from "./activity";
+import { activityRecord, parseActivityPage, parseActivityQuery, type ActivityPage, type NewActivityRecord } from "./activity";
 import { canAdoptFreshPlaceholder, desktopIdForManifest } from "./desktop-catalog";
 
 const DATABASE_NAME = "/hiraya.sqlite3";
@@ -310,13 +310,21 @@ function listActivity(db: Database, value: StorageDbRequests["listActivity"]): A
   bind.push(query.limit + 1);
   const found = rows(db, `SELECT revision, timestamp, action, source, summary, details_json FROM activity ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY revision DESC LIMIT ?`, bind);
   const hasMore = found.length > query.limit;
-  const activities = found.slice(0, query.limit).map((row) => activityRecord(
-    stringValue(row.summary),
-    JSON.parse(stringValue(row.details_json)) as string[],
-    numberValue(row.timestamp),
-    stringValue(row.action),
-  )).map((record, index) => ({ ...record, source: stringValue(found[index].source), revision: numberValue(found[index].revision) }));
-  return { activities, nextBefore: hasMore ? activities.at(-1)!.revision : null };
+  const activities = found.slice(0, query.limit).map((row) => {
+    const revision = numberValue(row.revision);
+    try {
+      const record = activityRecord(
+        stringValue(row.summary),
+        JSON.parse(stringValue(row.details_json)) as string[],
+        numberValue(row.timestamp),
+        stringValue(row.action),
+      );
+      return { ...record, source: stringValue(row.source), revision };
+    } catch {
+      return { revision, broken: true as const };
+    }
+  });
+  return parseActivityPage({ activities, nextBefore: hasMore ? activities.at(-1)!.revision : null });
 }
 
 function replaceManifest(db: Database, manifest: PersistedManifestV13, activity?: NewActivityRecord) {
