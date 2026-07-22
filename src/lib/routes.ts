@@ -1,11 +1,13 @@
 import type { DesktopEntry } from "../types";
 import { isValidId } from "./contracts";
+import { namesMatch } from "./entry-validation";
 
 export type DesktopRoute = {
   column: number;
   row: number;
   explorerFolderId?: string | null;
   fileId?: string;
+  settings?: true;
 };
 
 function decodeId(value: string) {
@@ -39,6 +41,11 @@ function parseSuffix(parts: string[], route: DesktopRoute, startIndex: number) {
     next.fileId = fileId;
     index += 2;
   }
+  if (parts[index] === "settings") {
+    if (next.explorerFolderId !== undefined || next.fileId) return null;
+    next.settings = true;
+    index += 1;
+  }
   return index === parts.length ? next : null;
 }
 
@@ -68,20 +75,44 @@ export function parseDesktopRoute(hash: string): DesktopRoute | null {
 
 export function formatDesktopRoute(route: DesktopRoute) {
   let hash = `#/workspaces/${route.column}/${route.row}`;
+  if (route.settings) return `${hash}/settings`;
   if (route.explorerFolderId === null) hash += "/explorer/root";
   else if (route.explorerFolderId !== undefined) hash += `/explorer/folder/${encodeURIComponent(route.explorerFolderId)}`;
   if (route.fileId) hash += `/file/${encodeURIComponent(route.fileId)}`;
   return hash;
 }
 
-export function normalizeDesktopRoute(route: DesktopRoute | null, entries: DesktopEntry[]) {
+export function normalizeDesktopRoute(route: DesktopRoute | null, entries: DesktopEntry[]): DesktopRoute {
   const column = route && Number.isSafeInteger(route.column) ? route.column : 0;
   const row = route && Number.isSafeInteger(route.row) ? route.row : 0;
   const next: DesktopRoute = { column, row };
+  if (route?.settings) return { ...next, settings: true };
   if (route?.explorerFolderId === null) next.explorerFolderId = null;
   else if (route?.explorerFolderId !== undefined && entries.some((entry) => entry.id === route.explorerFolderId && entry.kind === "folder")) {
     next.explorerFolderId = route.explorerFolderId;
   }
   if (route?.fileId && entries.some((entry) => entry.id === route.fileId && entry.kind === "file")) next.fileId = route.fileId;
   return next;
+}
+
+export function resolveOpenFilePath(entries: DesktopEntry[], path: string) {
+  const segments = path.split("/");
+  if (!path || segments.some((segment) => !segment || segment === "." || segment === ".." || segment.includes("\\") || [...segment].some((character) => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    return codePoint < 32 || codePoint === 127;
+  }))) {
+    throw new Error(`“${path}” is not a valid file path.`);
+  }
+
+  let parentId: string | null = null;
+  let resolved: DesktopEntry | undefined;
+  for (const [index, segment] of segments.entries()) {
+    resolved = entries.find((entry) => entry.parentId === parentId && namesMatch(entry.name, segment));
+    if (!resolved || index < segments.length - 1 && resolved.kind !== "folder") {
+      throw new Error(`No file exists at “${path}”.`);
+    }
+    parentId = resolved.id;
+  }
+  if (resolved?.kind !== "file") throw new Error(`No file exists at “${path}”.`);
+  return resolved;
 }

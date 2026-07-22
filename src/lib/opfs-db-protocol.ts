@@ -1,5 +1,6 @@
 import type { PersistedManifestV13 } from "./manifest-codec";
 import type { OutboxOperation, OutboxRecord } from "./outbox";
+import type { WindowSession } from "./window-session";
 
 export type StoredPreferences = { autoUpdate: boolean };
 
@@ -11,6 +12,8 @@ export type StorageDbRequests = {
   replaceManifest: { manifest: PersistedManifestV13 };
   readPreferences: undefined;
   writePreferences: { preferences: StoredPreferences };
+  readWindowSession: undefined;
+  writeWindowSession: { session: WindowSession };
   reserveOperation: undefined;
   enqueueMutation: { operationId: string; workspaceId: string | null; operation: OutboxOperation };
   readOutbox: undefined;
@@ -28,6 +31,8 @@ export type StorageDbResponses = {
   replaceManifest: undefined;
   readPreferences: StoredPreferences;
   writePreferences: undefined;
+  readWindowSession: WindowSession;
+  writeWindowSession: undefined;
   reserveOperation: { clientId: string; operationId: string; sequence: number };
   enqueueMutation: { manifest: PersistedManifestV13; record: OutboxRecord };
   readOutbox: OutboxRecord[];

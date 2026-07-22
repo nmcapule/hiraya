@@ -36,11 +36,11 @@ import {
   stopDesktopSync,
   type SyncStatus,
 } from "./lib/sync";
-import { DEFAULT_EDITOR_SETTINGS, readLocalPreferences, saveLocalPreferences } from "./lib/opfs";
+import { DEFAULT_EDITOR_SETTINGS, readLocalPreferences, readWindowSession, saveLocalPreferences, saveWindowSession } from "./lib/opfs";
 import { createPwaUpdater, type PwaUpdater } from "./lib/pwa-update";
 import { exportSeededDesktop } from "./lib/seeded";
 import { CLIPBOARD_ARCHIVE_WEB_MIME_TYPE, decodeClipboardArchiveItem, encodeClipboardArchive, snapshotFromClipboardItems, type ClipboardEntrySnapshot } from "./lib/clipboard";
-import { formatDesktopRoute, normalizeDesktopRoute, parseDesktopRoute, type DesktopRoute } from "./lib/routes";
+import { formatDesktopRoute, normalizeDesktopRoute, parseDesktopRoute, resolveOpenFilePath, type DesktopRoute } from "./lib/routes";
 import { DEFAULT_THEME_STATE, isBuiltinThemeId, resolveTheme, themeIconMetrics, themeStyle, type CustomTheme, type ThemeDefinition, type ThemeState } from "./lib/themes";
 import { DEFAULT_WALLPAPER, type ContextMenuState, type DesktopEntry, type DesktopLayout, type DialogState, type EditorSettings, type EntryPosition, type FileEntry } from "./types";
 import { GRID_ORIGIN, nextAvailableDesktopSlot, nextDesktopPosition, projectLogicalPosition, reorderDesktopPages, responsiveDesktop, restoreLogicalPosition, segmentKey, snapAxis } from "./ui/desktop-geometry";
@@ -49,6 +49,7 @@ import { topOverlay } from "./ui/overlay";
 import { createWorkspaceIndex } from "./ui/workspace-index";
 import { clampWindowBounds, initialWindowBounds, type WindowBounds } from "./ui/window-manager";
 import { namesMatch } from "./lib/entry-validation";
+import { restoreWindowSession, type WindowSession, type WindowSessionApp } from "./lib/window-session";
 
 type BaseRunningApp = { id: string; bounds: WindowBounds; minimized: boolean; zIndex: number };
 type FileApp = BaseRunningApp & { kind: "file"; fileId: string; file?: FileEntry; blob?: File; editable?: boolean; contentRevision: number; remoteChanged: boolean };
@@ -78,6 +79,7 @@ function App() {
   const [moveDialogSubmitting, setMoveDialogSubmitting] = useState(false);
   const [runningApps, setRunningApps] = useState<RunningApp[]>([]);
   const [focusedAppId, setFocusedAppId] = useState<string | null>(null);
+  const [windowSessionRestored, setWindowSessionRestored] = useState(false);
   const [route, setRoute] = useState<DesktopRoute | null>(null);
   const [clock, setClock] = useState(() => new Date());
   const [desktopSize, setDesktopSize] = useState(() => ({ width: window.innerWidth, height: Math.max(1, window.innerHeight - 44) }));
@@ -143,6 +145,8 @@ function App() {
   const applyLocationRouteRef = useRef<(entriesValue?: DesktopEntry[], layoutValue?: DesktopLayout) => void>(() => undefined);
   const navigateRouteRef = useRef<(next: DesktopRoute, mode?: "push" | "replace") => void>(() => undefined);
   const openRouteAppsRef = useRef<(next: DesktopRoute) => void>(() => undefined);
+  const restoreRunningAppsRef = useRef<(session: WindowSession, entries: DesktopEntry[]) => void>(() => undefined);
+  const applyOpenQueryRef = useRef<(entries: DesktopEntry[], layout: DesktopLayout) => void>(() => undefined);
   const closeAppRef = useRef<(id: string) => void>(() => undefined);
   const runningAppsRef = useRef<RunningApp[]>([]);
   const focusedAppIdRef = useRef<string | null>(null);
@@ -152,6 +156,8 @@ function App() {
   const editorSettingsSaveRef = useRef<Promise<void>>(Promise.resolve());
   const contentRevisionsRef = useRef<Record<string, number>>({});
   const fileDirtyRef = useRef<Record<string, boolean>>({});
+  const windowSessionReadyRef = useRef(false);
+  const windowSessionSaveRef = useRef<Promise<void>>(Promise.resolve());
   const updaterRef = useRef<PwaUpdater | null>(null);
   const autoUpdateRef = useRef(true);
   const updatePreferenceLoadedRef = useRef(false);
@@ -159,6 +165,7 @@ function App() {
   const activeSegment = { column: route?.column ?? 0, row: route?.row ?? 0 };
   const routeExplorerFolderId = route?.explorerFolderId;
   const routeFileId = route?.fileId;
+  const routeSettings = route?.settings;
   const canMutate = syncStatus !== "connecting";
   const syncIndicatorStatus = syncStatus === "online" && isSyncing ? "syncing" : syncStatus;
   const workspace = useMemo(() => createWorkspaceIndex(entries), [entries]);
@@ -254,9 +261,22 @@ function App() {
     if (normalized) writeRoute(normalized, mode);
   }
 
+  function routeForApp(app: RunningApp | null, current: DesktopRoute): DesktopRoute {
+    const base = { column: current.column, row: current.row };
+    if (!app) return base;
+    if (app.kind === "file") return { ...base, fileId: app.fileId };
+    if (app.kind === "explorer") return { ...base, explorerFolderId: app.folderId };
+    return { ...base, settings: true };
+  }
+
   function updateRunningApps(updater: RunningApp[] | ((current: RunningApp[]) => RunningApp[])) {
+    if (Array.isArray(updater)) {
+      runningAppsRef.current = updater;
+      setRunningApps(updater);
+      return;
+    }
     setRunningApps((current) => {
-      const next = typeof updater === "function" ? updater(current) : updater;
+      const next = updater(current);
       runningAppsRef.current = next;
       return next;
     });
@@ -267,20 +287,17 @@ function App() {
     setFocusedAppId(id);
   }
 
-  function focusApp(id: string) {
+  function focusApp(id: string, syncRoute = true) {
     const target = runningAppsRef.current.find((app) => app.id === id);
+    if (!target) return;
     const zIndex = ++nextWindowZRef.current;
     updateRunningApps((current) => current.map((app) => app.id === id ? { ...app, minimized: false, zIndex } : app));
     setFocusedApp(id);
     const currentRoute = routeRef.current;
-    if (!target || !currentRoute) return;
-    if (target.kind === "file") navigateRoute({ column: currentRoute.column, row: currentRoute.row, fileId: target.fileId }, "replace");
-    else if (target.kind === "explorer") navigateRoute({ column: currentRoute.column, row: currentRoute.row, explorerFolderId: target.folderId }, "replace");
-    else navigateRoute({ column: currentRoute.column, row: currentRoute.row }, "replace");
+    if (syncRoute && currentRoute) navigateRoute(routeForApp(target, currentRoute), "replace");
   }
 
   function closeApp(id: string) {
-    const closing = runningAppsRef.current.find((app) => app.id === id);
     delete fileDirtyRef.current[id];
     delete fileLoadGenerationsRef.current[id];
     const remaining = runningAppsRef.current.filter((app) => app.id !== id);
@@ -288,13 +305,8 @@ function App() {
     if (focusedAppIdRef.current === id) {
       const next = [...remaining].filter((app) => !app.minimized).sort((a, b) => b.zIndex - a.zIndex)[0] ?? null;
       setFocusedApp(next?.id ?? null);
-    }
-    const currentRoute = routeRef.current;
-    if (!closing || !currentRoute) return;
-    if (closing.kind === "file" && currentRoute.fileId === closing.fileId) {
-      navigateRoute({ column: currentRoute.column, row: currentRoute.row, ...(currentRoute.explorerFolderId !== undefined ? { explorerFolderId: currentRoute.explorerFolderId } : {}) }, "replace");
-    } else if (closing.kind === "explorer" && currentRoute.explorerFolderId === closing.folderId) {
-      navigateRoute({ column: currentRoute.column, row: currentRoute.row, ...(currentRoute.fileId ? { fileId: currentRoute.fileId } : {}) }, "replace");
+      const currentRoute = routeRef.current;
+      if (currentRoute) navigateRoute(routeForApp(next, currentRoute), "replace");
     }
   }
 
@@ -303,6 +315,8 @@ function App() {
     if (focusedAppIdRef.current === id) {
       const next = [...runningAppsRef.current].filter((app) => app.id !== id && !app.minimized).sort((a, b) => b.zIndex - a.zIndex)[0] ?? null;
       setFocusedApp(next?.id ?? null);
+      const currentRoute = routeRef.current;
+      if (currentRoute) navigateRoute(routeForApp(next, currentRoute), "replace");
     }
   }
 
@@ -319,19 +333,111 @@ function App() {
     };
   }
 
+  function loadFileApp(id: string, file: FileEntry, expectedRevision: number) {
+    const generation = (fileLoadGenerationsRef.current[id] ?? 0) + 1;
+    fileLoadGenerationsRef.current[id] = generation;
+    void readFile(file.id).then((blob) => {
+      if (fileLoadGenerationsRef.current[id] !== generation || !runningAppsRef.current.some((candidate) => candidate.id === id)) return;
+      updateRunningApps((current) => current.map((candidate) => candidate.id === id && candidate.kind === "file" ? {
+        ...candidate,
+        blob,
+        editable: fileCapabilities(file).editable,
+        contentRevision: expectedRevision,
+      } : candidate));
+    }).catch((openError) => {
+      if (fileLoadGenerationsRef.current[id] !== generation) return;
+      closeApp(id);
+      setError(openError instanceof Error ? openError.message : "The file could not be opened.");
+    });
+  }
+
+  function restoreRunningApps(session: WindowSession, loadedEntries: DesktopEntry[]) {
+    const byId = new Map(loadedEntries.map((entry) => [entry.id, entry]));
+    const restored = restoreWindowSession(session, loadedEntries, desktopSize).map((saved): RunningApp => {
+      if (saved.kind === "settings") return { ...saved, id: "settings" };
+      if (saved.kind === "explorer") return { ...saved, id: `explorer:${saved.folderId ?? "root"}` };
+      const file = byId.get(saved.fileId) as FileEntry;
+      return {
+        ...saved,
+        id: `file:${saved.fileId}`,
+        file,
+        contentRevision: contentRevisionsRef.current[saved.fileId] ?? 0,
+        remoteChanged: false,
+      };
+    });
+    nextWindowZRef.current = Math.max(1, ...restored.map((app) => app.zIndex));
+    updateRunningApps(restored);
+    setFocusedApp(null);
+    for (const app of restored) {
+      if (app.kind === "file" && app.file) loadFileApp(app.id, app.file, app.contentRevision);
+    }
+  }
+
+  function applyOpenQuery(loadedEntries: DesktopEntry[], loadedLayout: DesktopLayout) {
+    void loadedLayout;
+    const url = new URL(window.location.href);
+    const openPath = url.searchParams.get("open");
+    if (openPath === null) {
+      applyLocationRouteRef.current(loadedEntries, loadedLayout);
+      return;
+    }
+    try {
+      const file = resolveOpenFilePath(loadedEntries, openPath);
+      const current = normalizeDesktopRoute(parseDesktopRoute(url.hash), loadedEntries);
+      const next: DesktopRoute = {
+        column: current.column,
+        row: current.row,
+        ...(current.explorerFolderId !== undefined ? { explorerFolderId: current.explorerFolderId } : {}),
+        fileId: file.id,
+      };
+      url.searchParams.delete("open");
+      url.hash = formatDesktopRoute(next);
+      window.history.replaceState(window.history.state, "", url);
+      setCurrentRoute(next);
+    } catch (openError) {
+      setError(openError instanceof Error ? openError.message : `No file exists at “${openPath}”.`);
+      applyLocationRouteRef.current(loadedEntries, loadedLayout);
+    }
+  }
+
+  restoreRunningAppsRef.current = restoreRunningApps;
+  applyOpenQueryRef.current = applyOpenQuery;
+
   applyLocationRouteRef.current = applyLocationRoute;
   navigateRouteRef.current = navigateRoute;
   openRouteAppsRef.current = (next) => {
-    if (next.explorerFolderId !== undefined) openExplorerWindow(next.explorerFolderId);
+    if (next.explorerFolderId !== undefined) openExplorerWindow(next.explorerFolderId, false, !next.fileId && !next.settings);
     if (next.fileId) {
       const entry = workspace.byId.get(next.fileId);
-      if (entry?.kind === "file") openFileWindow(entry);
+      if (entry?.kind === "file") openFileWindow(entry, false, !next.settings);
     }
+    if (next.settings) openSettingsWindow(false);
+    if (next.explorerFolderId === undefined && !next.fileId && !next.settings) setFocusedApp(null);
   };
   closeAppRef.current = closeApp;
 
   useEffect(() => {
     let active = true;
+    let sessionRestoreStarted = false;
+    const savedWindowSession = readWindowSession().then(
+      (session) => ({ session, loaded: true as const }),
+      () => ({ session: null, loaded: false as const }),
+    );
+    const restoreSavedWindowSession = () => {
+      if (sessionRestoreStarted) return;
+      sessionRestoreStarted = true;
+      void savedWindowSession.then((result) => {
+        if (!active) return;
+        if (result.loaded) {
+          restoreRunningAppsRef.current(result.session, entriesRef.current);
+          windowSessionReadyRef.current = true;
+        } else {
+          setError("The saved app session could not be loaded.");
+        }
+        setWindowSessionRestored(true);
+        setLoading(false);
+      });
+    };
     const unsubscribe = subscribeToSync((synced) => {
       if (!active) return;
       contentRevisionsRef.current = synced.sync.contentRevisions;
@@ -341,7 +447,6 @@ function App() {
       setEntries(synced.entries);
       setEditorSettings(synced.editorSettings);
       setAppearance(synced.appearance);
-      setLoading(false);
       const syncedIds = new Set(synced.entries.map((entry) => entry.id));
       setSelectedIds((current) => current.filter((id) => syncedIds.has(id)));
       setContextMenu((current) => current?.type === "entry" && !syncedIds.has(current.entryId) ? null : current);
@@ -361,6 +466,7 @@ function App() {
       }
       navigationReadyRef.current = true;
       applyLocationRouteRef.current(synced.entries, synced.layout);
+      restoreSavedWindowSession();
     }, (nextStatus) => { if (active) setSyncStatus(nextStatus); }, (syncing) => { if (active) setIsSyncing(syncing); });
     void initializeDesktop({ x: window.innerWidth, y: Math.max(1, window.innerHeight - 44) }, seededDesktop)
       .then(({ desktop: loadedDesktop, status: loadedStatus }) => {
@@ -374,21 +480,41 @@ function App() {
         setEditorSettings(loadedEditorSettings);
         setAppearance(loadedAppearance);
         setSyncStatus(loadedStatus);
+        restoreSavedWindowSession();
         navigationReadyRef.current = true;
-        applyLocationRouteRef.current(loadedEntries, loadedLayout);
+        applyOpenQueryRef.current(loadedEntries, loadedLayout);
       })
       .catch((loadError) => {
         if (active && !(loadError instanceof DOMException && loadError.name === "AbortError")) {
           setError(loadError instanceof Error ? loadError.message : "Your files could not be loaded.");
         }
-      })
-      .finally(() => { if (active) setLoading(false); });
+        if (active && !sessionRestoreStarted) {
+          setWindowSessionRestored(true);
+          setLoading(false);
+        }
+      });
     return () => {
       active = false;
       unsubscribe();
       stopDesktopSync();
     };
   }, []);
+
+  useEffect(() => {
+    if (!windowSessionReadyRef.current) return;
+    const session: WindowSession = {
+      version: 1,
+      apps: runningApps.map((app): WindowSessionApp => {
+        const base = { bounds: app.bounds, minimized: app.minimized, zIndex: app.zIndex };
+        if (app.kind === "file") return { ...base, kind: "file", fileId: app.fileId };
+        if (app.kind === "explorer") return { ...base, kind: "explorer", folderId: app.folderId };
+        return { ...base, kind: "settings" };
+      }),
+    };
+    windowSessionSaveRef.current = windowSessionSaveRef.current
+      .then(() => saveWindowSession(session))
+      .catch(() => { setError("The open app session could not be saved."); });
+  }, [runningApps]);
 
   useEffect(() => {
     if (syncStatus !== "blocked") return;
@@ -515,16 +641,6 @@ function App() {
 
   useEffect(() => {
     if (loading) return;
-    openRouteAppsRef.current({
-      column: 0,
-      row: 0,
-      ...(routeExplorerFolderId !== undefined ? { explorerFolderId: routeExplorerFolderId } : {}),
-      ...(routeFileId ? { fileId: routeFileId } : {}),
-    });
-  }, [loading, routeExplorerFolderId, routeFileId]);
-
-  useEffect(() => {
-    if (loading) return;
     const currentApps = runningAppsRef.current;
     const reconciledApps = currentApps.flatMap((app): RunningApp[] => {
       if (app.kind === "settings" || app.kind === "explorer" && app.folderId === null) return [app];
@@ -565,6 +681,17 @@ function App() {
       }).catch(() => setError("An open file changed on the server but could not be refreshed."));
     }
   }, [loading, workspace]);
+
+  useEffect(() => {
+    if (loading || !windowSessionRestored) return;
+    openRouteAppsRef.current({
+      column: 0,
+      row: 0,
+      ...(routeExplorerFolderId !== undefined ? { explorerFolderId: routeExplorerFolderId } : {}),
+      ...(routeFileId ? { fileId: routeFileId } : {}),
+      ...(routeSettings ? { settings: true as const } : {}),
+    });
+  }, [loading, routeExplorerFolderId, routeFileId, routeSettings, windowSessionRestored]);
 
   useEffect(() => {
     applyLocationRouteRef.current();
@@ -968,15 +1095,15 @@ function App() {
     }
   }
 
-  function openExplorerWindow(folderId: string | null) {
+  function openExplorerWindow(folderId: string | null, syncRoute = true, focus = true) {
     const id = `explorer:${folderId ?? "root"}`;
     if (runningAppsRef.current.some((app) => app.id === id)) {
-      focusApp(id);
+      if (focus) focusApp(id, syncRoute);
       return;
     }
     const app: ExplorerApp = { ...createAppBase(id, 760, 590, 360, 280), kind: "explorer", folderId };
     updateRunningApps((current) => [...current, app]);
-    setFocusedApp(id);
+    if (focus) setFocusedApp(id);
   }
 
   function navigateExplorerWindow(appId: string, folderId: string | null) {
@@ -994,23 +1121,23 @@ function App() {
     if (currentRoute) navigateRoute({ column: currentRoute.column, row: currentRoute.row, explorerFolderId: folderId });
   }
 
-  function openSettingsWindow() {
+  function openSettingsWindow(syncRoute = true) {
     const id = "settings";
     if (runningAppsRef.current.some((app) => app.id === id)) {
-      focusApp(id);
+      focusApp(id, syncRoute);
       return;
     }
     const app: SettingsApp = { ...createAppBase(id, 720, 700, 360, 280), kind: "settings" };
     updateRunningApps((current) => [...current, app]);
     setFocusedApp(id);
     const currentRoute = routeRef.current;
-    if (currentRoute) navigateRoute({ column: currentRoute.column, row: currentRoute.row }, "replace");
+    if (syncRoute && currentRoute) navigateRoute({ column: currentRoute.column, row: currentRoute.row, settings: true }, "push");
   }
 
-  function openFileWindow(file: FileEntry) {
+  function openFileWindow(file: FileEntry, syncRoute = true, focus = true) {
     const id = `file:${file.id}`;
     if (runningAppsRef.current.some((app) => app.id === id)) {
-      focusApp(id);
+      if (focus) focusApp(id, syncRoute);
       return;
     }
     const expectedRevision = contentRevisionsRef.current[file.id] ?? 0;
@@ -1023,22 +1150,8 @@ function App() {
       remoteChanged: false,
     };
     updateRunningApps((current) => [...current, app]);
-    setFocusedApp(id);
-    const generation = (fileLoadGenerationsRef.current[id] ?? 0) + 1;
-    fileLoadGenerationsRef.current[id] = generation;
-    void readFile(file.id).then((blob) => {
-      if (fileLoadGenerationsRef.current[id] !== generation || !runningAppsRef.current.some((candidate) => candidate.id === id)) return;
-      updateRunningApps((current) => current.map((candidate) => candidate.id === id && candidate.kind === "file" ? {
-        ...candidate,
-        blob,
-        editable: fileCapabilities(file).editable,
-        contentRevision: expectedRevision,
-      } : candidate));
-    }).catch((openError) => {
-      if (fileLoadGenerationsRef.current[id] !== generation) return;
-      closeApp(id);
-      setError(openError instanceof Error ? openError.message : "The file could not be opened.");
-    });
+    if (focus) setFocusedApp(id);
+    loadFileApp(id, file, expectedRevision);
   }
 
   function handleOpen(entry: DesktopEntry) {
@@ -1046,12 +1159,12 @@ function App() {
     const currentRoute = routeRef.current;
     if (!currentRoute) return;
     if (entry.kind === "folder") {
-      openExplorerWindow(entry.id);
+      openExplorerWindow(entry.id, false);
       navigateRoute({ column: currentRoute.column, row: currentRoute.row, explorerFolderId: entry.id });
       return;
     }
     setError("");
-    openFileWindow(entry);
+    openFileWindow(entry, false);
     navigateRoute({ column: currentRoute.column, row: currentRoute.row, fileId: entry.id });
   }
 
@@ -1493,7 +1606,7 @@ function App() {
           <button type="button" aria-label="New file" disabled={!canMutate} onClick={() => setDialog({ type: "create-file", parentId: null })}><Plus size={15} weight="bold" /> <span>New file</span></button>
           <button type="button" aria-label="New folder" disabled={!canMutate} onClick={() => setDialog({ type: "create-folder", parentId: null })}><FolderPlus size={16} /> <span>New folder</span></button>
           <button type="button" aria-label="Upload files" disabled={!canMutate} onClick={() => chooseUpload(null)}><UploadSimple size={16} /> <span>Upload</span></button>
-          <button type="button" aria-label="Open settings" title="Settings" onClick={openSettingsWindow}><GearSix size={16} /> <span>Settings</span></button>
+          <button type="button" aria-label="Open settings" title="Settings" onClick={() => openSettingsWindow()}><GearSix size={16} /> <span>Settings</span></button>
           <span className="menu-bar__sync" data-status={syncIndicatorStatus} role="status" title={syncIndicatorStatus === "local" ? "Changes are saved in this browser" : syncIndicatorStatus === "syncing" ? "Syncing changes" : syncIndicatorStatus === "online" ? "Changes are synced" : syncIndicatorStatus === "connecting" ? "Connecting to sync server" : syncIndicatorStatus === "blocked" ? "A queued change needs attention before synchronization can continue" : "Offline changes are saved and will sync after reconnecting"}>
             {syncIndicatorStatus === "local" ? <HardDrive size={15} /> : syncIndicatorStatus === "online" ? <CloudCheck size={15} /> : syncIndicatorStatus === "blocked" ? <WarningCircle size={15} weight="fill" /> : syncIndicatorStatus === "connecting" || syncIndicatorStatus === "syncing" ? <SpinnerGap size={15} /> : <CloudSlash size={15} />}
             <span>{syncIndicatorStatus === "local" ? "Saved locally" : syncIndicatorStatus === "syncing" ? "Syncing" : syncIndicatorStatus === "online" ? "Synced" : syncIndicatorStatus === "connecting" ? "Connecting" : syncIndicatorStatus === "blocked" ? "Sync blocked" : "Offline"}</span>

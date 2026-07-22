@@ -14,6 +14,7 @@ import { parseLayout, parsePosition, parseRootDesktopPositions } from "./contrac
 import type { StorageDbMethod, StorageDbRequests, StorageDbResponse, StorageDbResponses } from "./opfs-db-protocol";
 import type { OutboxOperation, OutboxRecord } from "./outbox";
 import { DEFAULT_THEME_STATE, parseCustomTheme, parseThemeState, type CustomTheme, type ThemeState } from "./themes";
+import { parseWindowSession, type WindowSession } from "./window-session";
 
 const MANIFEST_NAME = ".hiraya-manifest.json";
 const PREFERENCES_NAME = ".hiraya-preferences.json";
@@ -273,7 +274,7 @@ let hostedDatabaseRequestId: number | null = null;
 let requestId = 0;
 const pendingRequests = new Map<number, { resolve(value: unknown): void; reject(error: Error): void }>();
 const OWNER_CHANGED_MESSAGE = "The local database owner changed. Retry the operation.";
-const RETRYABLE_OWNER_CHANGE_METHODS = new Set<StorageDbMethod>(["status", "bootstrap", "readManifest", "readPreferences", "readOutbox"]);
+const RETRYABLE_OWNER_CHANGE_METHODS = new Set<StorageDbMethod>(["status", "bootstrap", "readManifest", "readPreferences", "readWindowSession", "readOutbox"]);
 
 class LocalDatabaseOwnerChangedError extends Error {}
 
@@ -372,6 +373,16 @@ async function readLocalPreferencesUnsafe(): Promise<LocalPreferences> {
 async function saveLocalPreferencesUnsafe(preferences: LocalPreferences) {
   await callDatabase("status", undefined);
   await callDatabase("writePreferences", { preferences });
+}
+
+async function readWindowSessionUnsafe() {
+  await callDatabase("status", undefined);
+  return parseWindowSession(await callDatabase("readWindowSession", undefined));
+}
+
+async function saveWindowSessionUnsafe(session: WindowSession) {
+  await callDatabase("status", undefined);
+  await callDatabase("writeWindowSession", { session: parseWindowSession(session) });
 }
 
 async function loadDesktopUnsafe(_viewport: EntryPosition, seeded: SeededManifest | null = null): Promise<DesktopSnapshot> {
@@ -869,6 +880,8 @@ export function readFileByRelativePath(fromFileId: FileEntry["id"], relativePath
 export function saveTextFile(id: FileEntry["id"], content: string) { return serializeStorage(() => saveTextFileUnsafe(id, content)); }
 export function readLocalPreferences() { return serializeStorage(() => readLocalPreferencesUnsafe()); }
 export function saveLocalPreferences(preferences: LocalPreferences) { return serializeStorage(() => saveLocalPreferencesUnsafe(preferences)); }
+export function readWindowSession() { return serializeStorage(() => readWindowSessionUnsafe()); }
+export function saveWindowSession(session: WindowSession) { return serializeStorage(() => saveWindowSessionUnsafe(session)); }
 export function enqueueMutation(operation: OutboxOperation, contents?: Map<string, Blob>) { return serializeStorage(() => enqueueMutationUnsafe(operation, contents)); }
 export function readOutbox() { return serializeStorage(() => callDatabase("readOutbox", undefined)); }
 export function bindOutboxWorkspace(workspaceId: string) { return serializeStorage(() => callDatabase("bindOutboxWorkspace", { workspaceId })); }

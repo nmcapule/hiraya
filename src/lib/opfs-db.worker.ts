@@ -13,9 +13,10 @@ import type {
 } from "./opfs-db-protocol";
 import { applyOutboxOperation, type OutboxOperation, type OutboxRecord } from "./outbox";
 import { parseManifestV13 } from "./manifest-codec";
+import { EMPTY_WINDOW_SESSION, parseWindowSession, type WindowSession } from "./window-session";
 
 const DATABASE_NAME = "/hiraya.sqlite3";
-const DATABASE_SCHEMA_VERSION = 2;
+const DATABASE_SCHEMA_VERSION = 3;
 const DEFAULT_PREFERENCES: StoredPreferences = { autoUpdate: true };
 
 type Row = Record<string, SqlValue>;
@@ -114,6 +115,10 @@ function createSchema(db: Database) {
     CREATE TABLE IF NOT EXISTS preferences (
       singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
       auto_update INTEGER NOT NULL CHECK (auto_update IN (0, 1))
+    );
+    CREATE TABLE IF NOT EXISTS window_session (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+      session_json TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS entries (
       id TEXT PRIMARY KEY,
@@ -245,6 +250,20 @@ function writePreferences(db: Database, preferences: StoredPreferences) {
   });
 }
 
+function readWindowSession(db: Database): WindowSession {
+  const value = scalar(db, "SELECT session_json FROM window_session WHERE singleton=1");
+  return value === undefined ? EMPTY_WINDOW_SESSION : parseWindowSession(JSON.parse(stringValue(value)));
+}
+
+function writeWindowSession(db: Database, session: WindowSession) {
+  const parsed = parseWindowSession(session);
+  db.exec({
+    sql: `INSERT INTO window_session (singleton, session_json) VALUES (1, ?)
+      ON CONFLICT(singleton) DO UPDATE SET session_json=excluded.session_json`,
+    bind: [JSON.stringify(parsed)],
+  });
+}
+
 function readManifest(db: Database): PersistedManifestV13 {
   const workspace = rows(db, "SELECT * FROM workspace WHERE singleton=1")[0];
   const layout = rows(db, "SELECT * FROM layout WHERE singleton=1")[0];
@@ -329,6 +348,11 @@ async function dispatch<M extends StorageDbMethod>(method: M, params: StorageDbR
       return undefined as StorageDbResponses[M];
     case "status":
       return { existedBeforeOpen, needsBootstrap: scalar(db, "SELECT COUNT(*) FROM workspace") === 0 } as StorageDbResponses[M];
+    case "readWindowSession":
+      return readWindowSession(db) as StorageDbResponses[M];
+    case "writeWindowSession":
+      writeWindowSession(db, (params as StorageDbRequests["writeWindowSession"]).session);
+      return undefined as StorageDbResponses[M];
     case "bootstrap": {
       if (scalar(db, "SELECT COUNT(*) FROM workspace") === 0) {
         const input = params as StorageDbRequests["bootstrap"];

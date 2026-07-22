@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { API_ROUTES } from "../src/lib/api-routes";
-import { formatDesktopRoute, normalizeDesktopRoute, parseDesktopRoute } from "../src/lib/routes";
+import { formatDesktopRoute, normalizeDesktopRoute, parseDesktopRoute, resolveOpenFilePath } from "../src/lib/routes";
 import type { DesktopEntry } from "../src/types";
 
 const entries: DesktopEntry[] = [
   { id: "folder two", name: "Folder", kind: "folder", parentId: null, modifiedAt: 1, position: { x: 0, y: 0 } },
   { id: "file #3", name: "File", kind: "file", parentId: null, modifiedAt: 1, position: { x: 0, y: 0 }, mimeType: "text/plain", size: 1 },
+  { id: "nested file", name: "Notes + Ideas.txt", kind: "file", parentId: "folder two", modifiedAt: 1, position: { x: 0, y: 0 }, mimeType: "text/plain", size: 1 },
 ];
 
 describe("routes", () => {
@@ -22,6 +23,15 @@ describe("routes", () => {
       explorerFolderId: null,
       fileId: "file #3",
     });
+  });
+
+  test("round-trips the settings app", () => {
+    const route = { column: -2, row: 4, settings: true as const };
+    expect(formatDesktopRoute(route)).toBe("#/workspaces/-2/4/settings");
+    expect(parseDesktopRoute(formatDesktopRoute(route))).toEqual(route);
+    expect(normalizeDesktopRoute(route, entries)).toEqual(route);
+    expect(parseDesktopRoute("#/workspaces/0/0/file/file%20%233/settings")).toBeNull();
+    expect(formatDesktopRoute({ ...route, fileId: "file #3" })).toBe("#/workspaces/-2/4/settings");
   });
 
   test("canonicalizes leading zeroes", () => {
@@ -61,5 +71,18 @@ describe("routes", () => {
     expect(API_ROUTES.entry("a/b")).toBe("/api/entries/a%2Fb");
     expect(API_ROUTES.content("a b")).toBe("/api/files/a%20b/content");
     expect(API_ROUTES.desktopPositions).toBe("/api/desktop-positions");
+  });
+
+  test("resolves root-relative file paths using workspace name rules", () => {
+    expect(resolveOpenFilePath(entries, "folder/notes + ideas.TXT").id).toBe("nested file");
+    expect(resolveOpenFilePath(entries, "File").id).toBe("file #3");
+  });
+
+  test("rejects missing, folder, and malformed open paths", () => {
+    expect(() => resolveOpenFilePath(entries, "Folder")).toThrow('No file exists at “Folder”.');
+    expect(() => resolveOpenFilePath(entries, "Folder/Missing.txt")).toThrow('No file exists at “Folder/Missing.txt”.');
+    expect(() => resolveOpenFilePath(entries, "../File")).toThrow('“../File” is not a valid file path.');
+    expect(() => resolveOpenFilePath(entries, "/File")).toThrow('“/File” is not a valid file path.');
+    expect(() => resolveOpenFilePath(entries, "Folder\\File")).toThrow('“Folder\\File” is not a valid file path.');
   });
 });
