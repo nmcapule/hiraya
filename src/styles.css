@@ -1748,6 +1748,7 @@ textarea:focus-visible {
 .file-window__content {
   display: grid;
   min-height: 0;
+  grid-template-columns: minmax(0, 1fr);
   flex: 1;
   place-items: center;
   overflow: auto;
@@ -1914,13 +1915,17 @@ textarea:focus-visible {
 }
 
 .markdown-renderer {
+  align-self: start;
+  justify-self: center;
   width: min(100%, 860px);
+  min-width: 0;
   min-height: 100%;
   margin: 0 auto;
   padding: clamp(28px, 5vw, 64px);
   color: var(--ink);
   font-size: 16px;
   line-height: 1.7;
+  overflow-wrap: anywhere;
 }
 
 .markdown-renderer > :first-child { margin-top: 0; }
