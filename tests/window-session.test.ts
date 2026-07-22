@@ -3,8 +3,8 @@ import type { DesktopEntry } from "../src/types";
 import { parseWindowSession, parseWindowTargets, restoreWindowSession } from "../src/lib/window-session";
 
 const entries: DesktopEntry[] = [
-  { id: "folder", name: "Folder", kind: "folder", parentId: null, modifiedAt: 1, position: { x: 0, y: 0 } },
-  { id: "file", name: "File.txt", kind: "file", parentId: "folder", modifiedAt: 1, position: { x: 0, y: 0 }, mimeType: "text/plain", size: 1 },
+  { id: "folder", name: "Folder", kind: "folder", parentId: null, createdAt: null, modifiedAt: 1, position: { x: 0, y: 0 } },
+  { id: "file", name: "File.txt", kind: "file", parentId: "folder", createdAt: null, modifiedAt: 1, position: { x: 0, y: 0 }, mimeType: "text/plain", size: 1 },
 ];
 
 describe("window sessions", () => {
@@ -76,5 +76,20 @@ describe("window sessions", () => {
       version: 3,
       apps: [{ kind: "file", fileId: "file", editMode: true, bounds: { x: 0, y: 0, width: 500, height: 400 }, minimized: false, zIndex: 1 }],
     }).apps[0]).toMatchObject({ kind: "file", fileId: "file", editMode: true });
+  });
+
+  test("restores properties windows for files and folders", () => {
+    const base = { bounds: { x: 10, y: 20, width: 500, height: 400 }, minimized: false };
+    const session = parseWindowSession({
+      version: 4,
+      apps: [
+        { ...base, kind: "properties", entryId: "folder", zIndex: 1 },
+        { ...base, kind: "properties", entryId: "file", zIndex: 2 },
+        { ...base, kind: "properties", entryId: "missing", zIndex: 3 },
+      ],
+    });
+    expect(restoreWindowSession(session, entries, { column: 0, row: 0 }, { width: 800, height: 600 }).map((app) => app.kind === "properties" ? app.entryId : app.kind)).toEqual(["folder", "file"]);
+    expect(parseWindowTargets([{ kind: "properties", entryId: "file" }])).toEqual([{ kind: "properties", entryId: "file" }]);
+    expect(() => parseWindowTargets([{ kind: "properties", entryId: "file" }, { kind: "properties", entryId: "file" }])).toThrow("duplicate apps");
   });
 });

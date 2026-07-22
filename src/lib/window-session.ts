@@ -99,7 +99,12 @@ export function parseWindowSession(value: unknown): WindowSession {
 export function restoreWindowSession(session: WindowSession, entries: DesktopEntry[], activeSegment: SurfaceSegment, viewport: WindowViewport) {
   const byId = new Map(entries.map((entry) => [entry.id, entry]));
   return session.apps
-    .filter((app) => app.kind === "settings" || app.kind === "explorer" && app.folderId === null || app.kind === "properties" ? app.kind === "properties" && byId.has(app.entryId) : app.kind === "file" ? byId.get(app.fileId)?.kind === "file" : byId.get(app.folderId!)?.kind === "folder")
+    .filter((app) => {
+      if (app.kind === "settings" || app.kind === "explorer" && app.folderId === null) return true;
+      if (app.kind === "properties") return byId.has(app.entryId);
+      if (app.kind === "file") return byId.get(app.fileId)?.kind === "file";
+      return byId.get(app.folderId!)?.kind === "folder";
+    })
     .sort((left, right) => left.zIndex - right.zIndex)
     .map((app, index): WindowSessionApp => {
       const minimumSize = app.kind === "file" ? { minWidth: 420, minHeight: 320 } : { minWidth: 360, minHeight: 280 };

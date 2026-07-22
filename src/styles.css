@@ -505,6 +505,87 @@ textarea:focus-visible {
   animation: sync-spin 900ms linear infinite;
 }
 
+.properties-window {
+  min-width: 0;
+  flex: 1;
+  padding: 24px 26px 28px;
+  overflow: auto;
+  color: var(--theme-text, #303836);
+  background: var(--theme-window-muted, #f2f0e9);
+}
+
+.properties-window__identity {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+}
+
+.properties-window__icon {
+  display: grid;
+  width: 58px;
+  height: 58px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: var(--theme-radius-small, 12px);
+  color: var(--theme-accent, #9b5d2e);
+  background: color-mix(in srgb, var(--theme-accent, #9b5d2e) 12%, transparent);
+}
+
+.properties-window__identity div {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.properties-window__identity strong {
+  overflow: hidden;
+  font-family: "Fraunces", Georgia, serif;
+  font-size: 20px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.properties-window__identity div span,
+.properties-window__details dt {
+  color: var(--theme-text-muted, #69716e);
+}
+
+.properties-window__identity div span {
+  font-size: 11px;
+}
+
+.properties-window__details {
+  display: grid;
+  gap: 0;
+  margin: 16px 0 0;
+}
+
+.properties-window__details > div {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: 12px;
+  padding: 11px 2px;
+  border-bottom: 1px solid color-mix(in srgb, currentColor 9%, transparent);
+}
+
+.properties-window__details dt,
+.properties-window__details dd {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.properties-window__details dd {
+  overflow-wrap: anywhere;
+}
+
+.properties-window__id {
+  font-family: "DM Mono", monospace;
+  font-size: 10px !important;
+}
+
 .app-window__resize-handle {
   position: absolute;
   z-index: 2;

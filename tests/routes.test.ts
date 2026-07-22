@@ -4,9 +4,9 @@ import { formatDesktopRoute, normalizeDesktopRoute, parseDesktopRoute, resolveOp
 import type { DesktopEntry } from "../src/types";
 
 const entries: DesktopEntry[] = [
-  { id: "folder two", name: "Folder", kind: "folder", parentId: null, modifiedAt: 1, position: { x: 0, y: 0 } },
-  { id: "file #3", name: "File", kind: "file", parentId: null, modifiedAt: 1, position: { x: 0, y: 0 }, mimeType: "text/plain", size: 1 },
-  { id: "nested file", name: "Notes + Ideas.txt", kind: "file", parentId: "folder two", modifiedAt: 1, position: { x: 0, y: 0 }, mimeType: "text/plain", size: 1 },
+  { id: "folder two", name: "Folder", kind: "folder", parentId: null, createdAt: null, modifiedAt: 1, position: { x: 0, y: 0 } },
+  { id: "file #3", name: "File", kind: "file", parentId: null, createdAt: null, modifiedAt: 1, position: { x: 0, y: 0 }, mimeType: "text/plain", size: 1 },
+  { id: "nested file", name: "Notes + Ideas.txt", kind: "file", parentId: "folder two", createdAt: null, modifiedAt: 1, position: { x: 0, y: 0 }, mimeType: "text/plain", size: 1 },
 ];
 
 describe("routes", () => {
@@ -39,6 +39,15 @@ describe("routes", () => {
     expect(normalizeDesktopRoute(route, entries)).toEqual(route);
     expect(parseDesktopRoute("#/workspaces/0/0/file/file%20%233/settings")).toBeNull();
     expect(formatDesktopRoute({ ...route, fileId: "file #3" })).toBe("#/workspaces/-2/4/settings");
+  });
+
+  test("round-trips and normalizes properties apps", () => {
+    const route = { column: 2, row: -3, propertiesEntryId: "folder two" };
+    expect(formatDesktopRoute(route)).toBe("#/workspaces/2/-3/properties/folder%20two");
+    expect(parseDesktopRoute(formatDesktopRoute(route))).toEqual(route);
+    expect(normalizeDesktopRoute(route, entries)).toEqual(route);
+    expect(normalizeDesktopRoute({ ...route, propertiesEntryId: "missing" }, entries)).toEqual({ column: 2, row: -3 });
+    expect(parseDesktopRoute("#/workspaces/0/0/file/file%20%233/properties/folder%20two")).toBeNull();
   });
 
   test("canonicalizes leading zeroes", () => {
