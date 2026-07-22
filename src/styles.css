@@ -1483,6 +1483,8 @@ textarea:focus-visible {
   overflow: auto;
   padding: 12px;
   background: #ecece6;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .folder-explorer__list {

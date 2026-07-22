@@ -722,8 +722,14 @@ function App() {
   }
 
   function openDesktopContextMenu(clientX: number, clientY: number) {
+    window.getSelection()?.removeAllRanges();
     replaceSelection("desktop", []);
     setContextMenu({ type: "desktop", parentId: null, x: clientX, y: clientY, position: positionAtDesktopPoint(clientX, clientY) });
+  }
+
+  function openEntryContextMenu(entryId: string, clientX: number, clientY: number) {
+    window.getSelection()?.removeAllRanges();
+    setContextMenu({ type: "entry", entryId, x: clientX, y: clientY });
   }
 
   function chooseUpload(parentId: string | null, position?: EntryPosition) {
@@ -1563,7 +1569,7 @@ function App() {
               onContextMenu={(event) => {
                 event.preventDefault();
                 if (!selectedIdSet.has(entry.id)) replaceSelection("desktop", [entry.id]);
-                setContextMenu({ type: "entry", entryId: entry.id, x: event.clientX, y: event.clientY });
+                openEntryContextMenu(entry.id, event.clientX, event.clientY);
               }}
             />;
           }))}
@@ -1644,9 +1650,10 @@ function App() {
                     onMove={(entry, parentId) => void handleMoveTo(selectionSurface === app.id && selectedIdSet.has(entry.id) ? selectedEntries : [entry], parentId)}
                     onContextMenu={(entry, x, y) => {
                       if (selectionSurface !== app.id || !selectedIdSet.has(entry.id)) replaceSelection(app.id, [entry.id]);
-                      setContextMenu({ type: "entry", entryId: entry.id, x, y });
+                      openEntryContextMenu(entry.id, x, y);
                     }}
                     onBlankContextMenu={(parentId, x, y) => {
+                      window.getSelection()?.removeAllRanges();
                       replaceSelection(app.id, []);
                       setContextMenu({ type: "desktop", parentId, x, y, position: positionFor(parentId) });
                     }}
