@@ -13,6 +13,7 @@ import { tags } from "@lezer/highlight";
 import { basicSetup } from "codemirror";
 import type { EditorLanguage, EditorSettings, FileEntry } from "../types";
 import type { ThemeDefinition } from "../lib/themes";
+import { markdownPreviewTargets, type EmbeddedPreviewTarget, type ExternalPreviewTarget } from "../lib/embedded-preview";
 import { editorLanguageFor, fileCapabilities } from "../ui/file-capabilities";
 
 type LinkedFile = { file: FileEntry; blob: Blob };
@@ -22,6 +23,7 @@ type Props = {
   value: string;
   settings: EditorSettings;
   theme: ThemeDefinition;
+  externalEmbeddedPreviews: boolean;
   readOnly?: boolean;
   onChange: (value: string) => void;
   onSave: () => void;
@@ -67,23 +69,12 @@ function editorTheme(theme: ThemeDefinition): Extension {
   ];
 }
 
-function markdownLinks(text: string) {
-  const paths: string[] = [];
-  const pattern = /!?\[[^\]\n]*\]\(\s*(?:<([^>\n]+)>|([^\s)]+))(?:\s+["'][^"']*["'])?\s*\)/g;
-  for (const match of text.matchAll(pattern)) {
-    const path = (match[1] ?? match[2]).replace(/\\([\\()])/g, "$1");
-    if (!path || path.startsWith("#") || path.startsWith("/") || path.startsWith("\\") || /^[a-z][a-z\d+.-]*:/i.test(path)) continue;
-    paths.push(path);
-  }
-  return paths;
-}
-
 class MediaPreviewWidget extends WidgetType {
   private destroyed = false;
   private urls: string[] = [];
 
   constructor(
-    readonly paths: string[],
+    readonly targets: EmbeddedPreviewTarget[],
     readonly resolveLink: (path: string) => Promise<LinkedFile>,
     readonly openFile: (file: FileEntry) => void,
   ) {
@@ -91,15 +82,91 @@ class MediaPreviewWidget extends WidgetType {
   }
 
   eq(other: MediaPreviewWidget) {
-    return this.paths.length === other.paths.length && this.paths.every((path, index) => path === other.paths[index]);
+    return JSON.stringify(this.targets) === JSON.stringify(other.targets);
+  }
+
+  private externalPreview(target: ExternalPreviewTarget, view: EditorView) {
+    const preview = document.createElement("div");
+    preview.className = `inline-media-preview inline-media-preview--external inline-media-preview--${target.kind}`;
+
+    const header = document.createElement("div");
+    header.className = "inline-media-preview__header";
+    const label = document.createElement("strong");
+    label.textContent = target.label;
+    const link = document.createElement("a");
+    link.href = target.sourceUrl;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.referrerPolicy = "no-referrer";
+    link.textContent = `Open ${target.host}`;
+    link.addEventListener("mousedown", (event) => event.stopPropagation());
+    header.append(label, link);
+    preview.append(header);
+
+    const fail = () => {
+      preview.classList.add("inline-media-preview--error");
+      const message = document.createElement("span");
+      message.className = "inline-media-preview__message";
+      message.textContent = `Could not load content from ${target.host}.`;
+      preview.append(message);
+      view.requestMeasure();
+    };
+
+    if (target.kind === "image") {
+      const image = document.createElement("img");
+      image.src = target.previewUrl;
+      image.alt = target.label;
+      image.loading = "lazy";
+      image.referrerPolicy = "no-referrer";
+      image.addEventListener("error", fail, { once: true });
+      preview.prepend(image);
+    } else if (target.kind === "video") {
+      const video = document.createElement("video");
+      video.src = target.previewUrl;
+      video.controls = true;
+      video.preload = "metadata";
+      video.setAttribute("referrerpolicy", "no-referrer");
+      video.addEventListener("error", fail, { once: true });
+      preview.prepend(video);
+    } else if (target.kind === "audio") {
+      const audio = document.createElement("audio");
+      audio.src = target.previewUrl;
+      audio.controls = true;
+      audio.preload = "metadata";
+      audio.setAttribute("referrerpolicy", "no-referrer");
+      audio.addEventListener("error", fail, { once: true });
+      preview.prepend(audio);
+    } else {
+      const frame = document.createElement("iframe");
+      frame.src = target.previewUrl;
+      frame.title = `${target.label} preview`;
+      frame.loading = "lazy";
+      frame.referrerPolicy = "no-referrer";
+      frame.allow = target.kind === "youtube" || target.kind === "vimeo" ? "accelerometer; autoplay; encrypted-media; picture-in-picture; fullscreen" : "fullscreen";
+      frame.sandbox.add("allow-forms", "allow-popups", "allow-popups-to-escape-sandbox", "allow-scripts");
+      if (target.kind === "youtube" || target.kind === "vimeo") frame.sandbox.add("allow-same-origin", "allow-presentation");
+      preview.prepend(frame);
+      if (target.kind === "site") {
+        const hint = document.createElement("span");
+        hint.className = "inline-media-preview__hint";
+        hint.textContent = "Some sites block embedded viewing. Open externally if this preview is blank.";
+        preview.append(hint);
+      }
+    }
+    return preview;
   }
 
   toDOM(view: EditorView) {
     const row = document.createElement("div");
     row.className = "inline-media-row";
-    row.setAttribute("aria-label", "Local file previews");
+    row.setAttribute("aria-label", "Embedded previews");
 
-    for (const path of this.paths) {
+    for (const target of this.targets) {
+      if (target.kind !== "local") {
+        row.append(this.externalPreview(target, view));
+        continue;
+      }
+      const path = target.path;
       const preview = document.createElement("div");
       preview.className = "inline-media-preview inline-media-preview--loading";
       preview.setAttribute("role", "button");
@@ -193,13 +260,14 @@ class MediaPreviewWidget extends WidgetType {
 function inlinePreviews(
   resolveLink: (path: string) => Promise<LinkedFile>,
   openFile: (file: FileEntry) => void,
+  externalEnabled: boolean,
 ) {
   function buildDecorations(state: EditorState) {
     const widgets: Range<Decoration>[] = [];
     for (let lineNumber = 1; lineNumber <= state.doc.lines; lineNumber += 1) {
       const line = state.doc.line(lineNumber);
-      const paths = markdownLinks(line.text);
-      if (paths.length) widgets.push(Decoration.widget({ widget: new MediaPreviewWidget(paths, resolveLink, openFile), block: true, side: 1 }).range(line.to));
+      const targets = markdownPreviewTargets(line.text, externalEnabled);
+      if (targets.length) widgets.push(Decoration.widget({ widget: new MediaPreviewWidget(targets, resolveLink, openFile), block: true, side: 1 }).range(line.to));
     }
     return Decoration.set(widgets, true);
   }
@@ -211,18 +279,19 @@ function inlinePreviews(
   });
 }
 
-export function TextEditor({ file, value, settings, theme, readOnly = false, onChange, onSave, onResolveLink, onOpenLinkedFile }: Props) {
+export function TextEditor({ file, value, settings, theme, externalEmbeddedPreviews, readOnly = false, onChange, onSave, onResolveLink, onOpenLinkedFile }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView>(null);
   const languageConfig = useRef(new Compartment());
   const fontConfig = useRef(new Compartment());
   const editableConfig = useRef(new Compartment());
   const themeConfig = useRef(new Compartment());
+  const previewConfig = useRef(new Compartment());
   const onChangeRef = useRef(onChange);
   const onSaveRef = useRef(onSave);
   const resolveLinkRef = useRef(onResolveLink);
   const openLinkedFileRef = useRef(onOpenLinkedFile);
-  const initialConfig = useRef({ value, fileName: file.name, language: editorLanguageFor(file.name, settings.language), fontSize: settings.fontSize, theme, readOnly });
+  const initialConfig = useRef({ value, fileName: file.name, language: editorLanguageFor(file.name, settings.language), fontSize: settings.fontSize, theme, externalEmbeddedPreviews, readOnly });
   onChangeRef.current = onChange;
   onSaveRef.current = onSave;
   resolveLinkRef.current = onResolveLink;
@@ -246,10 +315,11 @@ export function TextEditor({ file, value, settings, theme, readOnly = false, onC
         EditorView.updateListener.of((update) => {
           if (update.docChanged) onChangeRef.current(update.state.doc.toString());
         }),
-        inlinePreviews(
+        previewConfig.current.of(inlinePreviews(
           (path) => resolveLinkRef.current(path),
           (linkedFile) => openLinkedFileRef.current(linkedFile),
-        ),
+          initialConfig.current.externalEmbeddedPreviews,
+        )),
       ],
     });
     viewRef.current = view;
@@ -280,6 +350,14 @@ export function TextEditor({ file, value, settings, theme, readOnly = false, onC
   useEffect(() => {
     viewRef.current?.dispatch({ effects: themeConfig.current.reconfigure(editorTheme(theme)) });
   }, [theme]);
+
+  useEffect(() => {
+    viewRef.current?.dispatch({ effects: previewConfig.current.reconfigure(inlinePreviews(
+      (path) => resolveLinkRef.current(path),
+      (linkedFile) => openLinkedFileRef.current(linkedFile),
+      externalEmbeddedPreviews,
+    )) });
+  }, [externalEmbeddedPreviews]);
 
   return <div className="text-editor" ref={containerRef} aria-label={`Contents of ${file.name}`} />;
 }

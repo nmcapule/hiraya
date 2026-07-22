@@ -33,7 +33,7 @@ export type DesktopSnapshot = {
   sync: DesktopSyncState;
 };
 
-export type LocalPreferences = { autoUpdate: boolean };
+export type LocalPreferences = { autoUpdate: boolean; externalEmbeddedPreviews: boolean };
 
 export { DEFAULT_EDITOR_SETTINGS } from "./manifest-codec";
 
@@ -124,9 +124,9 @@ async function readLegacyPreferences(root: FileSystemDirectoryHandle): Promise<L
     if (!value || typeof value !== "object" || (value as Record<string, unknown>).version !== 1 || typeof (value as Record<string, unknown>).autoUpdate !== "boolean") {
       throw new Error("The local preferences have an unsupported format.");
     }
-    return { autoUpdate: (value as Record<string, unknown>).autoUpdate as boolean };
+    return { autoUpdate: (value as Record<string, unknown>).autoUpdate as boolean, externalEmbeddedPreviews: true };
   } catch (error) {
-    if (isNotFound(error)) return { autoUpdate: true };
+    if (isNotFound(error)) return { autoUpdate: true, externalEmbeddedPreviews: true };
     throw error;
   }
 }

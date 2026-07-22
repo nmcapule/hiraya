@@ -3,7 +3,7 @@ import type { OutboxOperation, OutboxRecord } from "./outbox";
 import type { WindowSession } from "./window-session";
 import type { ActivityPage, ActivityQuery, NewActivityRecord } from "./activity";
 
-export type StoredPreferences = { autoUpdate: boolean };
+export type StoredPreferences = { autoUpdate: boolean; externalEmbeddedPreviews: boolean };
 
 export type StorageDbRequests = {
   ping: undefined;

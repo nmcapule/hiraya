@@ -19,7 +19,7 @@ import { activityRecord, parseActivityQuery, type ActivityPage, type NewActivity
 const DATABASE_NAME = "/hiraya.sqlite3";
 const DATABASE_SCHEMA_VERSION = 4;
 const HISTORY_LIMIT = Number(import.meta.env.HIRAYA_HISTORY_LIMIT);
-const DEFAULT_PREFERENCES: StoredPreferences = { autoUpdate: true };
+const DEFAULT_PREFERENCES: StoredPreferences = { autoUpdate: true, externalEmbeddedPreviews: true };
 
 type Row = Record<string, SqlValue>;
 type WorkerPort = Pick<MessagePort, "postMessage"> & {
@@ -117,6 +117,10 @@ function createSchema(db: Database) {
     CREATE TABLE IF NOT EXISTS preferences (
       singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
       auto_update INTEGER NOT NULL CHECK (auto_update IN (0, 1))
+    );
+    CREATE TABLE IF NOT EXISTS external_preview_preferences (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+      enabled INTEGER NOT NULL CHECK (enabled IN (0, 1))
     );
     CREATE TABLE IF NOT EXISTS window_session (
       singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -295,9 +299,14 @@ function replaceManifest(db: Database, manifest: PersistedManifestV13, activity?
 
 function writePreferences(db: Database, preferences: StoredPreferences) {
   db.exec({
-    sql: `INSERT INTO preferences VALUES (1, ?)
+    sql: `INSERT INTO preferences (singleton, auto_update) VALUES (1, ?)
       ON CONFLICT(singleton) DO UPDATE SET auto_update=excluded.auto_update`,
     bind: [preferences.autoUpdate],
+  });
+  db.exec({
+    sql: `INSERT INTO external_preview_preferences (singleton, enabled) VALUES (1, ?)
+      ON CONFLICT(singleton) DO UPDATE SET enabled=excluded.enabled`,
+    bind: [preferences.externalEmbeddedPreviews],
   });
 }
 
@@ -423,7 +432,7 @@ async function dispatch<M extends StorageDbMethod>(method: M, params: StorageDbR
     case "readPreferences":
       return readPreferences(db) as StorageDbResponses[M];
     case "writePreferences":
-      writePreferences(db, (params as StorageDbRequests["writePreferences"]).preferences);
+      db.transaction("IMMEDIATE", () => writePreferences(db, (params as StorageDbRequests["writePreferences"]).preferences));
       return undefined as StorageDbResponses[M];
     case "reserveOperation":
       return db.transaction("IMMEDIATE", () => reserveOperation(db)) as StorageDbResponses[M];
@@ -500,8 +509,12 @@ async function dispatch<M extends StorageDbMethod>(method: M, params: StorageDbR
 }
 
 function readPreferences(db: Database): StoredPreferences {
-  const value = scalar(db, "SELECT auto_update FROM preferences WHERE singleton=1");
-  return value === undefined ? DEFAULT_PREFERENCES : { autoUpdate: numberValue(value) === 1 };
+  const autoUpdate = scalar(db, "SELECT auto_update FROM preferences WHERE singleton=1");
+  const externalEmbeddedPreviews = scalar(db, "SELECT enabled FROM external_preview_preferences WHERE singleton=1");
+  return {
+    autoUpdate: autoUpdate === undefined ? DEFAULT_PREFERENCES.autoUpdate : numberValue(autoUpdate) === 1,
+    externalEmbeddedPreviews: externalEmbeddedPreviews === undefined ? DEFAULT_PREFERENCES.externalEmbeddedPreviews : numberValue(externalEmbeddedPreviews) === 1,
+  };
 }
 
 function attach(port: WorkerPort, ready: Promise<void> = Promise.resolve()) {

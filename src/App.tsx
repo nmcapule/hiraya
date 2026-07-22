@@ -39,7 +39,7 @@ import {
   stopDesktopSync,
   type SyncStatus,
 } from "./lib/sync";
-import { DEFAULT_EDITOR_SETTINGS, readLocalPreferences, readWindowSession, saveLocalPreferences, saveWindowSession } from "./lib/opfs";
+import { DEFAULT_EDITOR_SETTINGS, readLocalPreferences, readWindowSession, saveLocalPreferences, saveWindowSession, type LocalPreferences } from "./lib/opfs";
 import { createPwaUpdater, type PwaUpdater } from "./lib/pwa-update";
 import { exportSeededDesktop } from "./lib/seeded";
 import { CLIPBOARD_ARCHIVE_WEB_MIME_TYPE, decodeClipboardArchiveItem, encodeClipboardArchive, snapshotFromClipboardItems, type ClipboardEntrySnapshot } from "./lib/clipboard";
@@ -109,6 +109,7 @@ function App() {
   const [isMobile, setIsMobile] = useState(() => window.matchMedia("(max-width: 620px)").matches);
   const [settingsPage, setSettingsPage] = useState<"main" | "themes" | "logs">("main");
   const [autoUpdate, setAutoUpdate] = useState(true);
+  const [externalEmbeddedPreviews, setExternalEmbeddedPreviews] = useState<boolean | null>(null);
   const [updateSupported, setUpdateSupported] = useState(false);
   const [updateReady, setUpdateReady] = useState(false);
   const [updateChecking, setUpdateChecking] = useState(false);
@@ -187,6 +188,7 @@ function App() {
   const windowSessionSaveRef = useRef<Promise<void>>(Promise.resolve());
   const updaterRef = useRef<PwaUpdater | null>(null);
   const autoUpdateRef = useRef(true);
+  const localPreferencesRef = useRef<LocalPreferences>({ autoUpdate: true, externalEmbeddedPreviews: true });
   const updatePreferenceLoadedRef = useRef(false);
   const manualUpdateCheckRef = useRef(false);
   const activeSegment = { column: route?.column ?? 0, row: route?.row ?? 0 };
@@ -704,8 +706,10 @@ function App() {
       .then((preferences) => {
         if (!active) return;
         autoUpdateRef.current = preferences.autoUpdate;
+        localPreferencesRef.current = preferences;
         updatePreferenceLoadedRef.current = true;
         setAutoUpdate(preferences.autoUpdate);
+        setExternalEmbeddedPreviews(preferences.externalEmbeddedPreviews);
         checkAutomatically();
       })
       .catch(() => {
@@ -1099,16 +1103,33 @@ function App() {
   }
 
   async function changeAutoUpdate(enabled: boolean) {
-    const previous = autoUpdateRef.current;
+    const previous = localPreferencesRef.current;
+    const next = { ...previous, autoUpdate: enabled };
     autoUpdateRef.current = enabled;
+    localPreferencesRef.current = next;
     setAutoUpdate(enabled);
     try {
-      await saveLocalPreferences({ autoUpdate: enabled });
+      await saveLocalPreferences(next);
       if (enabled) void updaterRef.current?.check().catch(() => setError("Hiraya could not check for frontend updates."));
     } catch {
-      autoUpdateRef.current = previous;
-      setAutoUpdate(previous);
+      autoUpdateRef.current = previous.autoUpdate;
+      localPreferencesRef.current = previous;
+      setAutoUpdate(previous.autoUpdate);
       setError("The local update preference could not be saved.");
+    }
+  }
+
+  async function changeExternalEmbeddedPreviews(enabled: boolean) {
+    const previous = localPreferencesRef.current;
+    const next = { ...previous, externalEmbeddedPreviews: enabled };
+    localPreferencesRef.current = next;
+    setExternalEmbeddedPreviews(enabled);
+    try {
+      await saveLocalPreferences(next);
+    } catch {
+      localPreferencesRef.current = previous;
+      setExternalEmbeddedPreviews(previous.externalEmbeddedPreviews);
+      setError("The external preview preference could not be saved.");
     }
   }
 
@@ -2000,6 +2021,7 @@ function App() {
                     remoteChanged={app.remoteChanged}
                     headerActionsTarget={headerElements.actions}
                     editorSettings={editorSettings}
+                    externalEmbeddedPreviews={externalEmbeddedPreviews === true}
                     theme={activeTheme}
                     onSave={(content) => save(app.id, file.id, content)}
                     onDownload={() => void download(file)}
@@ -2052,6 +2074,8 @@ function App() {
                     updateReady={updateReady}
                     updateChecking={updateChecking}
                     autoUpdate={autoUpdate}
+                    externalEmbeddedPreviews={externalEmbeddedPreviews === true}
+                    localPreferencesLoaded={externalEmbeddedPreviews !== null}
                     backendBuildTimestamp={backendBuildTimestamp}
                     onListActivity={listActivity}
                     onSubscribeToActivity={subscribeToActivityChanges}
@@ -2064,6 +2088,7 @@ function App() {
                     onToggleFullscreen={() => void toggleFullscreen()}
                     onCheckForUpdate={() => void checkForUpdate()}
                     onAutoUpdateChange={(enabled) => void changeAutoUpdate(enabled)}
+                    onExternalEmbeddedPreviewsChange={(enabled) => void changeExternalEmbeddedPreviews(enabled)}
                   />
                 )}
                 </>}

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowClockwise, ArrowLeft, ArrowsOut, CaretRight, ClockCounterClockwise, CornersIn, CornersOut, ExportIcon, GridFour, PaintBrush } from "@phosphor-icons/react";
+import { ArrowClockwise, ArrowLeft, ArrowsOut, CaretRight, ClockCounterClockwise, CornersIn, CornersOut, ExportIcon, GlobeSimple, GridFour, PaintBrush } from "@phosphor-icons/react";
 import { ActivityLog } from "./ActivityLog";
 import type { ActivityPage, ActivityQuery } from "../lib/activity";
 import {
@@ -61,6 +61,8 @@ type Props = {
   updateReady: boolean;
   updateChecking: boolean;
   autoUpdate: boolean;
+  externalEmbeddedPreviews: boolean;
+  localPreferencesLoaded: boolean;
   backendBuildTimestamp: string | null;
   onListActivity: (query?: ActivityQuery) => Promise<ActivityPage>;
   onSubscribeToActivity: (listener: () => void) => () => void;
@@ -73,6 +75,7 @@ type Props = {
   onToggleFullscreen: () => void;
   onCheckForUpdate: () => void;
   onAutoUpdateChange: (enabled: boolean) => void;
+  onExternalEmbeddedPreviewsChange: (enabled: boolean) => void;
 };
 
 type NumberControlProps = {
@@ -132,6 +135,8 @@ export function SettingsWindow({
   updateReady,
   updateChecking,
   autoUpdate,
+  externalEmbeddedPreviews,
+  localPreferencesLoaded,
   backendBuildTimestamp,
   onListActivity,
   onSubscribeToActivity,
@@ -144,6 +149,7 @@ export function SettingsWindow({
   onToggleFullscreen,
   onCheckForUpdate,
   onAutoUpdateChange,
+  onExternalEmbeddedPreviewsChange,
 }: Props) {
   const [draft, setDraft] = useState<CustomTheme | null>(null);
   const [saving, setSaving] = useState(false);
@@ -307,6 +313,20 @@ export function SettingsWindow({
                     <button className="button button--quiet" type="button" onClick={onToggleFullscreen}>{isFullscreen ? "Exit" : "Enter"}</button>
                   </div>
                 )}
+              </div>
+            </section>
+
+            <section className="settings-section" aria-labelledby="external-content-heading">
+              <div className="settings-section__heading">
+                <GlobeSimple size={18} />
+                <div><h3 id="external-content-heading">External content</h3><p>Control network content shown inside text files.</p></div>
+              </div>
+              <div className="settings-list">
+                <label className="settings-row">
+                  <span className="settings-row__icon"><GlobeSimple size={17} weight={externalEmbeddedPreviews ? "fill" : "regular"} /></span>
+                  <span className="settings-row__copy"><strong>External embedded previews</strong><small>Opening a document may contact third-party sites. This setting applies only to this browser.</small></span>
+                  <input type="checkbox" checked={externalEmbeddedPreviews} disabled={!localPreferencesLoaded} onChange={(event) => onExternalEmbeddedPreviewsChange(event.target.checked)} />
+                </label>
               </div>
             </section>
 

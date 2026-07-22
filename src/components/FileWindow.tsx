@@ -61,6 +61,7 @@ type Props = {
   remoteChanged?: boolean;
   headerActionsTarget?: HTMLDivElement | null;
   editorSettings: EditorSettings;
+  externalEmbeddedPreviews: boolean;
   theme: ThemeDefinition;
   onSave: (content: string) => Promise<void>;
   onDownload: () => void;
@@ -70,7 +71,7 @@ type Props = {
   onDirtyChange?: (dirty: boolean) => void;
 };
 
-export function FileWindow({ file, blob, editable, readOnly = false, remoteChanged = false, headerActionsTarget, editorSettings, theme, onSave, onDownload, onEditorSettingsChange, onResolveLink, onOpenLinkedFile, onDirtyChange }: Props) {
+export function FileWindow({ file, blob, editable, readOnly = false, remoteChanged = false, headerActionsTarget, editorSettings, externalEmbeddedPreviews, theme, onSave, onDownload, onEditorSettingsChange, onResolveLink, onOpenLinkedFile, onDirtyChange }: Props) {
   const [content, setContent] = useState("");
   const [savedContent, setSavedContent] = useState("");
   const [contentLoaded, setContentLoaded] = useState(false);
@@ -193,6 +194,7 @@ export function FileWindow({ file, blob, editable, readOnly = false, remoteChang
               file={file}
               value={content}
               settings={editorSettings}
+              externalEmbeddedPreviews={externalEmbeddedPreviews}
               theme={theme}
               readOnly={readOnly}
               onChange={setContent}
