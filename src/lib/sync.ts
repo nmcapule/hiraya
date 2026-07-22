@@ -11,6 +11,14 @@ import { parseActivityPage, parseActivityQuery, type ActivityQuery } from "./act
 
 export type SyncStatus = "connecting" | "online" | "offline" | "blocked" | "local";
 
+export async function fetchBackendBuildTimestamp(fetchImpl: typeof fetch = globalThis.fetch.bind(globalThis)) {
+  const response = await fetchImpl(API_ROUTES.health, { cache: "no-store" });
+  if (!response.ok) throw new Error("The sync server is unavailable.");
+  const health = await response.json() as unknown;
+  if (typeof health !== "object" || health === null || !("buildTimestamp" in health) || typeof health.buildTimestamp !== "string") return null;
+  return health.buildTimestamp || null;
+}
+
 type StorageBoundary = Pick<typeof storage,
   "applyRemoteDesktop" | "createEntries" | "createFolder" | "createTextFile" | "deleteEntries" | "deleteEntry" | "importFiles" | "loadDesktop" |
   "moveEntries" | "moveEntry" | "readCurrentDesktop" | "readDesktopSnapshot" | "readFile" | "readFileByRelativePath" |

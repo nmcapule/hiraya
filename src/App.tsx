@@ -17,6 +17,7 @@ import {
   deleteCustomTheme,
   captureEntries,
   deleteEntries,
+  fetchBackendBuildTimestamp,
   getOutboxStatus,
   importFiles,
   initializeDesktop,
@@ -114,6 +115,7 @@ function App() {
   const [showUpdateToast, setShowUpdateToast] = useState(false);
   const [updateBlocked, setUpdateBlocked] = useState(false);
   const [updateApplying, setUpdateApplying] = useState(false);
+  const [backendBuildTimestamp, setBackendBuildTimestamp] = useState<string | null>(null);
   const [pendingPaste, setPendingPaste] = useState<PendingPaste | null>(null);
   const [marquee, setMarquee] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
   const desktopRef = useRef<HTMLElement>(null);
@@ -635,6 +637,15 @@ function App() {
       stopDesktopSync();
     };
   }, []);
+
+  useEffect(() => {
+    if (syncStatus !== "online" || backendBuildTimestamp) return;
+    let active = true;
+    void fetchBackendBuildTimestamp()
+      .then((timestamp) => { if (active) setBackendBuildTimestamp(timestamp); })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, [backendBuildTimestamp, syncStatus]);
 
   useEffect(() => {
     if (windowSessionReadyRef.current) {
@@ -2041,6 +2052,7 @@ function App() {
                     updateReady={updateReady}
                     updateChecking={updateChecking}
                     autoUpdate={autoUpdate}
+                    backendBuildTimestamp={backendBuildTimestamp}
                     onListActivity={listActivity}
                     onSubscribeToActivity={subscribeToActivityChanges}
                     onLayoutChange={applyLayout}

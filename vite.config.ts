@@ -10,6 +10,7 @@ export default defineConfig(({ mode }) => {
   return {
     base: env.HIRAYA_BASE_PATH || "/",
     define: {
+      "import.meta.env.HIRAYA_BUILD_TIMESTAMP": JSON.stringify(new Date().toISOString()),
       "import.meta.env.HIRAYA_FRONTEND_ONLY": JSON.stringify(env.HIRAYA_FRONTEND_ONLY === "true" ? "true" : "false"),
       "import.meta.env.HIRAYA_HISTORY_LIMIT": JSON.stringify(String(historyLimit)),
     },

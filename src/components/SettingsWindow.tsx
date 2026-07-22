@@ -61,6 +61,7 @@ type Props = {
   updateReady: boolean;
   updateChecking: boolean;
   autoUpdate: boolean;
+  backendBuildTimestamp: string | null;
   onListActivity: (query?: ActivityQuery) => Promise<ActivityPage>;
   onSubscribeToActivity: (listener: () => void) => () => void;
   onLayoutChange: (layout: DesktopLayout) => void;
@@ -131,6 +132,7 @@ export function SettingsWindow({
   updateReady,
   updateChecking,
   autoUpdate,
+  backendBuildTimestamp,
   onListActivity,
   onSubscribeToActivity,
   onLayoutChange,
@@ -155,6 +157,12 @@ export function SettingsWindow({
   const selectedThemeName = isBuiltinThemeId(appearance.selectedThemeId)
     ? BUILTIN_THEMES[appearance.selectedThemeId].name
     : appearance.customThemes.find((theme) => theme.id === appearance.selectedThemeId)?.name ?? "Custom theme";
+  const formatBuildTimestamp = (timestamp: string | null) => {
+    if (!timestamp) return "Unavailable";
+    const date = new Date(timestamp);
+    if (Number.isNaN(date.valueOf())) return "Unavailable";
+    return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "medium" }).format(date);
+  };
 
   useEffect(() => () => onThemePreview(null), [onThemePreview]);
 
@@ -318,6 +326,14 @@ export function SettingsWindow({
                   <span className="settings-row__copy"><strong>Auto-update to latest version</strong><small>Check automatically, then ask before reloading.</small></span>
                   <input type="checkbox" checked={autoUpdate} disabled={!updateSupported} onChange={(event) => onAutoUpdateChange(event.target.checked)} />
                 </label>
+                <div className="settings-row">
+                  <span className="settings-row__icon"><ClockCounterClockwise size={17} /></span>
+                  <span className="settings-row__copy"><strong>Frontend build</strong><small><time dateTime={import.meta.env.HIRAYA_BUILD_TIMESTAMP}>{formatBuildTimestamp(import.meta.env.HIRAYA_BUILD_TIMESTAMP)}</time></small></span>
+                </div>
+                <div className="settings-row">
+                  <span className="settings-row__icon"><ClockCounterClockwise size={17} /></span>
+                  <span className="settings-row__copy"><strong>Backend build</strong><small>{backendBuildTimestamp ? <time dateTime={backendBuildTimestamp}>{formatBuildTimestamp(backendBuildTimestamp)}</time> : "Unavailable"}</small></span>
+                </div>
               </div>
             </section>
 

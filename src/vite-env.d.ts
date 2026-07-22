@@ -2,6 +2,7 @@
 /// <reference types="vite-plugin-pwa/client" />
 
 interface ImportMetaEnv {
+  readonly HIRAYA_BUILD_TIMESTAMP: string;
   readonly HIRAYA_FRONTEND_ONLY: string;
   readonly HIRAYA_HISTORY_LIMIT: string;
 }
