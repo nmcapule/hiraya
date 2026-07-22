@@ -59,7 +59,7 @@ type Props = {
   editable: boolean;
   readOnly?: boolean;
   remoteChanged?: boolean;
-  mobileHeaderTarget?: HTMLDivElement | null;
+  headerActionsTarget?: HTMLDivElement | null;
   editorSettings: EditorSettings;
   theme: ThemeDefinition;
   onSave: (content: string) => Promise<void>;
@@ -70,7 +70,7 @@ type Props = {
   onDirtyChange?: (dirty: boolean) => void;
 };
 
-export function FileWindow({ file, blob, editable, readOnly = false, remoteChanged = false, mobileHeaderTarget, editorSettings, theme, onSave, onDownload, onEditorSettingsChange, onResolveLink, onOpenLinkedFile, onDirtyChange }: Props) {
+export function FileWindow({ file, blob, editable, readOnly = false, remoteChanged = false, headerActionsTarget, editorSettings, theme, onSave, onDownload, onEditorSettingsChange, onResolveLink, onOpenLinkedFile, onDirtyChange }: Props) {
   const [content, setContent] = useState("");
   const [savedContent, setSavedContent] = useState("");
   const [contentLoaded, setContentLoaded] = useState(false);
@@ -141,8 +141,8 @@ export function FileWindow({ file, blob, editable, readOnly = false, remoteChang
 
   return (
     <div className="file-window file-window--embedded">
-      {mobileHeaderTarget && createPortal(
-        <div className="mobile-file-header" aria-label="File actions">
+      {headerActionsTarget && createPortal(
+        <div className="file-header-actions" aria-label="File actions">
           {preview === "image" && <ImageZoomControl value={imageZoom} onChange={setImageZoom} />}
           {editable && preview === "text" && !readOnly && (
             <MobileHeaderMenu label="Editor settings" icon={<SlidersHorizontal size={18} />}>
@@ -171,75 +171,21 @@ export function FileWindow({ file, blob, editable, readOnly = false, remoteChang
             </MobileHeaderMenu>
           )}
           {(!editable || readOnly || preview === "url") && preview !== "none" && (
-            <button className="icon-button mobile-file-header__download" type="button" onClick={onDownload} aria-label="Download file">
+            <button className="icon-button file-header-actions__download" type="button" onClick={onDownload} aria-label="Download file">
               <DownloadSimple size={17} />
             </button>
           )}
           {editable && !readOnly && (
-            <button className="button button--primary button--save mobile-file-header__save" type="button" onClick={() => void save(content)} disabled={saving || !dirty || !validContent}>
+            <button className="button button--primary button--save file-header-actions__save" type="button" onClick={() => void save(content)} disabled={saving || !dirty || !validContent}>
               {saving ? <FloppyDisk size={17} /> : <Check size={17} />}
               {saving ? "Saving" : dirty ? "Save" : "Saved"}
             </button>
           )}
         </div>,
-        mobileHeaderTarget,
-      )}
-      {!mobileHeaderTarget && (
-        <div className="file-window__actions">
-          <span className="file-window__mode">{preview === "url" ? readOnly ? "URL preview" : "URL editor" : editable ? readOnly ? "Text preview" : "Text editor" : "Preview"}{dirty ? " / Unsaved" : ""}</span>
-          <div className="window-controls">
-            <button className="icon-button icon-button--wide" type="button" onClick={onDownload} aria-label="Download file">
-              <DownloadSimple size={17} /> <span>Download</span>
-            </button>
-            {editable && !readOnly && (
-              <button className="button button--primary button--save" type="button" onClick={() => void save(content)} disabled={saving || !dirty || !validContent}>
-                {saving ? <FloppyDisk size={17} /> : <Check size={17} />}
-                {saving ? "Saving" : dirty ? "Save" : "Saved"}
-              </button>
-            )}
-          </div>
-        </div>
+        headerActionsTarget,
       )}
         {saveError && <div className="window-error">{saveError}</div>}
         {remoteChanged && <div className="window-error">This file changed on the server. Your unsaved text is preserved; saving it will become the latest version.</div>}
-        {!editable && preview === "image" && !mobileHeaderTarget && (
-          <div className="editor-toolbar image-preview-toolbar" aria-label="Image preview settings">
-            <ImageZoomControl value={imageZoom} onChange={setImageZoom} />
-          </div>
-        )}
-        {editable && preview === "text" && !readOnly && !mobileHeaderTarget && (
-          <div className="editor-toolbar" aria-label="Editor settings">
-            <label>
-              <span>Language</span>
-              <select
-                value={editorSettings.language}
-                onChange={(event) => onEditorSettingsChange({ ...editorSettings, language: event.target.value as EditorSettings["language"] })}
-              >
-                {LANGUAGE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-              </select>
-            </label>
-            <label className="editor-toolbar__toggle">
-              <input
-                type="checkbox"
-                checked={editorSettings.autoSave}
-                onChange={(event) => {
-                  lastAutoSaveAttemptRef.current = null;
-                  onEditorSettingsChange({ ...editorSettings, autoSave: event.target.checked });
-                }}
-              />
-              <span>Auto save</span>
-            </label>
-            <label>
-              <span>Font size</span>
-              <select
-                value={editorSettings.fontSize}
-                onChange={(event) => onEditorSettingsChange({ ...editorSettings, fontSize: Number(event.target.value) })}
-              >
-                {[11, 12, 13, 14, 15, 16, 18, 20, 22].map((size) => <option key={size} value={size}>{size}px</option>)}
-              </select>
-            </label>
-          </div>
-        )}
         <div className="file-window__content">
           {editable && preview === "text" && contentLoaded && (
             <TextEditor

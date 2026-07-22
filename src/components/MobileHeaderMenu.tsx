@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 
 type Props = {
   label: string;
@@ -8,8 +8,27 @@ type Props = {
 
 export function MobileHeaderMenu({ label, icon, children }: Props) {
   const menuRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
+  const [panelStyle, setPanelStyle] = useState<CSSProperties>({});
   const dismiss = () => setOpen(false);
+
+  const positionPanel = useCallback(() => {
+    const trigger = triggerRef.current;
+    if (!trigger) return;
+    const rect = trigger.getBoundingClientRect();
+    const gap = 4;
+    const edge = 10;
+    const width = Math.min(280, window.innerWidth - edge * 2);
+    const spaceBelow = window.innerHeight - rect.bottom - gap - edge;
+    const spaceAbove = rect.top - gap - edge;
+    const openAbove = spaceBelow < 180 && spaceAbove > spaceBelow;
+    setPanelStyle({
+      left: Math.min(Math.max(edge, rect.right - width), window.innerWidth - width - edge),
+      ...(openAbove ? { bottom: window.innerHeight - rect.top + gap } : { top: rect.bottom + gap }),
+      maxHeight: Math.max(100, openAbove ? spaceAbove : spaceBelow),
+    });
+  }, []);
 
   useEffect(() => {
     const handlePointerDown = (event: PointerEvent) => {
@@ -19,7 +38,7 @@ export function MobileHeaderMenu({ label, icon, children }: Props) {
       if (event.key === "Escape" && open) {
         event.preventDefault();
         dismiss();
-        menuRef.current?.querySelector<HTMLElement>("button")?.focus();
+        triggerRef.current?.focus();
       }
     };
     document.addEventListener("pointerdown", handlePointerDown);
@@ -30,10 +49,27 @@ export function MobileHeaderMenu({ label, icon, children }: Props) {
     };
   }, [open]);
 
+  useEffect(() => {
+    if (!open) return;
+    const reposition = () => positionPanel();
+    window.addEventListener("resize", reposition);
+    window.addEventListener("scroll", reposition, true);
+    return () => {
+      window.removeEventListener("resize", reposition);
+      window.removeEventListener("scroll", reposition, true);
+    };
+  }, [open, positionPanel]);
+
   return (
     <div className="mobile-header-menu" ref={menuRef}>
-      <button className="mobile-header-menu__trigger" type="button" aria-label={label} title={label} aria-haspopup="dialog" aria-expanded={open} onClick={() => setOpen((current) => !current)}>{icon}</button>
-      {open && <div className="mobile-header-menu__panel" role="dialog" aria-label={label}>
+      <button ref={triggerRef} className="mobile-header-menu__trigger" type="button" aria-label={label} title={label} aria-haspopup="dialog" aria-expanded={open} onClick={() => {
+        if (open) dismiss();
+        else {
+          positionPanel();
+          setOpen(true);
+        }
+      }}>{icon}</button>
+      {open && <div className="mobile-header-menu__panel" role="dialog" aria-label={label} style={panelStyle}>
         {children(dismiss)}
       </div>}
     </div>

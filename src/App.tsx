@@ -1987,7 +1987,7 @@ function App() {
                     editable={Boolean(app.editable)}
                     readOnly={!canMutate}
                     remoteChanged={app.remoteChanged}
-                    mobileHeaderTarget={isMobile ? headerElements.actions : null}
+                    headerActionsTarget={headerElements.actions}
                     editorSettings={editorSettings}
                     theme={activeTheme}
                     onSave={(content) => save(app.id, file.id, content)}
