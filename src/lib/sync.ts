@@ -24,7 +24,7 @@ export async function fetchBackendBuildTimestamp(fetchImpl: typeof fetch = globa
 
 type StorageBoundary = Pick<typeof storage,
   "applyRemoteDesktop" | "createEntries" | "createFolder" | "createTextFile" | "deleteEntries" | "deleteEntry" | "importFiles" | "loadDesktop" |
-  "moveEntries" | "moveEntry" | "readCurrentDesktop" | "readDesktopSnapshot" | "readFile" | "readFileByRelativePath" |
+  "moveEntries" | "moveEntry" | "readCurrentDesktop" | "readDesktopSnapshot" | "readFile" | "readCachedFile" | "cacheRemoteFile" | "resolveFileByRelativePath" |
   "readDesktopState" |
   "renameEntry" | "saveDesktopLayout" | "saveEditorSettings" | "saveTextFile" | "updateEntryPosition"
   | "updateDesktopPositions" | "enqueueMutation" | "readOutbox" | "bindOutboxWorkspace" |
@@ -50,6 +50,20 @@ export type SyncEngineOptions = {
 class SyncRequestError extends Error {
   constructor(message: string, readonly status: number | null, readonly permanent: boolean) {
     super(message);
+  }
+}
+
+export class VirtualFileUnavailableError extends Error {
+  constructor(message = "This file is not available offline yet. Reconnect and try again.") {
+    super(message);
+    this.name = "VirtualFileUnavailableError";
+  }
+}
+
+export class VirtualFileChangedError extends Error {
+  constructor() {
+    super("This file changed while it was loading. Try opening it again.");
+    this.name = "VirtualFileChangedError";
   }
 }
 
@@ -119,6 +133,7 @@ export class SyncEngine {
   private readonly syncActivityListeners = new Set<(syncing: boolean) => void>();
   private readonly activityChangeListeners = new Set<() => void>();
   private readonly catalogListeners = new Set<(catalog: DesktopRegistry) => void>();
+  private readonly contentLoads = new Map<string, Promise<File>>();
 
   constructor(options: SyncEngineOptions = {}) {
     this.frontendOnly = options.frontendOnly ?? false;
@@ -179,6 +194,7 @@ export class SyncEngine {
     this.events = null;
     if (this.healthTimer !== null) this.clearIntervalImpl(this.healthTimer);
     this.healthTimer = null;
+    this.contentLoads.clear();
     await Promise.all([this.work, starting?.catch(() => undefined)]);
   }
 
@@ -296,17 +312,8 @@ export class SyncEngine {
     const identityChanged = desktop.sync.workspaceId !== workspace.workspaceId;
     if (!identityChanged && workspace.revision <= desktop.sync.revision) return desktop;
     const next = toSnapshot(workspace);
-    const contents = new Map<string, Blob>();
-    await Promise.all(workspace.entries.map(async (entry) => {
-      if (entry.kind !== "file" || (!identityChanged && desktop.sync.contentRevisions[entry.id] === entry.contentRevision)) return;
-      const response = await this.fetchImpl(API_ROUTES.desktopContent(desktopId, entry.id), { cache: "no-store" });
-      if (!response.ok) throw new Error(`The server contents of “${entry.name}” could not be loaded.`);
-      const blob = await response.blob();
-      if (blob.size !== entry.size) throw new Error(`The server contents of “${entry.name}” have an unexpected size.`);
-      contents.set(entry.id, blob);
-    }));
     this.assertActive(generation);
-    const applied = await this.storage.applyRemoteDesktop(next, contents, acknowledgedOperationId, desktopId);
+    const applied = await this.storage.applyRemoteDesktop(next, new Map(), acknowledgedOperationId, desktopId);
     this.assertActive(generation);
     if (desktopId === this.desktopId) this.publish(applied);
     this.publishActivityChange();
@@ -751,7 +758,7 @@ export class SyncEngine {
       }
       const entries = desktop.entries.filter((entry) => included.has(entry.id)).map((entry) => rootIds.includes(entry.id) ? { ...entry, parentId: null } : { ...entry });
       const contents = new Map<string, Blob>();
-      await Promise.all(entries.map(async (entry) => { if (entry.kind === "file") contents.set(entry.id, await this.storage.readFile(entry.id)); }));
+      await Promise.all(entries.map(async (entry) => { if (entry.kind === "file") contents.set(entry.id, await this.readFile(entry.id)); }));
       return { selectedRootIds: [...rootIds], entries, contents };
     });
   }
@@ -841,8 +848,55 @@ export class SyncEngine {
     return this.mutate({ kind: "delete-theme", themeId }, (next) => next.appearance);
   }
 
-  readFile(id: FileEntry["id"]) { return this.storage.readFile(id); }
-  readFileByRelativePath(fromFileId: FileEntry["id"], relativePath: string) { return this.storage.readFileByRelativePath(fromFileId, relativePath); }
+  async readFile(id: FileEntry["id"]): Promise<File> {
+    const entry = this.current().entries.find((candidate): candidate is FileEntry => candidate.id === id && candidate.kind === "file");
+    if (!entry) throw new Error("That file no longer exists.");
+    const workspaceId = this.current().sync.workspaceId;
+    if (this.frontendOnly || !workspaceId) return this.storage.readFile(id);
+
+    const desktopId = this.desktopId;
+    const contentRevision = this.current().sync.contentRevisions[id];
+    const generation = this.generation;
+    if (!Number.isSafeInteger(contentRevision)) throw new Error("That file has invalid synchronization metadata.");
+    const cached = await this.storage.readCachedFile(desktopId, workspaceId, id, contentRevision);
+    if (cached) return cached;
+    if (this.status === "offline") throw new VirtualFileUnavailableError();
+
+    const key = `${desktopId}\n${workspaceId}\n${id}\n${contentRevision}`;
+    const existing = this.contentLoads.get(key);
+    if (existing) return existing;
+    const loading = (async () => {
+      let response: Response;
+      try {
+        response = await this.fetchImpl(API_ROUTES.desktopContent(desktopId, id), { cache: "no-store" });
+      } catch {
+        this.setStatus("offline");
+        throw new VirtualFileUnavailableError();
+      }
+      if (!response.ok) throw new Error(response.status === 404 ? "This file no longer exists on the server." : `The server contents of “${entry.name}” could not be loaded (${response.status}).`);
+      const responseRevisionHeader = response.headers.get("X-Hiraya-Revision");
+      const responseRevision = responseRevisionHeader === null ? Number.NaN : Number(responseRevisionHeader);
+      if (!Number.isSafeInteger(responseRevision) || responseRevision !== contentRevision) throw new VirtualFileChangedError();
+      const content = await response.blob();
+      if (content.size !== entry.size) throw new Error(`The server contents of “${entry.name}” have an unexpected size.`);
+      this.assertActive(generation);
+      const stored = await this.storage.cacheRemoteFile(desktopId, workspaceId, id, contentRevision, content);
+      this.assertActive(generation);
+      if (!stored) throw new VirtualFileChangedError();
+      return stored;
+    })();
+    this.contentLoads.set(key, loading);
+    try {
+      return await loading;
+    } finally {
+      if (this.contentLoads.get(key) === loading) this.contentLoads.delete(key);
+    }
+  }
+
+  async readFileByRelativePath(fromFileId: FileEntry["id"], relativePath: string) {
+    const file = await this.storage.resolveFileByRelativePath(fromFileId, relativePath);
+    return { file, blob: await this.readFile(file.id) };
+  }
   async getOutboxStatus() {
     const records = await this.storage.readOutbox();
     return {

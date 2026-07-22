@@ -40,7 +40,7 @@ Prefer small changes in existing modules. Do not introduce global state or a com
 - `.hiraya-manifest.json` versions 1 through 13 are legacy import sources only.
 - Offline mutations update the projected SQLite desktop and append an outbox operation atomically.
 - Replay uses stable idempotency headers and preserves blocked operations for user resolution.
-- During reconciliation, download and validate changed blobs before publishing metadata. Remove obsolete blobs afterward.
+- During reconciliation, publish validated metadata without requiring file bytes. Fetch virtual file content on demand, validate its revision and size, and cache it before use.
 - Write file contents before adding metadata that references them.
 - Renaming and reparenting update metadata only.
 - Validate complete multi-file operations before writing any file.

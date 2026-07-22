@@ -16,6 +16,7 @@ function remoteOptions(snapshot: DesktopSnapshot, fetchImpl: typeof fetch) {
   let current = snapshot;
   let sequence = 0;
   let outbox: OutboxRecord[] = [];
+  const cached = new Map<string, File>();
   return {
     fetch: fetchImpl,
     eventSource: FakeEventSource as unknown as typeof EventSource,
@@ -29,6 +30,14 @@ function remoteOptions(snapshot: DesktopSnapshot, fetchImpl: typeof fetch) {
         for (const record of outbox) if (record.operationId !== acknowledgedOperationId) manifest = applyOutboxOperation(manifest, record.operation);
         current = { entries: manifest.entries, layout: { snapToGrid: manifest.snapToGrid, wallpaper: manifest.wallpaper }, editorSettings: manifest.editorSettings, appearance: manifest.appearance, sync: manifest.sync };
         return current;
+      },
+      readCachedFile: async (_desktopId: string, workspaceId: string, id: string, contentRevision: number) => cached.get(`${workspaceId}:${id}:${contentRevision}`) ?? null,
+      cacheRemoteFile: async (_desktopId: string, workspaceId: string, id: string, contentRevision: number, content: Blob) => {
+        const entry = current.entries.find((candidate) => candidate.id === id && candidate.kind === "file");
+        if (!entry || current.sync.workspaceId !== workspaceId || current.sync.contentRevisions[id] !== contentRevision) return null;
+        const file = new File([content], entry.name, { type: entry.mimeType, lastModified: entry.modifiedAt });
+        cached.set(`${workspaceId}:${id}:${contentRevision}`, file);
+        return file;
       },
       enqueueMutation: async (operation: OutboxRecord["operation"]) => {
         sequence += 1;
@@ -298,18 +307,70 @@ describe("SyncEngine remote reconciliation", () => {
       const request = `${init?.method ?? "GET"} ${String(input)}`;
       requests.push(request);
       if (String(input) === "/api/desktops/desk-1") return Response.json(++reads === 1 ? first : second);
-      if (String(input) === "/api/desktops/desk-1/files/file-1/content") return new Response("note");
+      if (String(input) === "/api/desktops/desk-1/files/file-1/content") return new Response("note", { headers: { "X-Hiraya-Revision": "1" } });
       if (String(input) === "/api/desktops/desk-1/positions") return Response.json({});
       throw new Error(`Unexpected request: ${request}`);
     }) as typeof fetch;
     const engine = new SyncEngine(remoteOptions(snapshot, fetchImpl));
     await engine.start("desk-1", { x: 100, y: 100 });
+    await engine.readFile("file-1");
     await engine.updateDesktopPositions([{ entryId: "file-1", position: { x: 40, y: 50 } }]);
 
     expect(requests).toContain("GET /api/desktops/desk-1");
     expect(requests).toContain("GET /api/desktops/desk-1/files/file-1/content");
     expect(requests).toContain("PUT /api/desktops/desk-1/positions");
     engine.stop();
+  });
+
+  test("publishes metadata without content and hydrates one revision only once", async () => {
+    const snapshot = desktopSnapshot();
+    const workspace = remoteWorkspace();
+    let contentRequests = 0;
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/workspace") return Response.json(workspace);
+      if (String(input) === "/api/files/file-1/content") {
+        contentRequests += 1;
+        await pending;
+        return new Response("note", { headers: { "Content-Type": "text/plain", "X-Hiraya-Revision": "1" } });
+      }
+      throw new Error(`Unexpected request: ${String(input)}`);
+    }) as typeof fetch;
+    const engine = new SyncEngine(remoteOptions(snapshot, fetchImpl));
+
+    const started = await engine.start({ x: 100, y: 100 });
+    expect(started.desktop.entries).toHaveLength(1);
+    expect(contentRequests).toBe(0);
+
+    const first = engine.readFile("file-1");
+    const concurrent = engine.readFile("file-1");
+    await Promise.resolve();
+    expect(contentRequests).toBe(1);
+    release();
+    expect(await (await first).text()).toBe("note");
+    expect(await (await concurrent).text()).toBe("note");
+    expect(await (await engine.readFile("file-1")).text()).toBe("note");
+    expect(contentRequests).toBe(1);
+    await engine.stop();
+  });
+
+  test("reports an offline cache miss without requesting content", async () => {
+    const snapshot = desktopSnapshot();
+    let requests = 0;
+    const options = remoteOptions(snapshot, (async (input) => {
+      requests += 1;
+      if (String(input) === "/api/workspace") return Response.json(remoteWorkspace());
+      throw new Error("offline");
+    }) as typeof fetch);
+    const engine = new SyncEngine(options);
+    await engine.start({ x: 100, y: 100 });
+    const beforeMiss = requests;
+    (engine as unknown as { status: string }).status = "offline";
+
+    await expect(engine.readFile("file-1")).rejects.toThrow("not available offline");
+    expect(requests).toBe(beforeMiss);
+    await engine.stop();
   });
 
   test("replays an atomic cross-desktop move through the global endpoint", async () => {

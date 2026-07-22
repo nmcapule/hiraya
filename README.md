@@ -44,9 +44,9 @@ The HTTP workspace schema is version 5. Its TypeScript response validation lives
 
 ## Offline behavior
 
-The browser cache uses a WAL-enabled SQLite database in OPFS. A SharedWorker coordinates tabs through one dedicated SQLite connection. It stores entries, coordinates, layout, editor settings, synchronization revisions, local preferences, and a durable mutation outbox.
+The browser cache uses a WAL-enabled SQLite database in OPFS. A SharedWorker coordinates tabs through one dedicated SQLite connection. It stores entries, coordinates, layout, editor settings, synchronization revisions, local preferences, and a durable mutation outbox. Initial synchronization retrieves file and folder metadata only. File content is fetched and revision-validated when first opened, previewed, copied, downloaded, or exported, then remains cached until that revision becomes stale or the entry is deleted.
 
-The production service worker caches the application shell, SQLite worker, and WASM runtime. Offline changes update the projected local desktop and replay in order after the server reconnects. Structural conflicts remain visible as blocked operations instead of being silently discarded. The browser cache and outbox are not a backup.
+The production service worker caches the application shell, SQLite worker, and WASM runtime. Materialized files remain available offline; virtual files that have not been fetched show a retryable unavailable state. Offline changes update the projected local desktop and replay in order after the server reconnects. Structural conflicts remain visible as blocked operations instead of being silently discarded. The browser cache and outbox are not a backup.
 
 ## Seeded desktops
 

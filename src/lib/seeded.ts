@@ -1,5 +1,5 @@
 import { strToU8, zip, type Zippable } from "fflate";
-import { readDesktopSnapshot } from "./opfs";
+import { readCurrentDesktop } from "./opfs";
 import { toPortableSeededManifest } from "./seeded-manifest";
 import type { DesktopEntry } from "../types";
 
@@ -30,8 +30,8 @@ function createZip(files: Zippable) {
   });
 }
 
-export async function exportSeededDesktop() {
-  const snapshot = await readDesktopSnapshot();
+export async function exportSeededDesktop(readContent: (id: string) => Promise<Blob>) {
+  const snapshot = await readCurrentDesktop();
   const byId = new Map(snapshot.entries.map((entry) => [entry.id, entry]));
   const archive: Zippable = { [`${EXPORT_ROOT}/`]: new Uint8Array() };
   await Promise.all(snapshot.entries.map(async (entry) => {
@@ -40,8 +40,8 @@ export async function exportSeededDesktop() {
       archive[`${EXPORT_ROOT}/content/${path}/`] = new Uint8Array();
       return;
     }
-    const content = snapshot.contents.get(entry.id);
-    if (!content) throw new Error(`The contents of “${entry.name}” could not be read.`);
+    const content = await readContent(entry.id);
+    if (content.size !== entry.size) throw new Error(`The contents of “${entry.name}” could not be read.`);
     archive[`${EXPORT_ROOT}/content/${path}`] = new Uint8Array(await content.arrayBuffer());
     return;
   }));

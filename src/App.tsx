@@ -65,7 +65,7 @@ import { parseInternetShortcut } from "./lib/internet-shortcut";
 import { createSerialTaskQueue } from "./lib/serial-task";
 
 type BaseRunningApp = { id: string; bounds: WindowBounds; minimized: boolean; zIndex: number };
-type FileApp = BaseRunningApp & { kind: "file"; fileId: string; file?: FileEntry; blob?: File; editable?: boolean; editMode: boolean; contentRevision: number; remoteChanged: boolean };
+type FileApp = BaseRunningApp & { kind: "file"; fileId: string; file?: FileEntry; blob?: File; editable?: boolean; loadError?: string; editMode: boolean; contentRevision: number; remoteChanged: boolean };
 type ExplorerApp = BaseRunningApp & { kind: "explorer"; folderId: string | null };
 type SettingsApp = BaseRunningApp & { kind: "settings" };
 type PropertiesApp = BaseRunningApp & { kind: "properties"; entryId: string };
@@ -440,18 +440,22 @@ function App() {
   function loadFileApp(id: string, file: FileEntry, expectedRevision: number) {
     const generation = (fileLoadGenerationsRef.current[id] ?? 0) + 1;
     fileLoadGenerationsRef.current[id] = generation;
+    updateRunningApps((current) => current.map((candidate) => candidate.id === id && candidate.kind === "file" ? { ...candidate, blob: undefined, loadError: undefined } : candidate));
     void readFile(file.id).then((blob) => {
       if (fileLoadGenerationsRef.current[id] !== generation || !runningAppsRef.current.some((candidate) => candidate.id === id)) return;
       updateRunningApps((current) => current.map((candidate) => candidate.id === id && candidate.kind === "file" ? {
         ...candidate,
         blob,
+        loadError: undefined,
         editable: fileCapabilities(file).editable,
         contentRevision: expectedRevision,
       } : candidate));
     }).catch((openError) => {
       if (fileLoadGenerationsRef.current[id] !== generation) return;
-      closeApp(id);
-      setError(openError instanceof Error ? openError.message : "The file could not be opened.");
+      updateRunningApps((current) => current.map((candidate) => candidate.id === id && candidate.kind === "file" ? {
+        ...candidate,
+        loadError: openError instanceof Error ? openError.message : "The file could not be opened.",
+      } : candidate));
     });
   }
 
@@ -1670,7 +1674,7 @@ function App() {
     setError("");
     setExporting(true);
     try {
-      const archive = await exportSeededDesktop();
+      const archive = await exportSeededDesktop(readFile);
       const url = URL.createObjectURL(archive);
       const anchor = document.createElement("a");
       anchor.href = url;
@@ -2259,6 +2263,11 @@ function App() {
                     onOpenLinkedFile={handleOpen}
                     onDirtyChange={(dirty) => { fileDirtyRef.current[app.id] = dirty; }}
                   />
+                ) : app.kind === "file" && file && app.loadError ? (
+                  <div className="app-window__loading" role="alert">
+                    <span>{app.loadError}</span>
+                    <button className="button button--primary" type="button" onClick={() => loadFileApp(app.id, file, app.contentRevision)}>Retry</button>
+                  </div>
                 ) : app.kind === "file" ? <div className="app-window__loading"><SpinnerGap size={22} /> Opening file</div> : null}
                 {app.kind === "explorer" && (
                   <FolderExplorer

@@ -22,6 +22,8 @@ const MANIFEST_NAME = ".hiraya-manifest.json";
 const PREFERENCES_NAME = ".hiraya-preferences.json";
 const FILES_DIRECTORY = "files";
 const PENDING_DIRECTORY = "pending";
+const CONTENT_CACHE_DIRECTORY = ".hiraya-content-cache";
+const CONTENT_CACHE_MIGRATION = ".migrated";
 
 type Manifest = PersistedManifestV13;
 export type { DesktopSyncState } from "./manifest-codec";
@@ -61,6 +63,68 @@ async function getFilesDirectory() {
 async function getPendingDirectory() {
   const root = await getRoot();
   return root.getDirectoryHandle(PENDING_DIRECTORY, { create: true });
+}
+
+async function getContentCacheDirectory() {
+  const root = await getRoot();
+  return root.getDirectoryHandle(CONTENT_CACHE_DIRECTORY, { create: true });
+}
+
+type ContentCacheMarker = { workspaceId: string; contentRevision: number; size: number };
+
+async function readContentCacheMarker(id: string): Promise<ContentCacheMarker | null> {
+  try {
+    const directory = await getContentCacheDirectory();
+    const value: unknown = JSON.parse(await (await directory.getFileHandle(id)).getFile().then((file) => file.text()));
+    if (!value || typeof value !== "object") return null;
+    const marker = value as Partial<ContentCacheMarker>;
+    if (typeof marker.workspaceId !== "string" || !Number.isSafeInteger(marker.contentRevision) || !Number.isSafeInteger(marker.size)) return null;
+    return marker as ContentCacheMarker;
+  } catch (error) {
+    if (isNotFound(error) || error instanceof SyntaxError) return null;
+    throw error;
+  }
+}
+
+async function writeContentCacheMarker(id: string, marker: ContentCacheMarker) {
+  await writeHandleContent(await getContentCacheDirectory(), id, JSON.stringify(marker));
+}
+
+async function removeContentCacheMarker(id: string) {
+  try {
+    await (await getContentCacheDirectory()).removeEntry(id);
+  } catch (error) {
+    if (!isNotFound(error)) throw error;
+  }
+}
+
+async function migrateExistingContentCache() {
+  const markers = await getContentCacheDirectory();
+  try {
+    await markers.getFileHandle(CONTENT_CACHE_MIGRATION);
+    return;
+  } catch (error) {
+    if (!isNotFound(error)) throw error;
+  }
+
+  const files = await getFilesDirectory();
+  const registry = await callDatabase("listDesktops", undefined, null);
+  for (const desktop of registry.desktops) {
+    const manifest = parseManifestV13(await callDatabase("readDesktop", { desktopId: desktop.id }, null));
+    if (!manifest.sync.workspaceId) continue;
+    for (const entry of manifest.entries) {
+      if (entry.kind !== "file") continue;
+      const contentRevision = manifest.sync.contentRevisions[entry.id];
+      if (!Number.isSafeInteger(contentRevision)) continue;
+      try {
+        const stored = await (await files.getFileHandle(entry.id)).getFile();
+        if (stored.size === entry.size) await writeContentCacheMarker(entry.id, { workspaceId: manifest.sync.workspaceId, contentRevision, size: entry.size });
+      } catch (error) {
+        if (!isNotFound(error)) throw error;
+      }
+    }
+  }
+  await writeHandleContent(markers, CONTENT_CACHE_MIGRATION, "1");
 }
 
 async function writeManifest(manifest: Manifest, activity?: NewActivityRecord) {
@@ -163,7 +227,9 @@ async function initializeDatabase(seeded: SeededManifest | null): Promise<Manife
     const desktopId = resolveDesktopContext(activeDesktopContext, registry.desktops, registry.activeDesktopId);
     if (!desktopId) throw new Error("The desktop database is not initialized.");
     setDesktopContext(desktopId);
-    return parseManifestV13(await callDatabase("readManifest", undefined, desktopId));
+    const manifest = parseManifestV13(await callDatabase("readManifest", undefined, desktopId));
+    await migrateExistingContentCache();
+    return manifest;
   }
 
   let legacyManifest: Manifest | null = null;
@@ -191,6 +257,7 @@ async function initializeDatabase(seeded: SeededManifest | null): Promise<Manife
     await removeLegacyFile(root, MANIFEST_NAME);
     await removeLegacyFile(root, PREFERENCES_NAME);
   }
+  await migrateExistingContentCache();
   return bootstrapped.manifest;
 }
 
@@ -608,14 +675,27 @@ async function applyRemoteDesktopUnsafe(snapshot: DesktopSnapshot, contents: Map
     sync: snapshot.sync,
   };
   assertValidManifest(next);
+  const acknowledgedRecord = acknowledgedOperationId
+    ? (await callDatabase("readOutbox", undefined, null)).find((record) => record.operationId === acknowledgedOperationId)
+    : undefined;
 
   for (const entry of snapshot.entries) {
     if (entry.kind !== "file") continue;
     const changedContent = current.sync.workspaceId !== snapshot.sync.workspaceId || current.sync.contentRevisions[entry.id] !== snapshot.sync.contentRevisions[entry.id];
     if (!changedContent) continue;
-    const content = contents.get(entry.id);
-    if (!content || content.size !== entry.size) throw new Error(`The server returned invalid contents for “${entry.name}”.`);
+    let content = contents.get(entry.id);
+    if (!content && acknowledgedRecord && operationContentIds(acknowledgedRecord.operation).includes(entry.id)) {
+      content = await readStagedContent(acknowledgedRecord.operationId, entry.id);
+    }
+    await removeContentCacheMarker(entry.id);
+    if (!content) continue;
+    if (content.size !== entry.size) throw new Error(`The server returned invalid contents for “${entry.name}”.`);
     await writeContent(entry.id, content.slice(0, content.size, entry.mimeType));
+    if (snapshot.sync.workspaceId) await writeContentCacheMarker(entry.id, {
+      workspaceId: snapshot.sync.workspaceId,
+      contentRevision: snapshot.sync.contentRevisions[entry.id],
+      size: entry.size,
+    });
   }
   const reconciled = await callDatabase("applyRemoteWithOutbox", { manifest: next, acknowledgedOperationId }, desktopId);
   const projected = parseManifestV13(reconciled.manifest);
@@ -628,6 +708,7 @@ async function applyRemoteDesktopUnsafe(snapshot: DesktopSnapshot, contents: Map
     if (entry.kind !== "file" || retained.has(entry.id)) continue;
     try {
       await directory.removeEntry(entry.id);
+      await removeContentCacheMarker(entry.id);
     } catch (error) {
       if (!(error instanceof DOMException && error.name === "NotFoundError")) console.warn("Hiraya could not clean up stale file content.", error);
     }
@@ -988,6 +1069,45 @@ async function readFileUnsafe(id: FileEntry["id"]): Promise<File> {
   return new File([stored], entry.name, { type: entry.mimeType, lastModified: entry.modifiedAt });
 }
 
+async function readCachedFileUnsafe(desktopId: string, workspaceId: string, id: FileEntry["id"], contentRevision: number): Promise<File | null> {
+  const manifest = parseManifestV13(await callDatabase("readDesktop", { desktopId }, null));
+  const entry = getFileEntry(manifest.entries, id);
+  const hasPendingContent = (await callDatabase("readOutbox", undefined, null)).some((record) =>
+    (record.desktopId ?? desktopId) === desktopId && operationContentIds(record.operation).includes(id));
+  if (!hasPendingContent) {
+    const marker = await readContentCacheMarker(id);
+    if (!marker || marker.workspaceId !== workspaceId || marker.contentRevision !== contentRevision || marker.size !== entry.size) return null;
+  }
+  try {
+    const stored = await (await (await getFilesDirectory()).getFileHandle(id)).getFile();
+    if (stored.size !== entry.size) {
+      if (!hasPendingContent) await removeContentCacheMarker(id);
+      return null;
+    }
+    return new File([stored], entry.name, { type: entry.mimeType, lastModified: entry.modifiedAt });
+  } catch (error) {
+    if (isNotFound(error)) {
+      if (!hasPendingContent) await removeContentCacheMarker(id);
+      return null;
+    }
+    throw error;
+  }
+}
+
+async function cacheRemoteFileUnsafe(desktopId: string, workspaceId: string, id: FileEntry["id"], contentRevision: number, content: Blob): Promise<File | null> {
+  const manifest = parseManifestV13(await callDatabase("readDesktop", { desktopId }, null));
+  const entry = manifest.entries.find((candidate): candidate is FileEntry => candidate.id === id && candidate.kind === "file");
+  if (!entry || manifest.sync.workspaceId !== workspaceId || manifest.sync.contentRevisions[id] !== contentRevision) return null;
+  const hasPendingContent = (await callDatabase("readOutbox", undefined, null)).some((record) =>
+    (record.desktopId ?? desktopId) === desktopId && operationContentIds(record.operation).includes(id));
+  if (hasPendingContent) return readCachedFileUnsafe(desktopId, workspaceId, id, contentRevision);
+  if (content.size !== entry.size) throw new Error(`The server contents of “${entry.name}” have an unexpected size.`);
+  const stored = content.slice(0, content.size, entry.mimeType);
+  await writeContent(id, stored);
+  await writeContentCacheMarker(id, { workspaceId, contentRevision, size: entry.size });
+  return new File([stored], entry.name, { type: entry.mimeType, lastModified: entry.modifiedAt });
+}
+
 async function readDesktopSnapshotUnsafe(): Promise<{
   entries: DesktopEntry[];
   layout: DesktopLayout;
@@ -1019,10 +1139,10 @@ async function readDesktopStateUnsafe(desktopId: string): Promise<DesktopSnapsho
   return { entries: manifest.entries, layout: manifestLayout(manifest), editorSettings: manifest.editorSettings, appearance: manifest.appearance, sync: manifest.sync };
 }
 
-async function readFileByRelativePathUnsafe(
+async function resolveFileByRelativePathUnsafe(
   fromFileId: FileEntry["id"],
   relativePath: string,
-): Promise<{ file: FileEntry; blob: Blob }> {
+): Promise<FileEntry> {
   const manifest = await readManifest();
   const source = getFileEntry(manifest.entries, fromFileId);
   const path = relativePath.split(/[?#]/, 1)[0];
@@ -1062,10 +1182,12 @@ async function readFileByRelativePathUnsafe(
   }
 
   if (!resolved || resolved.kind !== "file") throw new Error(`No local file exists at “${relativePath}”.`);
-  const directory = await getFilesDirectory();
-  const handle = await directory.getFileHandle(resolved.id);
-  const stored = await handle.getFile();
-  return { file: resolved, blob: stored.slice(0, stored.size, resolved.mimeType) };
+  return resolved;
+}
+
+async function readFileByRelativePathUnsafe(fromFileId: FileEntry["id"], relativePath: string): Promise<{ file: FileEntry; blob: Blob }> {
+  const file = await resolveFileByRelativePathUnsafe(fromFileId, relativePath);
+  return { file, blob: await readFileUnsafe(file.id) };
 }
 
 async function saveTextFileUnsafe(id: FileEntry["id"], content: string): Promise<FileEntry> {
@@ -1116,9 +1238,12 @@ export function moveEntries(ids: string[], parentId: string | null) { return ser
 export function updateDesktopPositions(positions: DesktopPositionUpdate[]) { return serializeStorage(() => updateDesktopPositionsUnsafe(positions)); }
 export function updateEntryPosition(id: string, position: EntryPosition) { return serializeStorage(() => updateEntryPositionUnsafe(id, position)); }
 export function readFile(id: FileEntry["id"]) { return serializeStorage(() => readFileUnsafe(id)); }
+export function readCachedFile(desktopId: string, workspaceId: string, id: FileEntry["id"], contentRevision: number) { return serializeStorage(() => readCachedFileUnsafe(desktopId, workspaceId, id, contentRevision)); }
+export function cacheRemoteFile(desktopId: string, workspaceId: string, id: FileEntry["id"], contentRevision: number, content: Blob) { return serializeStorage(() => cacheRemoteFileUnsafe(desktopId, workspaceId, id, contentRevision, content)); }
 export function readDesktopSnapshot() { return serializeStorage(() => readDesktopSnapshotUnsafe()); }
 export function readDesktopState(desktopId: string) { return serializeStorage(() => readDesktopStateUnsafe(desktopId)); }
 export function readFileByRelativePath(fromFileId: FileEntry["id"], relativePath: string) { return serializeStorage(() => readFileByRelativePathUnsafe(fromFileId, relativePath)); }
+export function resolveFileByRelativePath(fromFileId: FileEntry["id"], relativePath: string) { return serializeStorage(() => resolveFileByRelativePathUnsafe(fromFileId, relativePath)); }
 export function saveTextFile(id: FileEntry["id"], content: string) { return serializeStorage(() => saveTextFileUnsafe(id, content)); }
 export function readLocalPreferences() { return serializeStorage(() => readLocalPreferencesUnsafe()); }
 export function saveLocalPreferences(preferences: LocalPreferences) { return serializeStorage(() => saveLocalPreferencesUnsafe(preferences)); }
