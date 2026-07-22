@@ -14,7 +14,10 @@ import (
 	"hiraya/internal/syncapi"
 )
 
-const defaultMaxUpload = int64(100 << 20)
+const (
+	defaultMaxUpload    = int64(100 << 20)
+	defaultHistoryLimit = 1000
+)
 
 func main() {
 	dataDir := env("HIRAYA_DATA_DIR", ".hiraya-data")
@@ -33,7 +36,15 @@ func main() {
 		}
 		maxUpload = parsed
 	}
-	store, err := syncapi.OpenStore(dataDir)
+	historyLimit := defaultHistoryLimit
+	if value := os.Getenv("HIRAYA_HISTORY_LIMIT"); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed < 1 {
+			log.Fatalf("invalid HIRAYA_HISTORY_LIMIT %q", value)
+		}
+		historyLimit = parsed
+	}
+	store, err := syncapi.OpenStore(dataDir, historyLimit)
 	if err != nil {
 		log.Fatal(err)
 	}

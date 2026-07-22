@@ -14,9 +14,11 @@ import type {
 import { applyOutboxOperation, type OutboxOperation, type OutboxRecord } from "./outbox";
 import { parseManifestV13 } from "./manifest-codec";
 import { EMPTY_WINDOW_SESSION, parseWindowSession, type WindowSession } from "./window-session";
+import { activityRecord, parseActivityQuery, type ActivityPage, type NewActivityRecord } from "./activity";
 
 const DATABASE_NAME = "/hiraya.sqlite3";
-const DATABASE_SCHEMA_VERSION = 3;
+const DATABASE_SCHEMA_VERSION = 4;
+const HISTORY_LIMIT = Number(import.meta.env.HIRAYA_HISTORY_LIMIT);
 const DEFAULT_PREFERENCES: StoredPreferences = { autoUpdate: true };
 
 type Row = Record<string, SqlValue>;
@@ -25,8 +27,8 @@ type WorkerPort = Pick<MessagePort, "postMessage"> & {
   onmessage: ((event: MessageEvent<StorageDbRequest>) => void) | null;
 };
 
-function rows(db: Database, sql: string): Row[] {
-  return db.exec({ sql, rowMode: "object", returnValue: "resultRows" }) as Row[];
+function rows(db: Database, sql: string, bind?: SqlValue[]): Row[] {
+  return db.exec({ sql, bind, rowMode: "object", returnValue: "resultRows" }) as Row[];
 }
 
 function scalar(db: Database, sql: string): SqlValue | undefined {
@@ -150,6 +152,16 @@ function createSchema(db: Database) {
       status TEXT NOT NULL CHECK (status IN ('pending', 'blocked')),
       error TEXT
     );
+    CREATE TABLE IF NOT EXISTS activity (
+      revision INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp INTEGER NOT NULL CHECK (timestamp >= 0),
+      action TEXT NOT NULL,
+      source TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      details_json TEXT NOT NULL,
+      search_text TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS activity_timestamp ON activity(timestamp DESC, revision DESC);
   `);
   if (version < DATABASE_SCHEMA_VERSION) db.exec(`PRAGMA user_version=${DATABASE_SCHEMA_VERSION}`);
 }
@@ -236,9 +248,48 @@ function replaceManifestRows(db: Database, manifest: PersistedManifestV13) {
     }
 }
 
-function replaceManifest(db: Database, manifest: PersistedManifestV13) {
+function appendActivity(db: Database, value: NewActivityRecord) {
+  const record = activityRecord(value.summary, value.details, value.timestamp, value.action);
+  const searchText = [record.action, record.source, record.summary, ...record.details].join("\n").toLocaleLowerCase();
+  db.exec({
+    sql: "INSERT INTO activity (timestamp, action, source, summary, details_json, search_text) VALUES (?, ?, ?, ?, ?, ?)",
+    bind: [record.timestamp, record.action, record.source, record.summary, JSON.stringify(record.details), searchText],
+  });
+  pruneActivity(db);
+}
+
+function pruneActivity(db: Database) {
+  db.exec({ sql: "DELETE FROM activity WHERE revision NOT IN (SELECT revision FROM activity ORDER BY revision DESC LIMIT ?)", bind: [HISTORY_LIMIT] });
+}
+
+function listActivity(db: Database, value: StorageDbRequests["listActivity"]): ActivityPage {
+  const query = parseActivityQuery(value);
+  const where: string[] = [];
+  const bind: SqlValue[] = [];
+  if (query.before !== undefined) {
+    where.push("revision < ?");
+    bind.push(query.before);
+  }
+  if (query.q) {
+    where.push("search_text LIKE ? ESCAPE '\\'");
+    bind.push(`%${query.q.toLocaleLowerCase().replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_")}%`);
+  }
+  bind.push(query.limit + 1);
+  const found = rows(db, `SELECT revision, timestamp, action, source, summary, details_json FROM activity ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY revision DESC LIMIT ?`, bind);
+  const hasMore = found.length > query.limit;
+  const activities = found.slice(0, query.limit).map((row) => activityRecord(
+    stringValue(row.summary),
+    JSON.parse(stringValue(row.details_json)) as string[],
+    numberValue(row.timestamp),
+    stringValue(row.action),
+  )).map((record, index) => ({ ...record, source: stringValue(found[index].source), revision: numberValue(found[index].revision) }));
+  return { activities, nextBefore: hasMore ? activities.at(-1)!.revision : null };
+}
+
+function replaceManifest(db: Database, manifest: PersistedManifestV13, activity?: NewActivityRecord) {
   db.transaction("IMMEDIATE", () => {
     replaceManifestRows(db, manifest);
+    if (activity) appendActivity(db, activity);
   });
 }
 
@@ -338,6 +389,7 @@ const database = (async () => {
   db.exec("PRAGMA foreign_keys=ON");
   if (numberValue(scalar(db, "PRAGMA foreign_keys")) !== 1) throw new Error("SQLite could not enable foreign keys.");
   createSchema(db);
+  pruneActivity(db);
   return db;
 })();
 
@@ -366,7 +418,7 @@ async function dispatch<M extends StorageDbMethod>(method: M, params: StorageDbR
     case "readManifest":
       return readManifest(db) as StorageDbResponses[M];
     case "replaceManifest":
-      replaceManifest(db, (params as StorageDbRequests["replaceManifest"]).manifest);
+      replaceManifest(db, (params as StorageDbRequests["replaceManifest"]).manifest, (params as StorageDbRequests["replaceManifest"]).activity);
       return undefined as StorageDbResponses[M];
     case "readPreferences":
       return readPreferences(db) as StorageDbResponses[M];
@@ -442,6 +494,8 @@ async function dispatch<M extends StorageDbMethod>(method: M, params: StorageDbR
       db.exec({ sql: "UPDATE outbox SET status='blocked', error=? WHERE operation_id=?", bind: [input.error, input.operationId] });
       return undefined as StorageDbResponses[M];
     }
+    case "listActivity":
+      return listActivity(db, params as StorageDbRequests["listActivity"]) as StorageDbResponses[M];
   }
 }
 

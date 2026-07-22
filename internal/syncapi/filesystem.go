@@ -511,6 +511,7 @@ func (s *Store) reconcileFilesystemLocked(nodes map[string]diskNode) error {
 		pathEntries[paths[entry.ID]] = entry
 	}
 	changed := false
+	activityDetails := make([]string, 0)
 	deleted := make(map[string]bool)
 	for path, entry := range pathEntries {
 		node, exists := nodes[path]
@@ -533,6 +534,8 @@ func (s *Store) reconcileFilesystemLocked(nodes map[string]diskNode) error {
 		for _, entry := range next.Entries {
 			if !deleted[entry.ID] {
 				kept = append(kept, entry)
+			} else {
+				activityDetails = append(activityDetails, fmt.Sprintf("Deleted %s: %s", entry.Kind, entry.Name))
 			}
 		}
 		next.Entries = kept
@@ -558,6 +561,7 @@ func (s *Store) reconcileFilesystemLocked(nodes map[string]diskNode) error {
 			entry.Revision = revision
 			entry.ContentRevision = revision
 			changed = true
+			activityDetails = append(activityDetails, "Updated file: "+entry.Name)
 		}
 	}
 	ordered := make([]string, 0, len(nodes))
@@ -630,6 +634,7 @@ func (s *Store) reconcileFilesystemLocked(nodes map[string]diskNode) error {
 			entry.ContentRevision = revision
 		}
 		next.Entries = append(next.Entries, entry)
+		activityDetails = append(activityDetails, fmt.Sprintf("Added %s: %s", entry.Kind, entry.Name))
 		pathIDs[path] = id
 		siblingNames[node.parent][folded] = true
 		changed = true
@@ -639,7 +644,8 @@ func (s *Store) reconcileFilesystemLocked(nodes map[string]diskNode) error {
 		if err := validateWorkspace(next.Entries, next.Layout, next.Appearance); err != nil {
 			return fmt.Errorf("external filesystem state is invalid: %w", err)
 		}
-		if err := s.persistLocked(next); err != nil {
+		activity := newActivity(revision, "reconcile", "filesystem", "Reconciled external filesystem changes", time.Now(), activityDetails...)
+		if err := s.persistLocked(next, activity); err != nil {
 			return err
 		}
 		if err := s.setDiskIndexLocked(nodes); err != nil {

@@ -20,6 +20,7 @@ import {
   getOutboxStatus,
   importFiles,
   initializeDesktop,
+  listActivity,
   moveEntries,
   pasteEntries,
   readFile,
@@ -33,6 +34,7 @@ import {
   updateDesktopPositions,
   updateEntryPosition,
   subscribeToSync,
+  subscribeToActivityChanges,
   stopDesktopSync,
   type SyncStatus,
 } from "./lib/sync";
@@ -1787,6 +1789,8 @@ function App() {
                     updateReady={updateReady}
                     updateChecking={updateChecking}
                     autoUpdate={autoUpdate}
+                    onListActivity={listActivity}
+                    onSubscribeToActivity={subscribeToActivityChanges}
                     onLayoutChange={applyLayout}
                     onThemeSelect={changeTheme}
                     onThemePreview={setThemePreview}

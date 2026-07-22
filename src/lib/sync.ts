@@ -7,6 +7,7 @@ import type { DesktopEntry, DesktopLayout, DesktopPositionUpdate, EditorSettings
 import type { OutboxOperation, OutboxRecord } from "./outbox";
 import { parseCustomTheme, parseThemeState, type CustomTheme } from "./themes";
 import type { ClipboardEntrySnapshot } from "./clipboard";
+import { parseActivityPage, parseActivityQuery, type ActivityQuery } from "./activity";
 
 export type SyncStatus = "connecting" | "online" | "offline" | "blocked" | "local";
 
@@ -17,6 +18,7 @@ type StorageBoundary = Pick<typeof storage,
   | "updateDesktopPositions" | "enqueueMutation" | "readOutbox" | "bindOutboxWorkspace" |
   "acknowledgeMutation" | "blockMutation" | "readPendingContent" |
   "selectTheme" | "saveCustomTheme" | "deleteCustomTheme"
+  | "listActivity"
 >;
 
 export type SyncEngineOptions = {
@@ -89,7 +91,8 @@ export class SyncEngine {
   private pendingWork = 0;
   private readonly desktopListeners = new Set<(next: storage.DesktopSnapshot) => void>();
   private readonly statusListeners = new Set<(next: SyncStatus) => void>();
-  private readonly activityListeners = new Set<(syncing: boolean) => void>();
+  private readonly syncActivityListeners = new Set<(syncing: boolean) => void>();
+  private readonly activityChangeListeners = new Set<() => void>();
 
   constructor(options: SyncEngineOptions = {}) {
     this.frontendOnly = options.frontendOnly ?? false;
@@ -148,14 +151,25 @@ export class SyncEngine {
   subscribe(onDesktop: (next: storage.DesktopSnapshot) => void, onStatus: (next: SyncStatus) => void, onActivity?: (syncing: boolean) => void) {
     this.desktopListeners.add(onDesktop);
     this.statusListeners.add(onStatus);
-    if (onActivity) this.activityListeners.add(onActivity);
+    if (onActivity) this.syncActivityListeners.add(onActivity);
     onStatus(this.status);
     onActivity?.(!this.frontendOnly && this.pendingWork > 0);
     return () => {
       this.desktopListeners.delete(onDesktop);
       this.statusListeners.delete(onStatus);
-      if (onActivity) this.activityListeners.delete(onActivity);
+      if (onActivity) this.syncActivityListeners.delete(onActivity);
     };
+  }
+
+  subscribeActivityChanges(listener: () => void) {
+    this.activityChangeListeners.add(listener);
+    return () => {
+      this.activityChangeListeners.delete(listener);
+    };
+  }
+
+  private publishActivityChange() {
+    for (const listener of this.activityChangeListeners) listener();
   }
 
   private setStatus(next: SyncStatus) {
@@ -184,7 +198,7 @@ export class SyncEngine {
     if (!this.frontendOnly) {
       this.pendingWork += 1;
       if (this.pendingWork === 1) {
-        for (const listener of this.activityListeners) listener(true);
+        for (const listener of this.syncActivityListeners) listener(true);
       }
     }
     const next = this.work.then(operation, operation);
@@ -193,7 +207,7 @@ export class SyncEngine {
       if (!this.frontendOnly) {
         this.pendingWork -= 1;
         if (this.pendingWork === 0) {
-          for (const listener of this.activityListeners) listener(false);
+          for (const listener of this.syncActivityListeners) listener(false);
         }
       }
     });
@@ -242,6 +256,7 @@ export class SyncEngine {
     const applied = await this.storage.applyRemoteDesktop(next, contents, acknowledgedOperationId);
     this.assertActive(generation);
     this.publish(applied);
+    this.publishActivityChange();
     return applied;
   }
 
@@ -448,6 +463,7 @@ export class SyncEngine {
       const next = await this.storage.readCurrentDesktop();
       if (publish) this.publish(next);
       else this.desktop = next;
+      this.publishActivityChange();
       return result;
     });
   }
@@ -646,6 +662,23 @@ export class SyncEngine {
       records,
     };
   }
+
+  async listActivity(query: ActivityQuery = {}) {
+    const parsed = parseActivityQuery(query);
+    if (this.frontendOnly) return parseActivityPage(await this.storage.listActivity(parsed));
+    let response: Response;
+    try {
+      response = await this.fetchImpl(API_ROUTES.activity(parsed), { cache: "no-store" });
+    } catch {
+      this.setStatus("offline");
+      throw new Error("Activity history is unavailable while the sync server is offline.");
+    }
+    if (!response.ok) {
+      const body = await response.json().catch(() => null) as { error?: string } | null;
+      throw new Error(body?.error || `Activity history could not be loaded (${response.status}).`);
+    }
+    return parseActivityPage(await response.json());
+  }
 }
 
 const defaultEngine = new SyncEngine({ frontendOnly: import.meta.env.HIRAYA_FRONTEND_ONLY === "true" });
@@ -674,3 +707,5 @@ export const deleteCustomTheme = defaultEngine.deleteCustomTheme.bind(defaultEng
 export const readFile = defaultEngine.readFile.bind(defaultEngine);
 export const readFileByRelativePath = defaultEngine.readFileByRelativePath.bind(defaultEngine);
 export const getOutboxStatus = defaultEngine.getOutboxStatus.bind(defaultEngine);
+export const listActivity = defaultEngine.listActivity.bind(defaultEngine);
+export const subscribeToActivityChanges = defaultEngine.subscribeActivityChanges.bind(defaultEngine);

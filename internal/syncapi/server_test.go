@@ -450,7 +450,9 @@ func TestFilesystemReconciliationRetriesAfterConcurrentMutation(t *testing.T) {
 func TestFailedBootstrapRemovesStagedLogicalTree(t *testing.T) {
 	dir := t.TempDir()
 	store, server := newTestServer(t, dir)
-	store.persistWorkspace = func(Workspace, bool) error { return errors.New("injected persistence failure") }
+	store.persistWorkspace = func(Workspace, bool, *mutationReceipt, *ActivityRecord) error {
+		return errors.New("injected persistence failure")
+	}
 	workspace := testBootstrap()
 	workspace.Entries = []Entry{file("file", "retry.txt", nil, ptr("view-1"), "text/plain", 5)}
 	response := bootstrapRequest(t, server, workspace, map[string]string{"file": "hello"})
@@ -472,7 +474,9 @@ func TestFailedContentPersistenceRestoresExistingBytes(t *testing.T) {
 		t.Fatal(created.Body.String())
 	}
 	before := store.snapshot()
-	store.persistWorkspace = func(Workspace, bool) error { return errors.New("injected persistence failure") }
+	store.persistWorkspace = func(Workspace, bool, *mutationReceipt, *ActivityRecord) error {
+		return errors.New("injected persistence failure")
+	}
 
 	request := httptest.NewRequest(http.MethodPut, "/api/files/file/content", strings.NewReader("new bytes"))
 	request.Header.Set("Content-Type", "text/plain")
@@ -499,7 +503,9 @@ func TestFailedMoveAndContentPersistenceRestoresPathAndBytes(t *testing.T) {
 	}
 	entry := findEntry(t, store.snapshot().Entries, "file")
 	entry.Name = "new.txt"
-	store.persistWorkspace = func(Workspace, bool) error { return errors.New("injected persistence failure") }
+	store.persistWorkspace = func(Workspace, bool, *mutationReceipt, *ActivityRecord) error {
+		return errors.New("injected persistence failure")
+	}
 
 	response := multipartEntryRequest(t, server, http.MethodPost, "/api/entries", entry, ptr("new bytes"))
 	if response.Code != http.StatusInternalServerError {
@@ -614,7 +620,9 @@ func TestImportNestedMixedTreeAtomically(t *testing.T) {
 func TestFailedNestedImportRemovesPromotedTree(t *testing.T) {
 	store, server := initializedTestServer(t)
 	before := store.snapshot()
-	store.persistWorkspace = func(Workspace, bool) error { return errors.New("injected persistence failure") }
+	store.persistWorkspace = func(Workspace, bool, *mutationReceipt, *ActivityRecord) error {
+		return errors.New("injected persistence failure")
+	}
 	entries := []Entry{
 		folder("root", "Copied", nil, nil),
 		file("child", "child.txt", ptr("root"), nil, "text/plain", 5),
@@ -868,7 +876,9 @@ func TestDesktopPositionsValidateBatchAndFailureChangesNothing(t *testing.T) {
 	if duplicate.Code != http.StatusBadRequest || store.snapshot().Revision != before.Revision {
 		t.Fatalf("duplicate batch = %d %s", duplicate.Code, duplicate.Body.String())
 	}
-	store.persistWorkspace = func(Workspace, bool) error { return errors.New("injected persistence failure") }
+	store.persistWorkspace = func(Workspace, bool, *mutationReceipt, *ActivityRecord) error {
+		return errors.New("injected persistence failure")
+	}
 	response := jsonRequest(t, server, http.MethodPut, "/api/desktop-positions", []desktopPosition{{EntryID: "root", Position: Position{X: -9, Y: 10}}})
 	if response.Code != http.StatusInternalServerError {
 		t.Fatalf("positions failure status = %d, body = %s", response.Code, response.Body.String())
@@ -924,7 +934,9 @@ func TestBatchMoveIsAtomicAndRollsBackFilesystem(t *testing.T) {
 		t.Fatalf("move SSE revision = %d", revision)
 	}
 
-	store.persistWorkspace = func(Workspace, bool) error { return errors.New("injected persistence failure") }
+	store.persistWorkspace = func(Workspace, bool, *mutationReceipt, *ActivityRecord) error {
+		return errors.New("injected persistence failure")
+	}
 	failed := jsonRequest(t, server, http.MethodPost, "/api/entries/batch-move", batchMoveRequest{EntryIDs: []string{"folder", "loose"}, ParentID: nil})
 	if failed.Code != http.StatusInternalServerError {
 		t.Fatalf("failed move status = %d, body = %s", failed.Code, failed.Body.String())

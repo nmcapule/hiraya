@@ -14,7 +14,7 @@ import (
 
 const (
 	databaseName          = "workspace.sqlite"
-	databaseSchemaVersion = 3
+	databaseSchemaVersion = 4
 	minimumSQLiteVersion  = 3051003
 )
 
@@ -153,6 +153,20 @@ func initializeDatabaseSchema(db *sql.DB) error {
 				return fmt.Errorf("migrate database schema to version 3: %w", err)
 			}
 		}
+		version = 3
+	}
+	if version == 3 {
+		if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS activity (
+            revision INTEGER PRIMARY KEY CHECK (revision > 0),
+            action TEXT NOT NULL,
+            source TEXT NOT NULL,
+            occurred_at INTEGER NOT NULL,
+            summary TEXT NOT NULL,
+            details_json TEXT NOT NULL,
+            search_text TEXT NOT NULL
+        )`); err != nil {
+			return fmt.Errorf("migrate database schema to version 4: %w", err)
+		}
 	}
 	if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version=%d`, databaseSchemaVersion)); err != nil {
 		return fmt.Errorf("set database schema version: %w", err)
@@ -246,11 +260,7 @@ func (s *Store) loadDatabaseWorkspace() (Workspace, bool, error) {
 	return workspace, true, nil
 }
 
-func (s *Store) persistDatabase(next Workspace, importedJSON bool) error {
-	return s.persistDatabaseWithReceipt(next, importedJSON, nil)
-}
-
-func (s *Store) persistDatabaseWithReceipt(next Workspace, importedJSON bool, receipt *mutationReceipt) error {
+func (s *Store) persistDatabaseWithActivity(next Workspace, importedJSON bool, receipt *mutationReceipt, activity *ActivityRecord) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -310,6 +320,9 @@ func (s *Store) persistDatabaseWithReceipt(next Workspace, importedJSON bool, re
 			receipt.RequestHash[:], receipt.Status, receipt.ResponseBody, receipt.Revision); err != nil {
 			return err
 		}
+	}
+	if err := insertActivity(tx, activity, s.historyLimit); err != nil {
+		return err
 	}
 	return tx.Commit()
 }

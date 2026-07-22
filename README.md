@@ -33,6 +33,7 @@ The backend accepts these optional environment variables:
 - `HIRAYA_DATA_DIR`: durable metadata and file directory, default `.hiraya-data`.
 - `HIRAYA_STATIC_DIR`: production frontend directory, default `dist`.
 - `HIRAYA_MAX_UPLOAD_BYTES`: maximum bytes in one upload or bootstrap, default 100 MiB.
+- `HIRAYA_HISTORY_LIMIT`: maximum persisted activity records, default `1000`. Must be positive; lowering it prunes older records at startup and as new activity is recorded.
 - `HIRAYA_TLS_CERT_FILE` and `HIRAYA_TLS_KEY_FILE`: optional PEM certificate and private key paths. Set both to serve HTTPS directly; omit both to serve HTTP.
 
 Build and run the same-origin production server with:

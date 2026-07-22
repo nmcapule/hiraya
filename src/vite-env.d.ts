@@ -3,6 +3,7 @@
 
 interface ImportMetaEnv {
   readonly HIRAYA_FRONTEND_ONLY: string;
+  readonly HIRAYA_HISTORY_LIMIT: string;
 }
 
 declare module "virtual:hiraya-seeded" {

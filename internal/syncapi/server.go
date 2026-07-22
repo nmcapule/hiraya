@@ -34,6 +34,7 @@ func New(store *Store, staticDir string, maxUpload int64) *Server {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "revision": workspace.Revision, "schemaVersion": workspace.SchemaVersion, "workspaceId": workspace.WorkspaceID})
 	})
 	mux.HandleFunc("GET /api/workspace", s.getWorkspace)
+	mux.HandleFunc("GET /api/activity", s.getActivity)
 	mux.HandleFunc("POST /api/bootstrap", s.bootstrap)
 	mux.HandleFunc("POST /api/imports", s.importEntries)
 	mux.HandleFunc("POST /api/entries", s.upsertEntry)
@@ -1634,6 +1635,14 @@ func themeIndex(themes []CustomTheme, id string) int {
 		}
 	}
 	return -1
+}
+
+func entryActivityDetails(entries []Entry) []string {
+	details := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		details = append(details, entryDetail(entry))
+	}
+	return details
 }
 
 func (s *Server) events(w http.ResponseWriter, r *http.Request) {

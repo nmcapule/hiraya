@@ -5,10 +5,13 @@ import { seededDesktopPlugin } from "./build/seeded";
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "HIRAYA_");
+  const historyLimit = env.HIRAYA_HISTORY_LIMIT ? Number(env.HIRAYA_HISTORY_LIMIT) : 1000;
+  if (!Number.isSafeInteger(historyLimit) || historyLimit <= 0) throw new Error("HIRAYA_HISTORY_LIMIT must be a positive integer.");
   return {
     base: env.HIRAYA_BASE_PATH || "/",
     define: {
       "import.meta.env.HIRAYA_FRONTEND_ONLY": JSON.stringify(env.HIRAYA_FRONTEND_ONLY === "true" ? "true" : "false"),
+      "import.meta.env.HIRAYA_HISTORY_LIMIT": JSON.stringify(String(historyLimit)),
     },
     plugins: [
       seededDesktopPlugin(process.cwd(), env.HIRAYA_SEEDED_DIR),

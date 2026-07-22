@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowClockwise, ArrowLeft, ArrowsOut, CaretRight, CornersIn, CornersOut, ExportIcon, GridFour, PaintBrush } from "@phosphor-icons/react";
+import { ArrowClockwise, ArrowLeft, ArrowsOut, CaretRight, ClockCounterClockwise, CornersIn, CornersOut, ExportIcon, GridFour, PaintBrush } from "@phosphor-icons/react";
+import { ActivityLog } from "./ActivityLog";
+import type { ActivityPage, ActivityQuery } from "../lib/activity";
 import {
   BUILTIN_THEME_IDS,
   BUILTIN_THEMES,
@@ -54,6 +56,8 @@ type Props = {
   updateReady: boolean;
   updateChecking: boolean;
   autoUpdate: boolean;
+  onListActivity: (query?: ActivityQuery) => Promise<ActivityPage>;
+  onSubscribeToActivity: (listener: () => void) => () => void;
   onLayoutChange: (layout: DesktopLayout) => void;
   onThemeSelect: (themeId: string) => void | Promise<void>;
   onThemePreview: (theme: ThemeDefinition | null) => void;
@@ -119,6 +123,8 @@ export function SettingsWindow({
   updateReady,
   updateChecking,
   autoUpdate,
+  onListActivity,
+  onSubscribeToActivity,
   onLayoutChange,
   onThemeSelect,
   onThemePreview,
@@ -129,12 +135,14 @@ export function SettingsWindow({
   onCheckForUpdate,
   onAutoUpdateChange,
 }: Props) {
-  const [page, setPage] = useState<"main" | "themes">("main");
+  const [page, setPage] = useState<"main" | "themes" | "logs">("main");
   const [draft, setDraft] = useState<CustomTheme | null>(null);
   const [saving, setSaving] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
   const mainThemesButtonRef = useRef<HTMLButtonElement>(null);
+  const mainLogsButtonRef = useRef<HTMLButtonElement>(null);
   const themesHeadingRef = useRef<HTMLHeadingElement>(null);
+  const logsHeadingRef = useRef<HTMLHeadingElement>(null);
   const mutationsDisabled = !canMutate || saving;
   const contrastIssues = draft ? themeContrastIssues(draft.definition) : [];
   const selectedThemeName = isBuiltinThemeId(appearance.selectedThemeId)
@@ -221,6 +229,18 @@ export function SettingsWindow({
     requestAnimationFrame(() => mainThemesButtonRef.current?.focus());
   };
 
+  const openLogs = () => {
+    contentRef.current?.scrollTo({ top: 0 });
+    setPage("logs");
+    requestAnimationFrame(() => logsHeadingRef.current?.focus());
+  };
+
+  const closeLogs = () => {
+    contentRef.current?.scrollTo({ top: 0 });
+    setPage("main");
+    requestAnimationFrame(() => mainLogsButtonRef.current?.focus());
+  };
+
   return (
     <div className="settings-window settings-window--embedded">
       <div className="settings-window__content" ref={contentRef}>
@@ -232,6 +252,17 @@ export function SettingsWindow({
                 <span className="settings-row__copy">
                   <strong id="themes-link-heading">Themes</strong>
                   <small>{selectedThemeName} theme with {WALLPAPER_LABELS[layout.wallpaper].name.toLowerCase()} wallpaper.</small>
+                </span>
+                <CaretRight className="settings-row__chevron" size={17} aria-hidden="true" />
+              </button>
+            </section>
+
+            <section className="settings-section" aria-labelledby="logs-link-heading">
+              <button className="settings-row settings-row--navigation" type="button" ref={mainLogsButtonRef} onClick={openLogs}>
+                <span className="settings-row__icon"><ClockCounterClockwise size={17} /></span>
+                <span className="settings-row__copy">
+                  <strong id="logs-link-heading">Logs</strong>
+                  <small>Review and search accepted workspace changes.</small>
                 </span>
                 <CaretRight className="settings-row__chevron" size={17} aria-hidden="true" />
               </button>
@@ -290,7 +321,7 @@ export function SettingsWindow({
 
             {!canMutate && <p className="settings-window__offline" role="status">Connecting to the shared workspace. Settings will be available shortly.</p>}
           </>
-        ) : (
+        ) : page === "themes" ? (
           <div className="settings-page">
             <header className="settings-page__header">
               <button className="settings-page__back" type="button" aria-label="Back to settings" disabled={saving} onClick={closeThemes}><ArrowLeft size={17} /></button>
@@ -422,6 +453,17 @@ export function SettingsWindow({
           </div>
         </section>
             {!canMutate && <p className="settings-window__offline" role="status">Connecting to the shared workspace. Appearance controls will be available shortly.</p>}
+          </div>
+        ) : (
+          <div className="settings-page settings-page--logs">
+            <header className="settings-page__header">
+              <button className="settings-page__back" type="button" aria-label="Back to settings" onClick={closeLogs}><ArrowLeft size={17} /></button>
+              <div>
+                <h3 ref={logsHeadingRef} tabIndex={-1}>Logs</h3>
+                <p>Accepted changes from this workspace, newest first.</p>
+              </div>
+            </header>
+            <ActivityLog onListActivity={onListActivity} onSubscribe={onSubscribeToActivity} />
           </div>
         )}
       </div>

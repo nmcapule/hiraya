@@ -149,6 +149,35 @@ func TestSQLiteMigratesAppearanceSchema(t *testing.T) {
 	}
 }
 
+func TestSQLiteMigratesActivitySchema(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`DROP TABLE activity`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`PRAGMA user_version=3`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	var table string
+	if err := reopened.db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name='activity'`).Scan(&table); err != nil {
+		t.Fatal(err)
+	}
+	if table != "activity" {
+		t.Fatalf("activity table = %q", table)
+	}
+}
+
 func TestSQLiteTransactionFailureRollsBackAndKeepsMemory(t *testing.T) {
 	store, err := OpenStore(t.TempDir())
 	if err != nil {
@@ -164,7 +193,7 @@ func TestSQLiteTransactionFailureRollsBackAndKeepsMemory(t *testing.T) {
 	}
 
 	store.mu.Lock()
-	err = store.persistLocked(next)
+	err = store.persistLocked(next, &ActivityRecord{Revision: next.Revision, Action: "test", Source: "test", Summary: "Invalid test mutation", Details: []string{}})
 	store.mu.Unlock()
 	if err == nil {
 		t.Fatal("duplicate entry persistence unexpectedly succeeded")

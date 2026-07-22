@@ -15,6 +15,7 @@ import type { StorageDbMethod, StorageDbRequests, StorageDbResponse, StorageDbRe
 import type { OutboxOperation, OutboxRecord } from "./outbox";
 import { DEFAULT_THEME_STATE, parseCustomTheme, parseThemeState, type CustomTheme, type ThemeState } from "./themes";
 import { parseWindowSession, type WindowSession } from "./window-session";
+import { activityRecord, type ActivityQuery, type NewActivityRecord } from "./activity";
 
 const MANIFEST_NAME = ".hiraya-manifest.json";
 const PREFERENCES_NAME = ".hiraya-preferences.json";
@@ -61,9 +62,19 @@ async function getPendingDirectory() {
   return root.getDirectoryHandle(PENDING_DIRECTORY, { create: true });
 }
 
-async function writeManifest(manifest: Manifest) {
-  await callDatabase("replaceManifest", { manifest });
+async function writeManifest(manifest: Manifest, activity?: NewActivityRecord) {
+  await callDatabase("replaceManifest", { manifest, activity });
   desktopLoad = Promise.resolve(manifest);
+}
+
+function activityDetails(entries: DesktopEntry[]) {
+  const names = entries.slice(0, 18).map((entry) => `${entry.kind === "file" ? "File" : "Folder"}: ${entry.name}`);
+  if (entries.length > names.length) names.push(`Additional items: ${entries.length - names.length}`);
+  return names;
+}
+
+function locationDetail(entries: DesktopEntry[], parentId: string | null) {
+  return `Location: ${parentId === null ? "Desktop" : entries.find((entry) => entry.id === parentId)?.name ?? "Unknown folder"}`;
 }
 
 function assertValidManifest(manifest: Manifest) {
@@ -274,7 +285,7 @@ let hostedDatabaseRequestId: number | null = null;
 let requestId = 0;
 const pendingRequests = new Map<number, { resolve(value: unknown): void; reject(error: Error): void }>();
 const OWNER_CHANGED_MESSAGE = "The local database owner changed. Retry the operation.";
-const RETRYABLE_OWNER_CHANGE_METHODS = new Set<StorageDbMethod>(["status", "bootstrap", "readManifest", "readPreferences", "readWindowSession", "readOutbox"]);
+const RETRYABLE_OWNER_CHANGE_METHODS = new Set<StorageDbMethod>(["status", "bootstrap", "readManifest", "readPreferences", "readWindowSession", "readOutbox", "listActivity"]);
 
 class LocalDatabaseOwnerChangedError extends Error {}
 
@@ -469,7 +480,11 @@ async function acknowledgeMutationUnsafe(operationId: string) {
 async function saveEditorSettingsUnsafe(settings: EditorSettings) {
   const manifest = { ...await readManifest(), editorSettings: settings };
   assertValidManifest(manifest);
-  await writeManifest(manifest);
+  await writeManifest(manifest, activityRecord("Changed editor settings", [
+    `Auto-save: ${settings.autoSave ? "On" : "Off"}`,
+    `Font size: ${settings.fontSize}`,
+    `Language: ${settings.language}`,
+  ]));
 }
 
 async function saveDesktopLayoutUnsafe(layout: DesktopLayout) {
@@ -477,13 +492,16 @@ async function saveDesktopLayoutUnsafe(layout: DesktopLayout) {
   const parsed = parseLayout(layout);
   const next = { ...manifest, snapToGrid: parsed.snapToGrid, wallpaper: parsed.wallpaper };
   assertValidManifest(next);
-  await writeManifest(next);
+  await writeManifest(next, activityRecord("Changed desktop layout", [
+    `Snap to grid: ${parsed.snapToGrid ? "On" : "Off"}`,
+    `Wallpaper: ${parsed.wallpaper}`,
+  ]));
 }
 
 async function selectThemeUnsafe(themeId: string) {
   const manifest = await readManifest();
   const appearance = parseThemeState({ ...manifest.appearance, selectedThemeId: themeId });
-  await writeManifest({ ...manifest, appearance });
+  await writeManifest({ ...manifest, appearance }, activityRecord("Selected theme", [`Theme: ${appearance.selectedThemeId}`]));
   return appearance;
 }
 
@@ -495,13 +513,15 @@ async function saveCustomThemeUnsafe(value: CustomTheme) {
     ? manifest.appearance.customThemes.map((item) => item.id === theme.id ? theme : item)
     : [...manifest.appearance.customThemes, theme];
   const appearance = parseThemeState({ ...manifest.appearance, customThemes });
-  await writeManifest({ ...manifest, appearance });
+  await writeManifest({ ...manifest, appearance }, activityRecord(exists ? "Updated custom theme" : "Created custom theme", [`Theme: ${theme.name}`, `Theme ID: ${theme.id}`]));
   return theme;
 }
 
 async function deleteCustomThemeUnsafe(themeId: string) {
-  const next = applyThemeDelete(await readManifest(), themeId);
-  await writeManifest(next);
+  const manifest = await readManifest();
+  const next = applyThemeDelete(manifest, themeId);
+  const deleted = manifest.appearance.customThemes.find((theme) => theme.id === themeId)!;
+  await writeManifest(next, activityRecord("Deleted custom theme", [`Theme: ${deleted.name}`, `Theme ID: ${themeId}`]));
   return next.appearance;
 }
 
@@ -532,7 +552,7 @@ async function createTextFileUnsafe(nameValue: string, parentId: string | null, 
     position: parsePosition(position),
   };
   await writeContent(file.id, "");
-  await writeManifest({ ...manifest, entries: [...manifest.entries, file] });
+  await writeManifest({ ...manifest, entries: [...manifest.entries, file] }, activityRecord("Created file", [`File: ${file.name}`, locationDetail(manifest.entries, parentId)]));
   return file;
 }
 
@@ -550,7 +570,7 @@ async function createFolderUnsafe(nameValue: string, parentId: string | null, po
     modifiedAt: Date.now(),
     position: parsePosition(position),
   };
-  await writeManifest({ ...manifest, entries: [...manifest.entries, folder] });
+  await writeManifest({ ...manifest, entries: [...manifest.entries, folder] }, activityRecord("Created folder", [`Folder: ${folder.name}`, locationDetail(manifest.entries, parentId)]));
   return folder;
 }
 
@@ -586,7 +606,7 @@ async function importFilesUnsafe(
   await writeManifest({
     ...manifest,
     entries: [...manifest.entries, ...imported],
-  });
+  }, activityRecord(imported.length === 1 ? "Imported file" : "Imported files", [...activityDetails(imported), locationDetail(manifest.entries, parentId)]));
   return imported;
 }
 
@@ -602,7 +622,7 @@ async function createEntriesUnsafe(entries: DesktopEntry[], contents: Map<string
       await writeContent(entry.id, contents.get(entry.id)!);
       written.push(entry.id);
     }
-    await writeManifest(next);
+    await writeManifest(next, activityRecord(entries.length === 1 ? "Pasted item" : "Pasted items", activityDetails(entries)));
   } catch (error) {
     try {
       const directory = await getFilesDirectory();
@@ -622,7 +642,7 @@ async function renameEntryUnsafe(id: string, nameValue: string) {
   await writeManifest({
     ...manifest,
     entries: manifest.entries.map((entry) => (entry.id === id ? renamed : entry)),
-  });
+  }, activityRecord(`Renamed ${existing.kind}`, [`From: ${existing.name}`, `To: ${renamed.name}`]));
   return renamed;
 }
 
@@ -645,7 +665,7 @@ async function deleteEntryUnsafe(id: string): Promise<DesktopEntry[]> {
   await writeManifest({
     ...manifest,
     entries: manifest.entries.filter((entry) => !deletedIds.has(entry.id)),
-  });
+  }, activityRecord(deleted.length === 1 ? `Deleted ${deleted[0].kind}` : "Deleted items", activityDetails(deleted)));
   try {
     const directory = await getFilesDirectory();
     for (const entry of deleted) {
@@ -678,7 +698,10 @@ async function deleteEntriesUnsafe(ids: string[]): Promise<DesktopEntry[]> {
     }
   }
   const deleted = manifest.entries.filter((entry) => deletedIds.has(entry.id));
-  await writeManifest({ ...manifest, entries: manifest.entries.filter((entry) => !deletedIds.has(entry.id)) });
+  await writeManifest(
+    { ...manifest, entries: manifest.entries.filter((entry) => !deletedIds.has(entry.id)) },
+    activityRecord(deleted.length === 1 ? `Deleted ${deleted[0].kind}` : "Deleted items", activityDetails(deleted)),
+  );
   try {
     const directory = await getFilesDirectory();
     for (const entry of deleted) if (entry.kind === "file") await directory.removeEntry(entry.id).catch(() => undefined);
@@ -703,7 +726,7 @@ async function moveEntryUnsafe(id: string, parentId: string | null, position: En
   await writeManifest({
     ...manifest,
     entries: manifest.entries.map((entry) => (entry.id === id ? moved : entry)),
-  });
+  }, activityRecord(`Moved ${existing.kind}`, [`${existing.kind === "file" ? "File" : "Folder"}: ${existing.name}`, locationDetail(manifest.entries, parentId)]));
   return moved;
 }
 
@@ -715,8 +738,9 @@ async function moveEntriesUnsafe(ids: string[], parentId: string | null) {
   const modifiedAt = Date.now();
   const next: Manifest = { ...manifest, entries: manifest.entries.map((entry) => moving.has(entry.id) ? { ...entry, parentId, modifiedAt } : entry) };
   assertValidManifest(next);
-  await writeManifest(next);
-  return next.entries.filter((entry) => moving.has(entry.id));
+  const moved = next.entries.filter((entry) => moving.has(entry.id));
+  await writeManifest(next, activityRecord(moved.length === 1 ? `Moved ${moved[0].kind}` : "Moved items", [...activityDetails(moved), locationDetail(manifest.entries, parentId)]));
+  return moved;
 }
 
 async function updateDesktopPositionsUnsafe(positionValues: DesktopPositionUpdate[]) {
@@ -728,8 +752,9 @@ async function updateDesktopPositionsUnsafe(positionValues: DesktopPositionUpdat
     entries: manifest.entries.map((entry) => byId.has(entry.id) ? { ...entry, position: byId.get(entry.id)! } : entry),
   };
   assertValidManifest(next);
-  await writeManifest(next);
-  return positions.map(({ entryId }) => getEntry(next.entries, entryId));
+  const moved = positions.map(({ entryId }) => getEntry(next.entries, entryId));
+  await writeManifest(next, activityRecord(moved.length === 1 ? "Moved desktop item" : "Arranged desktop items", activityDetails(moved)));
+  return moved;
 }
 
 async function updateEntryPositionUnsafe(id: string, position: EntryPosition) {
@@ -739,7 +764,7 @@ async function updateEntryPositionUnsafe(id: string, position: EntryPosition) {
   await writeManifest({
     ...manifest,
     entries: manifest.entries.map((entry) => (entry.id === id ? updated : entry)),
-  });
+  }, activityRecord("Moved desktop item", activityDetails([updated])));
   return updated;
 }
 
@@ -839,7 +864,7 @@ async function saveTextFileUnsafe(id: FileEntry["id"], content: string): Promise
   await writeManifest({
     ...manifest,
     entries: manifest.entries.map((entry) => (entry.id === id ? saved : entry)),
-  });
+  }, activityRecord("Edited file", [`File: ${saved.name}`, `Size: ${saved.size} bytes`]));
   return saved;
 }
 
@@ -888,3 +913,4 @@ export function bindOutboxWorkspace(workspaceId: string) { return serializeStora
 export function acknowledgeMutation(operationId: string) { return serializeStorage(() => acknowledgeMutationUnsafe(operationId)); }
 export function blockMutation(operationId: string, error: string) { return serializeStorage(() => callDatabase("blockMutation", { operationId, error })); }
 export function readPendingContent(operationId: string, entryId: string) { return serializeStorage(() => readStagedContent(operationId, entryId)); }
+export function listActivity(query: ActivityQuery = {}) { return serializeStorage(() => callDatabase("listActivity", query)); }

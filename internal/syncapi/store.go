@@ -39,11 +39,19 @@ type Store struct {
 	// filesystemGeneration invalidates scans that overlap an API mutation.
 	filesystemGeneration uint64
 	db                   *sql.DB
-	persistWorkspace     func(Workspace, bool) error
+	historyLimit         int
+	persistWorkspace     func(Workspace, bool, *mutationReceipt, *ActivityRecord) error
 	scanFiles            func(string) (map[string]diskNode, error)
 }
 
-func OpenStore(dir string) (*Store, error) {
+func OpenStore(dir string, configuredHistoryLimit ...int) (*Store, error) {
+	historyLimit := defaultHistoryLimit
+	if len(configuredHistoryLimit) > 1 || len(configuredHistoryLimit) == 1 && configuredHistoryLimit[0] < 1 {
+		return nil, fmt.Errorf("history limit must be positive")
+	}
+	if len(configuredHistoryLimit) == 1 {
+		historyLimit = configuredHistoryLimit[0]
+	}
 	filesDir := filepath.Join(dir, "files")
 	backup := filepath.Join(dir, ".id-files-backup")
 	if _, markerErr := os.Stat(filepath.Join(dir, logicalMarker)); errors.Is(markerErr, os.ErrNotExist) {
@@ -77,7 +85,7 @@ func OpenStore(dir string) (*Store, error) {
 			}
 		}
 	}
-	s := &Store{dir: dir, filesDir: filesDir, subs: make(map[chan int64]struct{}), disk: make(map[string]diskFingerprint), done: make(chan struct{}), watched: make(map[string]bool), scanFiles: scanFilesystem}
+	s := &Store{dir: dir, filesDir: filesDir, historyLimit: historyLimit, subs: make(map[chan int64]struct{}), disk: make(map[string]diskFingerprint), done: make(chan struct{}), watched: make(map[string]bool), scanFiles: scanFilesystem}
 	s.workspace.Entries = []Entry{}
 	s.workspace.Layout.Wallpaper = "dusk"
 	s.workspace.EditorSettings = EditorSettings{AutoSave: true, FontSize: 13, Language: "auto"}
@@ -85,7 +93,11 @@ func OpenStore(dir string) (*Store, error) {
 	if err := s.openDatabase(); err != nil {
 		return nil, err
 	}
-	s.persistWorkspace = s.persistDatabase
+	if err := s.pruneActivity(); err != nil {
+		_ = s.db.Close()
+		return nil, fmt.Errorf("prune activity history: %w", err)
+	}
+	s.persistWorkspace = s.persistDatabaseWithActivity
 	workspace, found, err := s.loadDatabaseWorkspace()
 	if err != nil {
 		_ = s.db.Close()
@@ -110,7 +122,7 @@ func OpenStore(dir string) (*Store, error) {
 			_ = s.db.Close()
 			return nil, err
 		}
-		if err := s.persistWorkspace(s.workspace, imported); err != nil {
+		if err := s.persistWorkspace(s.workspace, imported, nil, nil); err != nil {
 			_ = s.db.Close()
 			return nil, fmt.Errorf("persist workspace: %w", err)
 		}
@@ -249,20 +261,26 @@ func cloneWorkspace(workspace Workspace) Workspace {
 	return workspace
 }
 
-func (s *Store) persistLocked(next Workspace) error {
+func (s *Store) persistLocked(next Workspace, activity *ActivityRecord) error {
 	next.Entries = nonNilEntries(next.Entries)
 	next.Appearance.CustomThemes = nonNilThemes(next.Appearance.CustomThemes)
-	if err := s.persistWorkspace(next, false); err != nil {
+	if next.Revision != s.workspace.Revision && (activity == nil || activity.Revision != next.Revision) {
+		return fmt.Errorf("revision-changing persistence requires matching activity")
+	}
+	if err := s.persistWorkspace(next, false, nil, activity); err != nil {
 		return fmt.Errorf("persist workspace: %w", err)
 	}
 	s.workspace = next
 	return nil
 }
 
-func (s *Store) persistMutationLocked(next Workspace, receipt *mutationReceipt) error {
+func (s *Store) persistMutationLocked(next Workspace, receipt *mutationReceipt, activity *ActivityRecord) error {
 	next.Entries = nonNilEntries(next.Entries)
 	next.Appearance.CustomThemes = nonNilThemes(next.Appearance.CustomThemes)
-	if err := s.persistDatabaseWithReceipt(next, false, receipt); err != nil {
+	if next.Revision != s.workspace.Revision && (activity == nil || activity.Revision != next.Revision) {
+		return fmt.Errorf("revision-changing persistence requires matching activity")
+	}
+	if err := s.persistWorkspace(next, false, receipt, activity); err != nil {
 		return fmt.Errorf("persist workspace: %w", err)
 	}
 	s.workspace = next

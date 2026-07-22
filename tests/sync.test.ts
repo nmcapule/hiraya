@@ -125,9 +125,58 @@ describe("SyncEngine local lifecycle", () => {
     expect(moved[0].position).toEqual({ x: -40, y: 60 });
     engine.stop();
   });
+
+  test("lists local activity and notifies only after an accepted local mutation", async () => {
+    let snapshot = desktopSnapshot();
+    const page = { activities: [{ revision: 1, timestamp: 10, action: "create", source: "frontend", summary: "Created folder", details: ["Folder: Docs"] }], nextBefore: null };
+    const storage = {
+      loadDesktop: async () => snapshot,
+      listActivity: async () => page,
+      createFolder: async () => {
+        const folder = { kind: "folder" as const, id: "folder-1", name: "Docs", parentId: null, modifiedAt: 1, position: { x: 0, y: 0 } };
+        snapshot = { ...snapshot, entries: [folder] };
+        return folder;
+      },
+      readCurrentDesktop: async () => snapshot,
+    } as unknown as NonNullable<SyncEngineOptions["storage"]>;
+    const engine = new SyncEngine({ frontendOnly: true, storage });
+    let changes = 0;
+    const unsubscribe = engine.subscribeActivityChanges(() => { changes += 1; });
+    await engine.start({ x: 100, y: 100 });
+
+    expect(await engine.listActivity({ q: "Docs", limit: 10 })).toEqual(page);
+    expect(changes).toBe(0);
+    await engine.createFolder("Docs", null, { x: 0, y: 0 });
+    expect(changes).toBe(1);
+    unsubscribe();
+    engine.stop();
+  });
 });
 
 describe("SyncEngine remote reconciliation", () => {
+  test("fetches and validates server-owned activity without reading local history", async () => {
+    const snapshot = desktopSnapshot();
+    const options = remoteOptions(snapshot, (async (input) => {
+      const url = String(input);
+      if (url === "/api/workspace") return Response.json(remoteWorkspace());
+      if (url === "/api/files/file-1/content") return new Response("note");
+      if (url === "/api/activity?q=notes&before=9&limit=4") return Response.json({
+        activities: [{ revision: 8, timestamp: 20, action: "content", source: "api", summary: "Edited file", details: ["File: notes.txt"] }],
+        nextBefore: null,
+      });
+      throw new Error(`Unexpected request: ${url}`);
+    }) as typeof fetch);
+    options.storage = { ...options.storage, listActivity: async () => { throw new Error("local history must not be read"); } } as NonNullable<SyncEngineOptions["storage"]>;
+    const engine = new SyncEngine(options);
+    await engine.start({ x: 100, y: 100 });
+
+    expect(await engine.listActivity({ q: "notes", before: 9, limit: 4 })).toEqual({
+      activities: [{ revision: 8, timestamp: 20, action: "content", source: "api", summary: "Edited file", details: ["File: notes.txt"] }],
+      nextBefore: null,
+    });
+    engine.stop();
+  });
+
   test("publishes the cache while initial server reconciliation is pending", async () => {
     const snapshot = desktopSnapshot();
     let resolveFetch!: (response: Response) => void;

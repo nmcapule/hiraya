@@ -1,6 +1,7 @@
 import type { PersistedManifestV13 } from "./manifest-codec";
 import type { OutboxOperation, OutboxRecord } from "./outbox";
 import type { WindowSession } from "./window-session";
+import type { ActivityPage, ActivityQuery, NewActivityRecord } from "./activity";
 
 export type StoredPreferences = { autoUpdate: boolean };
 
@@ -9,7 +10,7 @@ export type StorageDbRequests = {
   status: undefined;
   bootstrap: { manifest: PersistedManifestV13; preferences: StoredPreferences };
   readManifest: undefined;
-  replaceManifest: { manifest: PersistedManifestV13 };
+  replaceManifest: { manifest: PersistedManifestV13; activity?: NewActivityRecord };
   readPreferences: undefined;
   writePreferences: { preferences: StoredPreferences };
   readWindowSession: undefined;
@@ -21,6 +22,7 @@ export type StorageDbRequests = {
   applyRemoteWithOutbox: { manifest: PersistedManifestV13; acknowledgedOperationId?: string };
   acknowledgeMutation: { operationId: string };
   blockMutation: { operationId: string; error: string };
+  listActivity: ActivityQuery;
 };
 
 export type StorageDbResponses = {
@@ -40,6 +42,7 @@ export type StorageDbResponses = {
   applyRemoteWithOutbox: { manifest: PersistedManifestV13; blocked: OutboxRecord[] };
   acknowledgeMutation: undefined;
   blockMutation: undefined;
+  listActivity: ActivityPage;
 };
 
 export type StorageDbMethod = keyof StorageDbRequests;

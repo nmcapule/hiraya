@@ -168,11 +168,12 @@ func (s *Server) persistMutationLocked(next Workspace, r *http.Request, status i
 		return nil, fmt.Errorf("mutation response exceeds receipt limit")
 	}
 	digest, state := idempotencyHash(r)
+	activity := activityFromMutation(s.store.workspace, next, r, s.now())
 	if state == nil {
-		return body, s.store.persistLocked(next)
+		return body, s.store.persistLocked(next, activity)
 	}
 	receipt := &mutationReceipt{ClientID: state.clientID, OperationID: state.operationID, Endpoint: state.endpoint, RequestHash: digest, Status: status, ResponseBody: body, Revision: next.Revision}
-	return body, s.store.persistMutationLocked(next, receipt)
+	return body, s.store.persistMutationLocked(next, receipt, activity)
 }
 
 func writeJSONBody(w http.ResponseWriter, status int, body []byte) {
