@@ -6,6 +6,7 @@ import { TextEditor } from "./TextEditor";
 import { UrlEditor } from "./UrlEditor";
 import { parseInternetShortcut } from "../lib/internet-shortcut";
 import type { ThemeDefinition } from "../lib/themes";
+import { ImagePreview } from "./ImagePreview";
 
 const LANGUAGE_OPTIONS: Array<{ value: EditorLanguage; label: string }> = [
   { value: "auto", label: "Auto" },
@@ -21,6 +22,8 @@ const LANGUAGE_OPTIONS: Array<{ value: EditorLanguage; label: string }> = [
   { value: "xml", label: "XML" },
   { value: "yaml", label: "YAML" },
 ];
+
+const IMAGE_ZOOM_OPTIONS = [25, 50, 75, 100, 125, 150, 200];
 
 type Props = {
   file: FileEntry;
@@ -45,6 +48,7 @@ export function FileWindow({ file, blob, editable, readOnly = false, remoteChang
   const [objectUrl, setObjectUrl] = useState("");
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
+  const [imageZoom, setImageZoom] = useState<"fit" | number>("fit");
   const savingRef = useRef(false);
   const onSaveRef = useRef(onSave);
   const lastAutoSaveAttemptRef = useRef<string | null>(null);
@@ -94,6 +98,10 @@ export function FileWindow({ file, blob, editable, readOnly = false, remoteChang
   }, [dirty, onDirtyChange]);
 
   useEffect(() => {
+    setImageZoom("fit");
+  }, [file.id]);
+
+  useEffect(() => {
     if (!editable || readOnly || !editorSettings.autoSave || !contentLoaded || !dirty || !validContent || saving || lastAutoSaveAttemptRef.current === content) return;
     const timer = window.setTimeout(() => {
       lastAutoSaveAttemptRef.current = content;
@@ -120,6 +128,23 @@ export function FileWindow({ file, blob, editable, readOnly = false, remoteChang
       </div>
         {saveError && <div className="window-error">{saveError}</div>}
         {remoteChanged && <div className="window-error">This file changed on the server. Your unsaved text is preserved; saving it will become the latest version.</div>}
+        {!editable && preview === "image" && (
+          <div className="editor-toolbar image-preview-toolbar" aria-label="Image preview settings">
+            <label>
+              <span>Zoom</span>
+              <select
+                value={imageZoom}
+                onChange={(event) => setImageZoom(event.target.value === "fit" ? "fit" : Number(event.target.value))}
+              >
+                <option value="fit">Fit</option>
+                {typeof imageZoom === "number" && !IMAGE_ZOOM_OPTIONS.includes(Math.round(imageZoom * 100)) && (
+                  <option value={imageZoom}>{Math.round(imageZoom * 100)}%</option>
+                )}
+                {IMAGE_ZOOM_OPTIONS.map((percent) => <option key={percent} value={percent / 100}>{percent}%</option>)}
+              </select>
+            </label>
+          </div>
+        )}
         {editable && preview === "text" && !readOnly && (
           <div className="editor-toolbar" aria-label="Editor settings">
             <label>
@@ -171,7 +196,7 @@ export function FileWindow({ file, blob, editable, readOnly = false, remoteChang
           {preview === "url" && contentLoaded && (
             <UrlEditor content={content} readOnly={readOnly} onChange={setContent} onSave={() => void save(content)} />
           )}
-          {!editable && preview === "image" && objectUrl && <img className="preview-image" src={objectUrl} alt={file.name} />}
+          {!editable && preview === "image" && objectUrl && <ImagePreview src={objectUrl} alt={file.name} zoom={imageZoom} onZoomChange={setImageZoom} />}
           {!editable && preview === "pdf" && objectUrl && <iframe className="preview-frame" src={objectUrl} title={file.name} />}
           {!editable && preview === "video" && objectUrl && <video className="preview-media" src={objectUrl} controls />}
           {!editable && preview === "audio" && objectUrl && <audio className="preview-audio" src={objectUrl} controls />}

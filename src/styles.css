@@ -2009,12 +2009,66 @@ textarea:focus-visible {
   background: #f3dfdc;
 }
 
-.preview-image,
 .preview-media {
   display: block;
   max-width: 100%;
   max-height: 100%;
   object-fit: contain;
+}
+
+.image-preview-toolbar {
+  justify-content: flex-end;
+}
+
+.image-preview {
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  cursor: grab;
+  touch-action: none;
+  overscroll-behavior: contain;
+}
+
+.image-preview[data-fitted] {
+  overflow: hidden;
+  cursor: default;
+}
+
+.image-preview[data-panning] {
+  cursor: grabbing;
+}
+
+.image-preview__stage {
+  display: grid;
+  width: max-content;
+  min-width: 100%;
+  height: max-content;
+  min-height: 100%;
+  place-items: center;
+}
+
+.preview-image {
+  display: block;
+  max-width: none;
+  max-height: none;
+  object-fit: contain;
+  user-select: none;
+}
+
+.image-preview[data-fitted] .image-preview__stage {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.image-preview[data-fitted] .preview-image {
+  position: absolute;
+  inset: 0;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 100%;
+  margin: auto;
 }
 
 .preview-frame {
