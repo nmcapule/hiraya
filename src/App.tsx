@@ -619,6 +619,7 @@ function App() {
       }
       navigationReadyRef.current = true;
       applyLocationRouteRef.current(synced.entries, synced.layout);
+      setLoading(false);
       restoreSavedWindowSession();
     }, (nextStatus) => { if (active) setSyncStatus(nextStatus); }, (syncing) => { if (active) setIsSyncing(syncing); });
     const unsubscribeCatalog = subscribeToDesktopCatalog((registry) => {
@@ -646,13 +647,16 @@ function App() {
       setDefaultDesktopId(registry.defaultDesktopId);
       activeDesktopIdRef.current = desktopId;
       setActiveDesktopId(desktopId);
-      savedWindowSession = readWindowSession(desktopId).then(
-        (session) => ({ session, loaded: true as const }),
-        () => ({ session: null, loaded: false as const }),
-      );
       return switchLocalDesktop(desktopId)
         .then(() => pruneLocalDesktops(registry.desktops.map((desktop) => desktop.id)))
-        .then(() => initializeDesktop(desktopId, { x: window.innerWidth, y: Math.max(1, window.innerHeight - 44) }, seededDesktop));
+        .then(() => {
+          const initialization = initializeDesktop(desktopId, { x: window.innerWidth, y: Math.max(1, window.innerHeight - 44) }, seededDesktop);
+          savedWindowSession = readWindowSession(desktopId).then(
+            (session) => ({ session, loaded: true as const }),
+            () => ({ session: null, loaded: false as const }),
+          );
+          return initialization;
+        });
     })
       .then(({ desktop: loadedDesktop, status: loadedStatus }) => {
         if (!active) return;
@@ -665,6 +669,7 @@ function App() {
         setEditorSettings(loadedEditorSettings);
         setAppearance(loadedAppearance);
         setSyncStatus(loadedStatus);
+        setLoading(false);
         restoreSavedWindowSession();
         const routedApps = historyApps(window.history.state);
         if (routedApps) restoreHistoryAppsRef.current(routedApps);

@@ -74,7 +74,7 @@ const scope = self as typeof self & {
 scope.onconnect = (event) => {
   const port = event.ports[0];
   clients.add(port);
-  port.onmessage = (message: MessageEvent<StorageDbRequest | { type: "attach-engine"; requestId: number; port: MessagePort } | { type: "release-engine"; requestId: number }>) => {
+  port.onmessage = (message: MessageEvent<StorageDbRequest | { type: "attach-engine"; requestId: number; port: MessagePort } | { type: "release-engine"; requestId: number } | { type: "reset-engine" }>) => {
     if ("type" in message.data && message.data.type === "attach-engine") {
       if (engine || message.data.requestId !== hostRequestId) {
         message.data.port.close();
@@ -93,6 +93,10 @@ scope.onconnect = (event) => {
     }
     if ("type" in message.data && message.data.type === "release-engine") {
       if (engineHost === port && message.data.requestId === hostRequestId) loseEngine("The local database owner changed. Retry the operation.");
+      return;
+    }
+    if ("type" in message.data && message.data.type === "reset-engine") {
+      loseEngine("The local database owner changed. Retry the operation.");
       return;
     }
     forward(port, message.data as StorageDbRequest);

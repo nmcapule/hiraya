@@ -295,6 +295,7 @@ type RpcPort = {
   postMessage(message: unknown, transfer?: Transferable[]): void;
   addEventListener(type: "message", listener: (event: MessageEvent<StorageDbResponse>) => void): void;
   start?: () => void;
+  reset(): boolean;
 };
 
 let databasePort: Promise<RpcPort> | null = null;
@@ -304,14 +305,16 @@ let requestId = 0;
 const pendingRequests = new Map<number, { resolve(value: unknown): void; reject(error: Error): void }>();
 const OWNER_CHANGED_MESSAGE = "The local database owner changed. Retry the operation.";
 const RETRYABLE_OWNER_CHANGE_METHODS = new Set<StorageDbMethod>(["status", "bootstrap", "listDesktops", "readDesktop", "readManifest", "readPreferences", "readWindowSession", "readOutbox", "listActivity"]);
+const DATABASE_REQUEST_TIMEOUT_MS = 15_000;
+const STORAGE_LOCK_TIMEOUT_MS = 30_000;
 
 class LocalDatabaseOwnerChangedError extends Error {}
+class LocalDatabaseTimeoutError extends Error {}
 
 function openDatabasePort(): RpcPort {
   let port: RpcPort;
   if (typeof SharedWorker !== "undefined") {
     const shared = new SharedWorker(new URL("./opfs-shared.worker.ts", import.meta.url), { type: "module", name: "hiraya-storage" });
-    port = shared.port;
     shared.port.addEventListener("message", (event) => {
       const message = event.data as { type?: string; requestId?: number };
       if (message.type !== "need-engine" || message.requestId === undefined) return;
@@ -349,9 +352,29 @@ function openDatabasePort(): RpcPort {
       hostedDatabaseWorker = null;
       hostedDatabaseRequestId = null;
       shared.port.postMessage({ type: "release-engine", requestId: releasedRequestId });
-    }, { once: true });
+    });
+    port = {
+      postMessage: (message, transfer) => shared.port.postMessage(message, transfer ?? []),
+      addEventListener: (type, listener) => shared.port.addEventListener(type, listener),
+      start: () => shared.port.start(),
+      reset: () => {
+        hostedDatabaseWorker?.terminate();
+        hostedDatabaseWorker = null;
+        hostedDatabaseRequestId = null;
+        shared.port.postMessage({ type: "reset-engine" });
+        return false;
+      },
+    };
   } else {
-    port = new Worker(new URL("./opfs-db.worker.ts", import.meta.url), { type: "module", name: "hiraya-storage-fallback" });
+    const worker = new Worker(new URL("./opfs-db.worker.ts", import.meta.url), { type: "module", name: "hiraya-storage-fallback" });
+    port = {
+      postMessage: (message, transfer) => worker.postMessage(message, transfer ?? []),
+      addEventListener: (type, listener) => worker.addEventListener(type, listener),
+      reset: () => {
+        worker.terminate();
+        return true;
+      },
+    };
   }
   port.addEventListener("message", (event) => {
     const response = event.data;
@@ -367,24 +390,57 @@ function openDatabasePort(): RpcPort {
 
 async function callDatabase<M extends StorageDbMethod>(method: M, params: StorageDbRequests[M], desktopId: string | null = activeDesktopContext): Promise<StorageDbResponses[M]> {
   await getRoot();
-  databasePort ??= Promise.resolve().then(openDatabasePort);
-  const port = await databasePort;
   for (let attempt = 0; ; attempt += 1) {
+    const connection = databasePort ??= Promise.resolve().then(openDatabasePort);
+    const port = await connection;
     try {
       const id = ++requestId;
       return await new Promise<StorageDbResponses[M]>((resolve, reject) => {
-        pendingRequests.set(id, { resolve: (value) => resolve(value as StorageDbResponses[M]), reject });
+        const timeout = window.setTimeout(() => {
+          if (!pendingRequests.delete(id)) return;
+          if (port.reset() && databasePort === connection) databasePort = null;
+          const error = new LocalDatabaseTimeoutError("Local storage stopped responding. Please retry the operation.");
+          for (const pending of [...pendingRequests.values()]) pending.reject(error);
+          pendingRequests.clear();
+          reject(error);
+        }, DATABASE_REQUEST_TIMEOUT_MS);
+        pendingRequests.set(id, {
+          resolve: (value) => {
+            window.clearTimeout(timeout);
+            resolve(value as StorageDbResponses[M]);
+          },
+          reject: (error) => {
+            window.clearTimeout(timeout);
+            reject(error);
+          },
+        });
         port.postMessage({ id, desktopId, method, params });
       });
     } catch (error) {
-      if (!(error instanceof LocalDatabaseOwnerChangedError) || attempt > 0 || !RETRYABLE_OWNER_CHANGE_METHODS.has(method)) throw error;
+      if (!(error instanceof LocalDatabaseOwnerChangedError || error instanceof LocalDatabaseTimeoutError) || attempt > 0 || !RETRYABLE_OWNER_CHANGE_METHODS.has(method)) throw error;
     }
   }
 }
 
-function withCrossContextLock<T>(operation: () => Promise<T>) {
+async function withCrossContextLock<T>(operation: () => Promise<T>) {
   if (!("locks" in navigator) || !navigator.locks) return operation();
-  return navigator.locks.request("hiraya-opfs", { mode: "exclusive" }, operation);
+  const controller = new AbortController();
+  let acquired = false;
+  const timeout = window.setTimeout(() => {
+    if (!acquired) controller.abort();
+  }, STORAGE_LOCK_TIMEOUT_MS);
+  try {
+    return await navigator.locks.request("hiraya-opfs", { mode: "exclusive", signal: controller.signal }, async () => {
+      acquired = true;
+      window.clearTimeout(timeout);
+      return operation();
+    });
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error("Local storage is busy in another Hiraya window. Close the other window and retry.");
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
+  }
 }
 
 function serializeStorage<T>(operation: () => Promise<T>): Promise<T> {
