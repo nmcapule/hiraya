@@ -17,9 +17,12 @@ export type AppWindowProps = {
   zIndex: number;
   focused: boolean;
   minimized: boolean;
+  workspaceActive: boolean;
   mobile: boolean;
   onFocus: (id: string) => void;
   onBoundsChange: (id: string, bounds: WindowBounds) => void;
+  onDragAtEdge?: (id: string, clientX: number, clientY: number, bounds: WindowBounds) => WindowBounds | null;
+  onDragEnd?: (id: string, cancelled: boolean) => void;
   onMinimize: (id: string) => void;
   onClose: (id: string) => void;
   children: ReactNode | ((headerElements: AppWindowHeaderElements) => ReactNode);
@@ -55,9 +58,12 @@ export function AppWindow({
   zIndex,
   focused,
   minimized,
+  workspaceActive,
   mobile,
   onFocus,
   onBoundsChange,
+  onDragAtEdge,
+  onDragEnd,
   onMinimize,
   onClose,
   children,
@@ -115,8 +121,14 @@ export function AppWindow({
           x: interaction.startBounds.x + delta.x,
           y: interaction.startBounds.y + delta.y,
         }, viewport(), { minWidth, minHeight });
-    interaction.currentBounds = nextBounds;
-    applyBounds(nextBounds);
+    const transferredBounds = !interaction.direction ? onDragAtEdge?.(id, event.clientX, event.clientY, nextBounds) : null;
+    interaction.currentBounds = transferredBounds ?? nextBounds;
+    if (transferredBounds) {
+      interaction.startX = event.clientX;
+      interaction.startY = event.clientY;
+      interaction.startBounds = transferredBounds;
+    }
+    applyBounds(interaction.currentBounds);
   }
 
   function finishInteraction(event: ReactPointerEvent<HTMLElement>, cancelled = false) {
@@ -125,6 +137,7 @@ export function AppWindow({
     interactionRef.current = null;
     if (cancelled) applyBounds(interaction.startBounds);
     else onBoundsChangeRef.current(id, interaction.currentBounds);
+    if (!interaction.direction) onDragEnd?.(id, cancelled);
     if (interaction.target.hasPointerCapture(interaction.pointerId)) {
       interaction.target.releasePointerCapture(interaction.pointerId);
     }
@@ -150,11 +163,13 @@ export function AppWindow({
       data-app-window={id}
       data-focused={focused || undefined}
       data-minimized={minimized || undefined}
+      data-workspace-hidden={!workspaceActive || undefined}
       data-mobile={mobile || undefined}
       role="dialog"
       aria-modal="false"
       aria-labelledby={titleId}
-      aria-hidden={minimized || mobile && !focused || undefined}
+      aria-hidden={minimized || !workspaceActive || mobile && !focused || undefined}
+      inert={!workspaceActive}
       style={style}
       onPointerDown={() => { if (!focused) onFocus(id); }}
     >

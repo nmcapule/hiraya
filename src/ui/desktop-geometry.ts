@@ -29,6 +29,7 @@ export type ResponsiveDesktop = {
 };
 
 export type DesktopPositionUpdate = { entryId: string; position: EntryPosition };
+export type SurfaceSegmentMove = { source: SurfaceSegment; target: SurfaceSegment };
 
 export function segmentKey(segment: SurfaceSegment) {
   return `${segment.row}:${segment.column}`;
@@ -149,4 +150,18 @@ export function reorderDesktopPages(
     const local = projectLogicalPosition(entry.position, size).local;
     return { entryId: entry.id, position: restoreLogicalPosition(local, pages[index].segment, size) };
   }));
+}
+
+export function reorderSurfaceSegments(
+  segments: readonly SurfaceSegment[],
+  sourceKey: string,
+  targetIndex: number,
+): SurfaceSegmentMove[] {
+  const sourceIndex = segments.findIndex((segment) => segmentKey(segment) === sourceKey);
+  const boundedTarget = Math.max(0, Math.min(segments.length - 1, targetIndex));
+  if (sourceIndex < 0 || sourceIndex === boundedTarget) return [];
+  const reordered = [...segments];
+  const [moved] = reordered.splice(sourceIndex, 1);
+  reordered.splice(boundedTarget, 0, moved);
+  return reordered.map((source, index) => ({ source, target: segments[index] }));
 }

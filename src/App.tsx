@@ -45,7 +45,7 @@ import { CLIPBOARD_ARCHIVE_WEB_MIME_TYPE, decodeClipboardArchiveItem, encodeClip
 import { formatDesktopRoute, normalizeDesktopRoute, parseDesktopRoute, resolveOpenFilePath, type DesktopRoute } from "./lib/routes";
 import { DEFAULT_THEME_STATE, isBuiltinThemeId, resolveTheme, themeIconMetrics, themeStyle, type CustomTheme, type ThemeDefinition, type ThemeState } from "./lib/themes";
 import { DEFAULT_WALLPAPER, type ContextMenuState, type DesktopEntry, type DesktopLayout, type DialogState, type EditorSettings, type EntryPosition, type FileEntry } from "./types";
-import { GRID_ORIGIN, nextAvailableDesktopSlot, nextDesktopPosition, projectLogicalPosition, reorderDesktopPages, responsiveDesktop, restoreLogicalPosition, segmentKey, snapAxis } from "./ui/desktop-geometry";
+import { GRID_ORIGIN, nextAvailableDesktopSlot, nextDesktopPosition, projectLogicalPosition, reorderSurfaceSegments, responsiveDesktop, restoreLogicalPosition, segmentKey, snapAxis, type SurfaceSegment } from "./ui/desktop-geometry";
 import { fileCapabilities } from "./ui/file-capabilities";
 import { topOverlay } from "./ui/overlay";
 import { createWorkspaceIndex } from "./ui/workspace-index";
@@ -65,6 +65,15 @@ const DESKTOP_LONG_PRESS_MS = 500;
 
 function formatClock(date: Date) {
   return new Intl.DateTimeFormat(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" }).format(date);
+}
+
+function topRunningAppInSegment(apps: RunningApp[], segment: SurfaceSegment, size: { width: number; height: number }, excludedId?: string) {
+  return [...apps]
+    .filter((app) => {
+      const appSegment = projectLogicalPosition(app.bounds, size).segment;
+      return app.id !== excludedId && !app.minimized && appSegment.column === segment.column && appSegment.row === segment.row;
+    })
+    .sort((a, b) => b.zIndex - a.zIndex)[0] ?? null;
 }
 
 function App() {
@@ -108,6 +117,7 @@ function App() {
   const [pendingPaste, setPendingPaste] = useState<PendingPaste | null>(null);
   const [marquee, setMarquee] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
   const desktopRef = useRef<HTMLElement>(null);
+  const desktopSizeRef = useRef(desktopSize);
   const canvasRef = useRef<HTMLDivElement>(null);
   const uploadRef = useRef<HTMLInputElement>(null);
   const uploadParentRef = useRef<string | null>(null);
@@ -121,6 +131,7 @@ function App() {
     timer: number;
     pageKey: string;
     initialPositions: Array<{ entryId: string; position: EntryPosition }>;
+    initialAppBounds: Array<{ appId: string; bounds: WindowBounds }>;
   } | null>(null);
   const desktopPressRef = useRef<{
     activated: boolean;
@@ -136,11 +147,20 @@ function App() {
   const beginPasteRef = useRef<(parentId: string | null, position?: EntryPosition, snapshot?: ClipboardEntrySnapshot) => Promise<void>>(async () => undefined);
   const handleImportRef = useRef<(files: File[], parentId: string | null, base?: EntryPosition) => Promise<void>>(async () => undefined);
   const edgeDragRef = useRef({ direction: "", time: 0 });
+  const windowEdgeDragRef = useRef({ direction: "", time: 0 });
   const edgeNavigationRef = useRef<{
     route: DesktopRoute;
     historyState: unknown;
     draftEntryId?: string;
+    focusedAppId?: string | null;
     targetSegment?: { column: number; row: number };
+  } | null>(null);
+  const windowEdgeNavigationRef = useRef<{
+    appId: string;
+    bounds: WindowBounds;
+    route: DesktopRoute;
+    historyState: unknown;
+    targetSegment?: SurfaceSegment;
   } | null>(null);
   const layoutRef = useRef(layout);
   const entriesRef = useRef(entries);
@@ -168,6 +188,7 @@ function App() {
   const updatePreferenceLoadedRef = useRef(false);
   const manualUpdateCheckRef = useRef(false);
   const activeSegment = { column: route?.column ?? 0, row: route?.row ?? 0 };
+  desktopSizeRef.current = desktopSize;
   const routeExplorerFolderId = route?.explorerFolderId;
   const routeFileId = route?.fileId;
   const routeSettings = route?.settings;
@@ -180,14 +201,25 @@ function App() {
   const responsive = useMemo(() => responsiveDesktop(entries, desktopSize, iconMetrics), [desktopSize, entries, iconMetrics]);
   const activePageKey = segmentKey(activeSegment);
   const actualActivePage = responsive.pages.find((candidate) => candidate.key === activePageKey);
-  const pages = actualActivePage
-    ? responsive.pages
-    : [...responsive.pages, { entries: [], key: activePageKey, segment: activeSegment }]
+  const occupiedPages = useMemo(() => {
+    const byKey = new Map(responsive.pages.map((page) => [page.key, page]));
+    for (const app of runningApps) {
+      const segment = projectLogicalPosition(app.bounds, desktopSize).segment;
+      const key = segmentKey(segment);
+      if (!byKey.has(key)) byKey.set(key, { entries: [], key, segment });
+    }
+    return [...byKey.values()].sort((a, b) => a.segment.row - b.segment.row || a.segment.column - b.segment.column);
+  }, [desktopSize, responsive.pages, runningApps]);
+  const pages = occupiedPages.some((candidate) => candidate.key === activePageKey)
+    ? occupiedPages
+    : [...occupiedPages, { entries: [], key: activePageKey, segment: activeSegment }]
       .sort((a, b) => a.segment.row - b.segment.row || a.segment.column - b.segment.column);
-  const minColumn = Math.min(responsive.minColumn, activeSegment.column);
-  const minRow = Math.min(responsive.minRow, activeSegment.row);
-  const maxColumn = Math.max(responsive.maxColumn, activeSegment.column);
-  const maxRow = Math.max(responsive.maxRow, activeSegment.row);
+  const occupiedColumns = occupiedPages.map((candidate) => candidate.segment.column);
+  const occupiedRows = occupiedPages.map((candidate) => candidate.segment.row);
+  const minColumn = Math.min(0, activeSegment.column, ...occupiedColumns);
+  const minRow = Math.min(0, activeSegment.row, ...occupiedRows);
+  const maxColumn = Math.max(0, activeSegment.column, ...occupiedColumns);
+  const maxRow = Math.max(0, activeSegment.row, ...occupiedRows);
   const pageColumns = maxColumn - minColumn + 1;
   const pageRows = maxRow - minRow + 1;
   const page = { column: activeSegment.column - minColumn, row: activeSegment.row - minRow };
@@ -313,6 +345,19 @@ function App() {
     setFocusedAppId(id);
   }
 
+  function segmentForApp(app: RunningApp, size = desktopSize) {
+    return projectLogicalPosition(app.bounds, size).segment;
+  }
+
+  function appIsInSegment(app: RunningApp, segment: SurfaceSegment, size = desktopSize) {
+    const appSegment = segmentForApp(app, size);
+    return appSegment.column === segment.column && appSegment.row === segment.row;
+  }
+
+  function topAppInSegment(apps: RunningApp[], segment: SurfaceSegment, excludedId?: string) {
+    return topRunningAppInSegment(apps, segment, desktopSize, excludedId);
+  }
+
   function focusApp(id: string, syncRoute = true) {
     const target = runningAppsRef.current.find((app) => app.id === id);
     if (!target) return;
@@ -320,7 +365,7 @@ function App() {
     updateRunningApps((current) => current.map((app) => app.id === id ? { ...app, minimized: false, zIndex } : app));
     setFocusedApp(id);
     const currentRoute = routeRef.current;
-    if (syncRoute && currentRoute) navigateRoute(routeForApp(target, currentRoute), "replace");
+    if (syncRoute && currentRoute) goToSegment(segmentForApp(target), "replace", { ...target, minimized: false, zIndex });
   }
 
   function closeApp(id: string) {
@@ -330,7 +375,7 @@ function App() {
     const remaining = runningAppsRef.current.filter((app) => app.id !== id);
     updateRunningApps(remaining);
     if (focusedAppIdRef.current === id) {
-      const next = [...remaining].filter((app) => !app.minimized).sort((a, b) => b.zIndex - a.zIndex)[0] ?? null;
+      const next = topAppInSegment(remaining, activeSegment);
       setFocusedApp(next?.id ?? null);
       const currentRoute = routeRef.current;
       if (currentRoute) navigateRoute(routeForApp(next, currentRoute), "replace");
@@ -340,7 +385,7 @@ function App() {
   function minimizeApp(id: string) {
     updateRunningApps((current) => current.map((app) => app.id === id ? { ...app, minimized: true } : app));
     if (focusedAppIdRef.current === id) {
-      const next = [...runningAppsRef.current].filter((app) => app.id !== id && !app.minimized).sort((a, b) => b.zIndex - a.zIndex)[0] ?? null;
+      const next = topAppInSegment(runningAppsRef.current, activeSegment, id);
       setFocusedApp(next?.id ?? null);
       const currentRoute = routeRef.current;
       if (currentRoute) navigateRoute(routeForApp(next, currentRoute), "replace");
@@ -348,13 +393,18 @@ function App() {
   }
 
   function updateAppBounds(id: string, bounds: WindowBounds) {
-    updateRunningApps((current) => current.map((app) => app.id === id ? { ...app, bounds } : app));
+    updateRunningApps((current) => current.map((app) => app.id === id ? {
+      ...app,
+      bounds: { ...bounds, ...restoreLogicalPosition(bounds, segmentForApp(app), desktopSize) },
+    } : app));
   }
 
-  function createAppBase(id: string, width: number, height: number, minWidth: number, minHeight: number, index = runningAppsRef.current.length): BaseRunningApp {
+  function createAppBase(id: string, width: number, height: number, minWidth: number, minHeight: number, index?: number, segment = activeSegment): BaseRunningApp {
+    const staggerIndex = index ?? runningAppsRef.current.filter((app) => appIsInSegment(app, segment)).length;
+    const localBounds = initialWindowBounds(desktopSize, { width, height, minWidth, minHeight, index: staggerIndex });
     return {
       id,
-      bounds: initialWindowBounds(desktopSize, { width, height, minWidth, minHeight, index }),
+      bounds: { ...localBounds, ...restoreLogicalPosition(localBounds, segment, desktopSize) },
       minimized: false,
       zIndex: ++nextWindowZRef.current,
     };
@@ -380,7 +430,8 @@ function App() {
 
   function restoreRunningApps(session: WindowSession, loadedEntries: DesktopEntry[]) {
     const byId = new Map(loadedEntries.map((entry) => [entry.id, entry]));
-    const restored = restoreWindowSession(session, loadedEntries, desktopSize).map((saved): RunningApp => {
+    const restoredRoute = routeRef.current ?? normalizeDesktopRoute(parseDesktopRoute(window.location.hash), loadedEntries);
+    const restored = restoreWindowSession(session, loadedEntries, restoredRoute, desktopSize).map((saved): RunningApp => {
       if (saved.kind === "settings") return { ...saved, id: "settings" };
       if (saved.kind === "explorer") return { ...saved, id: `explorer:${saved.folderId ?? "root"}` };
       const file = byId.get(saved.fileId) as FileEntry;
@@ -401,6 +452,7 @@ function App() {
   }
 
   function restoreHistoryApps(targets: WindowTarget[]) {
+    const historySegment = normalizeDesktopRoute(parseDesktopRoute(window.location.hash), entriesRef.current);
     const existing = new Map(runningAppsRef.current.map((app) => [app.id, app]));
     const targetIds = new Set(targets.map(windowTargetId));
     const reusableExplorers = runningAppsRef.current.filter((app): app is ExplorerApp => app.kind === "explorer" && !targetIds.has(app.id));
@@ -414,7 +466,7 @@ function App() {
         continue;
       }
       if (target.kind === "settings") {
-        restored.push({ ...createAppBase(id, 720, 700, 360, 280, restored.length), kind: "settings" });
+        restored.push({ ...createAppBase(id, 720, 700, 360, 280, restored.length, historySegment), kind: "settings" });
         continue;
       }
       if (target.kind === "explorer") {
@@ -422,13 +474,13 @@ function App() {
         const reusable = reusableExplorers.shift();
         restored.push(reusable
           ? { ...reusable, id, folderId: target.folderId }
-          : { ...createAppBase(id, 760, 590, 360, 280, restored.length), kind: "explorer", folderId: target.folderId });
+          : { ...createAppBase(id, 760, 590, 360, 280, restored.length, historySegment), kind: "explorer", folderId: target.folderId });
         continue;
       }
       const file = entriesRef.current.find((entry): entry is FileEntry => entry.id === target.fileId && entry.kind === "file");
       if (!file) continue;
       const app: FileApp = {
-        ...createAppBase(id, 920, 680, 420, 320, restored.length),
+        ...createAppBase(id, 920, 680, 420, 320, restored.length, historySegment),
         kind: "file",
         fileId: file.id,
         file,
@@ -540,7 +592,8 @@ function App() {
       const availableApps = runningAppsRef.current.filter((app) => app.kind === "settings" || app.kind === "explorer" && app.folderId === null || syncedIds.has(app.kind === "file" ? app.fileId : app.folderId!));
       updateRunningApps(availableApps);
       if (focusedAppIdRef.current && !availableApps.some((app) => app.id === focusedAppIdRef.current)) {
-        const next = [...availableApps].filter((app) => !app.minimized).sort((a, b) => b.zIndex - a.zIndex)[0] ?? null;
+        const currentRoute = routeRef.current;
+        const next = topRunningAppInSegment(availableApps, currentRoute ?? { column: 0, row: 0 }, desktopSizeRef.current);
         setFocusedApp(next?.id ?? null);
       }
       navigationReadyRef.current = true;
@@ -586,7 +639,7 @@ function App() {
   useEffect(() => {
     if (windowSessionReadyRef.current) {
       const session: WindowSession = {
-        version: 1,
+        version: 2,
         apps: runningApps.map((app): WindowSessionApp => {
           const base = { bounds: app.bounds, minimized: app.minimized, zIndex: app.zIndex };
           if (app.kind === "file") return { ...base, kind: "file", fileId: app.fileId };
@@ -725,10 +778,11 @@ function App() {
       column: Math.floor((current.column * previous.width + previous.width / 2) / desktopSize.width),
       row: Math.floor((current.row * previous.height + previous.height / 2) / desktopSize.height),
     }, "replace");
-    updateRunningApps((currentApps) => currentApps.map((app) => ({
-      ...app,
-      bounds: clampWindowBounds(app.bounds, desktopSize, app.kind === "file" ? { minWidth: 420, minHeight: 320 } : { minWidth: 360, minHeight: 280 }),
-    })));
+    updateRunningApps((currentApps) => currentApps.map((app) => {
+      const projection = projectLogicalPosition(app.bounds, desktopSize);
+      const localBounds = clampWindowBounds({ ...app.bounds, ...projection.local }, desktopSize, app.kind === "file" ? { minWidth: 420, minHeight: 320 } : { minWidth: 360, minHeight: 280 });
+      return { ...app, bounds: { ...localBounds, ...restoreLogicalPosition(localBounds, projection.segment, desktopSize) } };
+    }));
   }, [desktopSize]);
 
   useEffect(() => {
@@ -749,7 +803,7 @@ function App() {
     });
     updateRunningApps(reconciledApps);
     if (focusedAppIdRef.current && !reconciledApps.some((app) => app.id === focusedAppIdRef.current)) {
-      const next = [...reconciledApps].filter((app) => !app.minimized).sort((a, b) => b.zIndex - a.zIndex)[0] ?? null;
+      const next = topRunningAppInSegment(reconciledApps, routeRef.current ?? { column: 0, row: 0 }, desktopSizeRef.current);
       setFocusedApp(next?.id ?? null);
     }
 
@@ -1204,7 +1258,8 @@ function App() {
     if (nextId === appId) return;
     const previousApps = runningAppTargets();
     const zIndex = ++nextWindowZRef.current;
-    if (runningAppsRef.current.some((app) => app.id === nextId)) {
+    const existing = runningAppsRef.current.find((app) => app.id === nextId);
+    if (existing) {
       delete fileDirtyRef.current[appId];
       delete fileLoadGenerationsRef.current[appId];
       updateRunningApps(runningAppsRef.current.filter((app) => app.id !== appId).map((app) => app.id === nextId ? { ...app, minimized: false, zIndex } : app));
@@ -1213,7 +1268,10 @@ function App() {
     }
     setFocusedApp(nextId);
     const currentRoute = routeRef.current;
-    if (currentRoute) navigateRoute({ column: currentRoute.column, row: currentRoute.row, explorerFolderId: folderId }, "push", previousApps);
+    if (currentRoute && existing) {
+      const segment = segmentForApp(existing);
+      navigateRoute({ ...segment, explorerFolderId: folderId }, "push", previousApps);
+    } else if (currentRoute) navigateRoute({ column: currentRoute.column, row: currentRoute.row, explorerFolderId: folderId }, "push", previousApps);
   }
 
   function openSettingsWindow(syncRoute = true) {
@@ -1256,6 +1314,11 @@ function App() {
     setContextMenu(null);
     const currentRoute = routeRef.current;
     if (!currentRoute) return;
+    const existingId = entry.kind === "folder" ? `explorer:${entry.id}` : `file:${entry.id}`;
+    if (runningAppsRef.current.some((app) => app.id === existingId)) {
+      focusApp(existingId);
+      return;
+    }
     const previousApps = runningAppTargets();
     if (entry.kind === "folder") {
       const created = openExplorerWindow(entry.id, false);
@@ -1376,15 +1439,32 @@ function App() {
     setNotice(syncStatus === "local" ? "Changes saved locally" : syncStatus === "offline" ? "Changes queued for sync" : "Changes synced");
   }
 
-  function goToSegment(segment: { column: number; row: number }, mode: "push" | "replace" = "push") {
+  function goToSegment(segment: SurfaceSegment, mode: "push" | "replace" = "push", preferredApp?: RunningApp | null) {
     const currentRoute = routeRef.current;
     if (!currentRoute) return;
     if (canvasRef.current) {
-      const nextMinColumn = Math.min(responsive.minColumn, segment.column);
-      const nextMinRow = Math.min(responsive.minRow, segment.row);
+      const nextMinColumn = Math.min(0, segment.column, ...occupiedPages.map((page) => page.segment.column));
+      const nextMinRow = Math.min(0, segment.row, ...occupiedPages.map((page) => page.segment.row));
       canvasRef.current.style.transform = `translate3d(${-(segment.column - nextMinColumn) * desktopSize.width}px, ${-(segment.row - nextMinRow) * desktopSize.height}px, 0)`;
     }
-    navigateRoute({ ...currentRoute, ...segment }, mode);
+    const nextApp = preferredApp && appIsInSegment(preferredApp, segment)
+      ? preferredApp
+      : topAppInSegment(runningAppsRef.current, segment);
+    setFocusedApp(nextApp?.id ?? null);
+    navigateRoute(routeForApp(nextApp, { ...currentRoute, ...segment }), mode);
+  }
+
+  function edgeAt(clientX: number, clientY: number) {
+    const desktop = desktopRef.current;
+    if (!desktop) return null;
+    const bounds = desktop.getBoundingClientRect();
+    const threshold = Math.min(36, Math.max(24, Math.min(bounds.width, bounds.height) * 0.06));
+    return ([
+      { direction: "left" as const, distance: clientX - bounds.left },
+      { direction: "right" as const, distance: bounds.right - clientX },
+      { direction: "up" as const, distance: clientY - bounds.top },
+      { direction: "down" as const, distance: bounds.bottom - clientY },
+    ]).filter((candidate) => candidate.distance <= threshold).sort((a, b) => a.distance - b.distance)[0] ?? null;
   }
 
   function handleDesktopPointerDown(event: React.PointerEvent<HTMLElement>) {
@@ -1422,17 +1502,7 @@ function App() {
   }
 
   function handleIconDragAtEdge(entry: DesktopEntry, clientX: number, clientY: number) {
-    const desktop = desktopRef.current;
-    if (!desktop) return null;
-    const bounds = desktop.getBoundingClientRect();
-    const threshold = Math.min(36, Math.max(24, Math.min(bounds.width, bounds.height) * 0.06));
-    const candidates: Array<{ direction: "left" | "right" | "up" | "down"; distance: number }> = [
-      { direction: "left" as const, distance: clientX - bounds.left },
-      { direction: "right" as const, distance: bounds.right - clientX },
-      { direction: "up" as const, distance: clientY - bounds.top },
-      { direction: "down" as const, distance: bounds.bottom - clientY },
-    ].filter((candidate) => candidate.distance <= threshold).sort((a, b) => a.distance - b.distance);
-    const edge = candidates[0];
+    const edge = edgeAt(clientX, clientY);
     if (!edge) {
       edgeDragRef.current.direction = "";
       return null;
@@ -1445,7 +1515,7 @@ function App() {
       row: previousSegment.row + (edge.direction === "up" ? -1 : edge.direction === "down" ? 1 : 0),
     };
     if (!edgeNavigationRef.current && routeRef.current) {
-      edgeNavigationRef.current = { route: routeRef.current, historyState: window.history.state, draftEntryId: entry.id };
+      edgeNavigationRef.current = { route: routeRef.current, historyState: window.history.state, draftEntryId: entry.id, focusedAppId: focusedAppIdRef.current };
     }
     const pending = edgeNavigationRef.current;
     if (!pending || pending.draftEntryId !== entry.id) return null;
@@ -1468,6 +1538,51 @@ function App() {
     };
   }
 
+  function handleWindowDragAtEdge(appId: string, clientX: number, clientY: number, localBounds: WindowBounds) {
+    const edge = edgeAt(clientX, clientY);
+    if (!edge) {
+      windowEdgeDragRef.current.direction = "";
+      return null;
+    }
+    const now = performance.now();
+    if (windowEdgeDragRef.current.direction === edge.direction && now - windowEdgeDragRef.current.time < 520) return null;
+    const app = runningAppsRef.current.find((candidate) => candidate.id === appId);
+    if (!app) return null;
+    const previousSegment = windowEdgeNavigationRef.current?.targetSegment ?? segmentForApp(app);
+    const targetSegment = {
+      column: previousSegment.column + (edge.direction === "left" ? -1 : edge.direction === "right" ? 1 : 0),
+      row: previousSegment.row + (edge.direction === "up" ? -1 : edge.direction === "down" ? 1 : 0),
+    };
+    if (!windowEdgeNavigationRef.current && routeRef.current) {
+      windowEdgeNavigationRef.current = { appId, bounds: { ...app.bounds }, route: routeRef.current, historyState: window.history.state };
+    }
+    const pending = windowEdgeNavigationRef.current;
+    if (!pending || pending.appId !== appId) return null;
+    const logicalBounds = { ...localBounds, ...restoreLogicalPosition(localBounds, targetSegment, desktopSize) };
+    const movedApp = { ...app, bounds: logicalBounds };
+    pending.targetSegment = targetSegment;
+    windowEdgeDragRef.current = { direction: edge.direction, time: now };
+    updateRunningApps((current) => current.map((candidate) => candidate.id === appId ? movedApp : candidate));
+    goToSegment(targetSegment, "replace", movedApp);
+    return localBounds;
+  }
+
+  function finishWindowEdgeNavigation(appId: string, cancelled: boolean) {
+    const pending = windowEdgeNavigationRef.current;
+    windowEdgeNavigationRef.current = null;
+    windowEdgeDragRef.current.direction = "";
+    if (!pending || pending.appId !== appId) return;
+    const finalRoute = routeRef.current;
+    window.history.replaceState(pending.historyState, "", formatDesktopRoute(pending.route));
+    if (cancelled || !finalRoute) {
+      updateRunningApps((current) => current.map((app) => app.id === appId ? { ...app, bounds: pending.bounds } : app));
+      setCurrentRoute(pending.route);
+      setFocusedApp(appId);
+      return;
+    }
+    writeRoute(finalRoute, "push");
+  }
+
   function finishEdgeNavigation(cancelled: boolean) {
     const pending = edgeNavigationRef.current;
     edgeNavigationRef.current = null;
@@ -1477,6 +1592,7 @@ function App() {
     window.history.replaceState(pending.historyState, "", formatDesktopRoute(pending.route));
     if (cancelled || !finalRoute) {
       setCurrentRoute(pending.route);
+      setFocusedApp(pending.focusedAppId ?? null);
       return;
     }
     writeRoute(finalRoute, "push");
@@ -1567,30 +1683,53 @@ function App() {
   }
 
   function previewPageMove(pageKey: string, targetIndex: number) {
-    const currentPages = responsiveDesktop(entriesRef.current, desktopSize, iconMetrics).pages;
-    const updates = reorderDesktopPages(currentPages, pageKey, targetIndex, desktopSize);
-    if (!updates.length) return null;
-    const positions = new Map(updates.map((update) => [update.entryId, update.position]));
-    const targetKey = currentPages[Math.max(0, Math.min(currentPages.length - 1, targetIndex))]?.key ?? pageKey;
-    const next = entriesRef.current.map((entry) => positions.has(entry.id) ? { ...entry, position: positions.get(entry.id)! } : entry);
+    const byKey = new Map(responsiveDesktop(entriesRef.current, desktopSize, iconMetrics).pages.map((page) => [page.key, page.segment]));
+    for (const app of runningAppsRef.current) {
+      const segment = segmentForApp(app);
+      byKey.set(segmentKey(segment), segment);
+    }
+    const segments = [...byKey.values()].sort((a, b) => a.row - b.row || a.column - b.column);
+    const moves = reorderSurfaceSegments(segments, pageKey, targetIndex);
+    if (!moves.length) return null;
+    const targets = new Map(moves.map((move) => [segmentKey(move.source), move.target]));
+    const targetSegment = targets.get(pageKey);
+    const next = entriesRef.current.map((entry) => {
+      if (entry.parentId !== null) return entry;
+      const projection = projectLogicalPosition(entry.position, desktopSize);
+      const target = targets.get(segmentKey(projection.segment));
+      return target ? { ...entry, position: restoreLogicalPosition(projection.local, target, desktopSize) } : entry;
+    });
     entriesRef.current = next;
     setEntries(next);
-    return targetKey;
+    const nextApps = runningAppsRef.current.map((app) => {
+      const projection = projectLogicalPosition(app.bounds, desktopSize);
+      const target = targets.get(segmentKey(projection.segment));
+      return target ? { ...app, bounds: { ...app.bounds, ...restoreLogicalPosition(projection.local, target, desktopSize) } } : app;
+    });
+    updateRunningApps(nextApps);
+    const focused = nextApps.find((app) => app.id === focusedAppIdRef.current && !app.minimized && appIsInSegment(app, activeSegment));
+    if (!focused) setFocusedApp(topAppInSegment(nextApps, activeSegment)?.id ?? null);
+    return targetSegment ? segmentKey(targetSegment) : pageKey;
   }
 
-  function restoreArrangement(initialPositions: Array<{ entryId: string; position: EntryPosition }>) {
+  function restoreArrangement(initialPositions: Array<{ entryId: string; position: EntryPosition }>, initialAppBounds: Array<{ appId: string; bounds: WindowBounds }>) {
     const initial = new Map(initialPositions.map((update) => [update.entryId, update.position]));
     const next = entriesRef.current.map((entry) => initial.has(entry.id) ? { ...entry, position: initial.get(entry.id)! } : entry);
     entriesRef.current = next;
     setEntries(next);
+    const appBounds = new Map(initialAppBounds.map((app) => [app.appId, app.bounds]));
+    updateRunningApps((current) => current.map((app) => appBounds.has(app.id) ? { ...app, bounds: appBounds.get(app.id)! } : app));
   }
 
-  function persistArrangement(initialPositions: Array<{ entryId: string; position: EntryPosition }>) {
+  function persistArrangement(initialPositions: Array<{ entryId: string; position: EntryPosition }>, initialAppBounds: Array<{ appId: string; bounds: WindowBounds }>) {
     const updates = entriesRef.current
       .filter((entry) => entry.parentId === null)
       .map((entry) => ({ entryId: entry.id, position: entry.position }));
-    void updateDesktopPositions(updates).catch(() => {
-      restoreArrangement(initialPositions);
+    const save = updates.length ? updateDesktopPositions(updates) : Promise.resolve();
+    void save.catch(() => {
+      restoreArrangement(initialPositions, initialAppBounds);
+      const currentRoute = routeRef.current;
+      if (currentRoute) goToSegment(currentRoute, "replace");
       setError("The workspace arrangement could not be saved.");
     });
   }
@@ -1607,6 +1746,7 @@ function App() {
       initialPositions: entriesRef.current
         .filter((entry) => entry.parentId === null)
         .map((entry) => ({ entryId: entry.id, position: { ...entry.position } })),
+      initialAppBounds: runningAppsRef.current.map((app) => ({ appId: app.id, bounds: { ...app.bounds } })),
     };
     press.timer = window.setTimeout(() => {
       press.activated = true;
@@ -1632,8 +1772,7 @@ function App() {
       .map((element) => element.closest<HTMLElement>("[data-page-key]"))
       .find(Boolean);
     if (!target?.dataset.pageKey) return;
-    const currentPages = responsiveDesktop(entriesRef.current, desktopSize, iconMetrics).pages;
-    const targetIndex = currentPages.findIndex((candidate) => candidate.key === target.dataset.pageKey);
+    const targetIndex = occupiedPages.findIndex((candidate) => candidate.key === target.dataset.pageKey);
     const targetKey = previewPageMove(press.pageKey, targetIndex);
     if (targetKey) {
       press.pageKey = targetKey;
@@ -1648,15 +1787,17 @@ function App() {
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
     minimapPointerRef.current = null;
     if (press.activated && cancelled) {
-      restoreArrangement(press.initialPositions);
+      restoreArrangement(press.initialPositions, press.initialAppBounds);
       setDraggedPageKey(null);
+      goToSegment(activeSegment, "replace");
     } else if (press.activated) {
       setDraggedPageKey(null);
       suppressClickRef.current = true;
       window.setTimeout(() => { suppressClickRef.current = false; }, 0);
-      persistArrangement(press.initialPositions);
+      persistArrangement(press.initialPositions, press.initialAppBounds);
+      goToSegment(activeSegment, "replace");
     } else if (!cancelled) {
-      const selectedPage = responsiveDesktop(entriesRef.current, desktopSize, iconMetrics).pages.find((candidate) => candidate.key === press.pageKey);
+      const selectedPage = occupiedPages.find((candidate) => candidate.key === press.pageKey);
       if (selectedPage) goToSegment(selectedPage.segment);
     }
   }
@@ -1675,12 +1816,14 @@ function App() {
     }
   }
 
+  const activeApps = runningApps.filter((app) => appIsInSegment(app, activeSegment));
+
   return (
     <main className="desktop-shell" data-theme={isBuiltinThemeId(appearance.selectedThemeId) ? appearance.selectedThemeId : "custom"} style={themeStyle(activeTheme)}>
       <header className="menu-bar">
         <div className="brand-mark" aria-label="Hiraya Desktop"><span className="brand-mark__shape"><span /></span><strong>Hiraya</strong></div>
         <nav className="taskbar" aria-label="Running apps">
-          {runningApps.map((app) => {
+          {activeApps.map((app) => {
             const entry = app.kind === "file" ? workspace.byId.get(app.fileId) : app.kind === "explorer" && app.folderId ? workspace.byId.get(app.folderId) : null;
             const label = app.kind === "settings" ? "Settings" : app.kind === "explorer" ? entry?.name ?? "Desktop" : entry?.name ?? app.file?.name ?? "File";
             return (
@@ -1805,6 +1948,9 @@ function App() {
 
         <div className="app-window-layer" aria-label="Running applications">
           {runningApps.map((app, index) => {
+            const projection = projectLogicalPosition(app.bounds, desktopSize);
+            const workspaceActive = projection.segment.column === activeSegment.column && projection.segment.row === activeSegment.row;
+            const localBounds = { ...app.bounds, ...projection.local };
             const titleId = `running-app-title-${index}`;
             const folderEntry = app.kind === "explorer" && app.folderId ? workspace.byId.get(app.folderId) : null;
             const folder = folderEntry?.kind === "folder" ? folderEntry : null;
@@ -1817,15 +1963,18 @@ function App() {
                 id={app.id}
                 title={title}
                 titleId={titleId}
-                bounds={app.bounds}
+                bounds={localBounds}
                 minWidth={app.kind === "file" ? 420 : 360}
                 minHeight={app.kind === "file" ? 320 : 280}
                 zIndex={app.zIndex}
                 focused={focusedAppId === app.id}
                 minimized={app.minimized}
+                workspaceActive={workspaceActive}
                 mobile={isMobile}
                 onFocus={focusApp}
                 onBoundsChange={updateAppBounds}
+                onDragAtEdge={handleWindowDragAtEdge}
+                onDragEnd={finishWindowEdgeNavigation}
                 onMinimize={minimizeApp}
                 onClose={closeApp}
                 titleArea={<div><span className="window-kicker">{app.kind === "file" ? file && fileCapabilities(file).preview === "url" ? "URL editor" : app.editable ? "Text editor" : "Preview" : app.kind === "explorer" ? "Folder" : "Hiraya desktop"}</span><h2 id={titleId}>{title}</h2></div>}
@@ -1912,7 +2061,7 @@ function App() {
         </div>
       </section>
 
-      {(pageColumns > 1 || pageRows > 1 || responsive.pages.length > 1) && (
+      {(pageColumns > 1 || pageRows > 1 || occupiedPages.length > 1) && (
         <nav className="desktop-minimap" data-editing={editingViews || undefined} data-obscured={minimapObscured || undefined} aria-label="Desktop workspaces">
           {editingViews && (
             <div className="desktop-minimap__toolbar">
@@ -1925,7 +2074,7 @@ function App() {
               const column = desktopPage.segment.column - minColumn;
               const row = desktopPage.segment.row - minRow;
               const pageKey = desktopPage.key;
-              const actualIndex = responsive.pages.findIndex((candidate) => candidate.key === pageKey);
+              const actualIndex = occupiedPages.findIndex((candidate) => candidate.key === pageKey);
               const isActualPage = actualIndex >= 0;
               return (
                 <div className="desktop-minimap__slot" data-page-key={isActualPage ? pageKey : undefined} data-dragging={draggedPageKey === pageKey || undefined} key={pageKey} style={{ gridColumn: column + 1, gridRow: row + 1 }}>
@@ -1948,13 +2097,15 @@ function App() {
                       } else if (editingViews && isActualPage && (event.key === "ArrowLeft" || event.key === "ArrowUp")) {
                         event.preventDefault();
                         const initial = entriesRef.current.filter((entry) => entry.parentId === null).map((entry) => ({ entryId: entry.id, position: { ...entry.position } }));
+                        const initialApps = runningAppsRef.current.map((app) => ({ appId: app.id, bounds: { ...app.bounds } }));
                         const targetKey = previewPageMove(pageKey, actualIndex - 1);
-                        if (targetKey) { setDraggedPageKey(targetKey); persistArrangement(initial); }
+                        if (targetKey) { setDraggedPageKey(targetKey); persistArrangement(initial, initialApps); goToSegment(activeSegment, "replace"); }
                       } else if (editingViews && isActualPage && (event.key === "ArrowRight" || event.key === "ArrowDown")) {
                         event.preventDefault();
                         const initial = entriesRef.current.filter((entry) => entry.parentId === null).map((entry) => ({ entryId: entry.id, position: { ...entry.position } }));
+                        const initialApps = runningAppsRef.current.map((app) => ({ appId: app.id, bounds: { ...app.bounds } }));
                         const targetKey = previewPageMove(pageKey, actualIndex + 1);
-                        if (targetKey) { setDraggedPageKey(targetKey); persistArrangement(initial); }
+                        if (targetKey) { setDraggedPageKey(targetKey); persistArrangement(initial, initialApps); goToSegment(activeSegment, "replace"); }
                       }
                     }}
                   >

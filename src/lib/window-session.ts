@@ -1,6 +1,7 @@
 import type { DesktopEntry } from "../types";
 import { isValidId } from "./contracts";
 import { clampWindowBounds, type WindowBounds, type WindowViewport } from "../ui/window-manager";
+import { projectLogicalPosition, restoreLogicalPosition, type SurfaceSegment } from "../ui/desktop-geometry";
 
 type WindowSessionBase = {
   bounds: WindowBounds;
@@ -14,14 +15,14 @@ export type WindowSessionApp = WindowSessionBase & (
   | { kind: "settings" }
 );
 
-export type WindowSession = { version: 1; apps: WindowSessionApp[] };
+export type WindowSession = { version: 1 | 2; apps: WindowSessionApp[] };
 
 export type WindowTarget =
   | { kind: "file"; fileId: string }
   | { kind: "explorer"; folderId: string | null }
   | { kind: "settings" };
 
-export const EMPTY_WINDOW_SESSION: WindowSession = { version: 1, apps: [] };
+export const EMPTY_WINDOW_SESSION: WindowSession = { version: 2, apps: [] };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -58,7 +59,7 @@ function parseBounds(value: unknown): WindowBounds {
 }
 
 export function parseWindowSession(value: unknown): WindowSession {
-  if (!isRecord(value) || value.version !== 1 || !Array.isArray(value.apps) || value.apps.length > 100) {
+  if (!isRecord(value) || value.version !== 1 && value.version !== 2 || !Array.isArray(value.apps) || value.apps.length > 100) {
     throw new Error("The saved window session has an unsupported format.");
   }
   const ids = new Set<string>();
@@ -85,17 +86,27 @@ export function parseWindowSession(value: unknown): WindowSession {
     ids.add(id);
     return app;
   });
-  return { version: 1, apps };
+  return { version: value.version, apps };
 }
 
-export function restoreWindowSession(session: WindowSession, entries: DesktopEntry[], viewport: WindowViewport) {
+export function restoreWindowSession(session: WindowSession, entries: DesktopEntry[], activeSegment: SurfaceSegment, viewport: WindowViewport) {
   const byId = new Map(entries.map((entry) => [entry.id, entry]));
   return session.apps
     .filter((app) => app.kind === "settings" || app.kind === "explorer" && app.folderId === null || (app.kind === "file" ? byId.get(app.fileId)?.kind === "file" : byId.get(app.folderId!)?.kind === "folder"))
     .sort((left, right) => left.zIndex - right.zIndex)
-    .map((app, index): WindowSessionApp => ({
-      ...app,
-      bounds: clampWindowBounds(app.bounds, viewport, app.kind === "file" ? { minWidth: 420, minHeight: 320 } : { minWidth: 360, minHeight: 280 }),
-      zIndex: index + 1,
-    }));
+    .map((app, index): WindowSessionApp => {
+      const minimumSize = app.kind === "file" ? { minWidth: 420, minHeight: 320 } : { minWidth: 360, minHeight: 280 };
+      const projection = session.version === 1
+        ? { segment: activeSegment, local: { x: app.bounds.x, y: app.bounds.y } }
+        : projectLogicalPosition(app.bounds, viewport);
+      const localBounds = clampWindowBounds({ ...app.bounds, ...projection.local }, viewport, minimumSize);
+      return {
+        ...app,
+        bounds: {
+          ...localBounds,
+          ...restoreLogicalPosition(localBounds, projection.segment, viewport),
+        },
+        zIndex: index + 1,
+      };
+    });
 }

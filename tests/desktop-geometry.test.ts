@@ -1,12 +1,23 @@
 import { describe, expect, test } from "bun:test";
 import type { DesktopEntry } from "../src/types";
-import { desktopSlots, nextAvailableDesktopSlot, projectLogicalAxis, projectLogicalPosition, reorderDesktopPages, responsiveDesktop, restoreLogicalPosition } from "../src/ui/desktop-geometry";
+import { desktopSlots, nextAvailableDesktopSlot, projectLogicalAxis, projectLogicalPosition, reorderDesktopPages, reorderSurfaceSegments, responsiveDesktop, restoreLogicalPosition } from "../src/ui/desktop-geometry";
 
 function file(id: string, x = 22, y = 22): DesktopEntry {
   return { kind: "file", id, name: `${id}.txt`, parentId: null, modifiedAt: 1, position: { x, y }, mimeType: "text/plain", size: 0 };
 }
 
 describe("responsive desktop geometry", () => {
+  test("reorders logical surface segments without persisted workspace identity", () => {
+    expect(reorderSurfaceSegments([
+      { column: -1, row: 0 },
+      { column: 0, row: 0 },
+      { column: 2, row: 1 },
+    ], "0:-1", 2)).toEqual([
+      { source: { column: 0, row: 0 }, target: { column: -1, row: 0 } },
+      { source: { column: 2, row: 1 }, target: { column: 0, row: 0 } },
+      { source: { column: -1, row: 0 }, target: { column: 2, row: 1 } },
+    ]);
+  });
   test("derives placement capacity without using it for workspace membership", () => {
     expect(desktopSlots({ width: 500, height: 500 })).toHaveLength(16);
     expect(desktopSlots({ width: 220, height: 260 })).toHaveLength(2);

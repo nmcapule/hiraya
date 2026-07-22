@@ -8,37 +8,53 @@ const entries: DesktopEntry[] = [
 ];
 
 describe("window sessions", () => {
-  test("parses supported app targets", () => {
+  test("parses version 2 sessions with finite logical geometry", () => {
     const session = {
-      version: 1,
+      version: 2,
       apps: [
-        { kind: "settings", bounds: { x: 1, y: 2, width: 500, height: 400 }, minimized: false, zIndex: 3 },
-        { kind: "explorer", folderId: null, bounds: { x: 2, y: 3, width: 500, height: 400 }, minimized: true, zIndex: 1 },
+        { kind: "settings", bounds: { x: -1599, y: 602, width: 500, height: 400 }, minimized: false, zIndex: 3 },
+        { kind: "explorer", folderId: null, bounds: { x: 802, y: -597, width: 500, height: 400 }, minimized: true, zIndex: 1 },
         { kind: "file", fileId: "file", bounds: { x: 3, y: 4, width: 500, height: 400 }, minimized: false, zIndex: 2 },
       ],
     };
     expect(parseWindowSession(session)).toEqual(session);
+    expect(() => parseWindowSession({ version: 2, apps: [{ ...session.apps[0], bounds: { ...session.apps[0].bounds, x: Number.POSITIVE_INFINITY } }] })).toThrow("invalid bounds");
   });
 
-  test("rejects duplicate targets and invalid geometry", () => {
+  test("rejects duplicate targets in persisted sessions", () => {
     const app = { kind: "settings", bounds: { x: 0, y: 0, width: 500, height: 400 }, minimized: false, zIndex: 1 };
     expect(() => parseWindowSession({ version: 1, apps: [app, app] })).toThrow("duplicate apps");
-    expect(() => parseWindowSession({ version: 1, apps: [{ ...app, bounds: { ...app.bounds, width: Number.NaN } }] })).toThrow("invalid bounds");
+    expect(() => parseWindowSession({ version: 2, apps: [app, app] })).toThrow("duplicate apps");
   });
 
-  test("filters stale targets, clamps bounds, and normalizes stacking", () => {
+  test("migrates version 1 local bounds from a signed active segment", () => {
     const restored = restoreWindowSession(parseWindowSession({
       version: 1,
       apps: [
-        { kind: "file", fileId: "missing", bounds: { x: 0, y: 0, width: 500, height: 400 }, minimized: false, zIndex: 1 },
         { kind: "file", fileId: "file", bounds: { x: -20, y: 900, width: 100, height: 100 }, minimized: true, zIndex: 8 },
         { kind: "explorer", folderId: "folder", bounds: { x: 10, y: 20, width: 500, height: 400 }, minimized: false, zIndex: 3 },
       ],
-    }), entries, { width: 800, height: 600 });
+    }), entries, { column: -2, row: 1 }, { width: 800, height: 600 });
 
     expect(restored).toEqual([
-      { kind: "explorer", folderId: "folder", bounds: { x: 10, y: 20, width: 500, height: 400 }, minimized: false, zIndex: 1 },
-      { kind: "file", fileId: "file", bounds: { x: 0, y: 280, width: 420, height: 320 }, minimized: true, zIndex: 2 },
+      { kind: "explorer", folderId: "folder", bounds: { x: -1590, y: 620, width: 500, height: 400 }, minimized: false, zIndex: 1 },
+      { kind: "file", fileId: "file", bounds: { x: -1600, y: 880, width: 420, height: 320 }, minimized: true, zIndex: 2 },
+    ]);
+  });
+
+  test("filters stale targets and clamps version 2 bounds within their logical tiles", () => {
+    const restored = restoreWindowSession(parseWindowSession({
+      version: 2,
+      apps: [
+        { kind: "file", fileId: "missing", bounds: { x: 0, y: 0, width: 500, height: 400 }, minimized: false, zIndex: 1 },
+        { kind: "file", fileId: "file", bounds: { x: -810, y: 1250, width: 100, height: 100 }, minimized: true, zIndex: 8 },
+        { kind: "explorer", folderId: "folder", bounds: { x: 810, y: -580, width: 500, height: 400 }, minimized: false, zIndex: 3 },
+      ],
+    }), entries, { column: 9, row: 9 }, { width: 800, height: 600 });
+
+    expect(restored).toEqual([
+      { kind: "explorer", folderId: "folder", bounds: { x: 810, y: -580, width: 500, height: 400 }, minimized: false, zIndex: 1 },
+      { kind: "file", fileId: "file", bounds: { x: -1220, y: 1250, width: 420, height: 320 }, minimized: true, zIndex: 2 },
     ]);
   });
 
