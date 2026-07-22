@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -186,44 +185,19 @@ func (s *Server) bootstrap(w http.ResponseWriter, r *http.Request) {
 	if s.replayMutationLocked(w, r) {
 		return
 	}
-	s.store.beginMutationLocked()
 	if s.store.workspace.Initialized {
 		writeError(w, http.StatusConflict, "workspace is already initialized")
 		return
 	}
-	paths, err := entryPaths(input.Entries)
-	if err != nil {
-		writeError(w, http.StatusConflict, err.Error())
-		return
-	}
-	ordered := append([]Entry(nil), input.Entries...)
-	sort.Slice(ordered, func(i, j int) bool {
-		return strings.Count(paths[ordered[i].ID], string(filepath.Separator)) < strings.Count(paths[ordered[j].ID], string(filepath.Separator))
-	})
-	for _, e := range input.Entries {
-		if e.ParentID != nil {
-			continue
-		}
-		target := filepath.Join(s.store.filesDir, paths[e.ID])
-		if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
-			writeError(w, http.StatusConflict, "bootstrap path already exists")
-			return
-		}
-	}
-	treeStage, err := os.MkdirTemp(s.store.dir, ".bootstrap-tree-*")
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not stage bootstrap tree")
-		return
-	}
-	defer os.RemoveAll(treeStage)
-	for _, e := range ordered {
-		if e.Kind == "folder" {
-			if err := os.MkdirAll(filepath.Join(treeStage, paths[e.ID]), 0o700); err != nil {
-				writeError(w, http.StatusInternalServerError, "could not stage folder")
-				return
+	promoted := make([]string, 0, len(uploads))
+	committed := false
+	defer func() {
+		if !committed {
+			for _, id := range promoted {
+				_ = os.Remove(filepath.Join(s.store.filesDir, id))
 			}
 		}
-	}
+	}()
 	for i := range input.Entries {
 		e := &input.Entries[i]
 		e.Revision = 1
@@ -232,64 +206,45 @@ func (s *Server) bootstrap(w http.ResponseWriter, r *http.Request) {
 		if e.Kind == "file" {
 			e.ContentRevision = 1
 			u := uploads[e.ID]
+			target := filepath.Join(s.store.filesDir, e.ID)
+			if ensureNoSymlink(s.store.dir, target) != nil {
+				writeError(w, http.StatusConflict, "invalid bootstrap blob path")
+				return
+			}
+			if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+				for _, id := range promoted {
+					_ = os.Remove(filepath.Join(s.store.filesDir, id))
+				}
+				writeError(w, http.StatusConflict, "bootstrap blob already exists")
+				return
+			}
 			f, openErr := os.Open(u.path)
 			if openErr != nil {
 				writeError(w, http.StatusInternalServerError, "could not read staged file")
 				return
 			}
-			target := filepath.Join(treeStage, paths[e.ID])
-			if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
-				f.Close()
-				writeError(w, http.StatusInternalServerError, "could not stage file directory")
-				return
-			}
+			promoted = append(promoted, e.ID)
 			_, copyErr := atomicCopy(target, f, s.maxUpload)
 			f.Close()
 			if copyErr != nil {
+				for _, id := range promoted {
+					_ = os.Remove(filepath.Join(s.store.filesDir, id))
+				}
 				writeError(w, http.StatusInternalServerError, "could not stage file")
 				return
 			}
 		}
 	}
-	promoted := make([]string, 0)
-	for _, entry := range input.Entries {
-		if entry.ParentID != nil {
-			continue
-		}
-		rel := paths[entry.ID]
-		if err := os.Rename(filepath.Join(treeStage, rel), filepath.Join(s.store.filesDir, rel)); err != nil {
-			for i := len(promoted) - 1; i >= 0; i-- {
-				_ = os.Rename(filepath.Join(s.store.filesDir, promoted[i]), filepath.Join(treeStage, promoted[i]))
-			}
-			writeError(w, http.StatusInternalServerError, "could not persist bootstrap tree")
-			return
-		}
-		promoted = append(promoted, rel)
-	}
 	next := Workspace{SchemaVersion: workspaceSchemaVersion, WorkspaceID: s.store.workspace.WorkspaceID, Initialized: true, Revision: 1, Entries: input.Entries, Layout: input.Layout, LayoutRevision: 1, EditorSettings: input.EditorSettings, SettingsRevision: 1, Appearance: appearance}
 	responseBody, err := s.persistMutationLocked(next, r, http.StatusCreated, cloneWorkspace(next))
 	if err != nil {
-		for i := len(promoted) - 1; i >= 0; i-- {
-			_ = os.Rename(filepath.Join(s.store.filesDir, promoted[i]), filepath.Join(treeStage, promoted[i]))
+		for _, id := range promoted {
+			_ = os.Remove(filepath.Join(s.store.filesDir, id))
 		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	for _, entry := range input.Entries {
-		target := filepath.Join(s.store.filesDir, paths[entry.ID])
-		var indexErr error
-		if entry.Kind == "file" {
-			indexErr = s.store.trackExpectedFileLocked(target, uploads[entry.ID].path)
-		} else {
-			indexErr = s.store.trackPathLocked(target, "folder")
-		}
-		if indexErr != nil {
-			slog.Warn("could not index bootstrapped entry", "id", entry.ID, "error", indexErr)
-		}
-	}
-	if err := s.store.persistDiskIndexLocked(); err != nil {
-		slog.Warn("could not persist filesystem index", "error", err)
-	}
+	committed = true
 	s.store.publishLocked(1)
 	writeJSONBody(w, http.StatusCreated, responseBody)
 }
@@ -415,7 +370,6 @@ func (s *Server) importEntries(w http.ResponseWriter, r *http.Request) {
 	if s.replayMutationLocked(w, r) {
 		return
 	}
-	s.store.beginMutationLocked()
 	if !s.requireInitializedLocked(w) {
 		return
 	}
@@ -439,110 +393,61 @@ func (s *Server) importEntries(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
-	paths, pathErr := entryPaths(next.Entries)
-	if pathErr != nil {
-		writeError(w, http.StatusConflict, "invalid import hierarchy")
-		return
-	}
 	targets := make(map[string]string, len(entries))
-	roots := make([]Entry, 0, len(entries))
 	for _, entry := range entries {
-		target := filepath.Join(s.store.filesDir, paths[entry.ID])
-		if ensureNoSymlink(s.store.filesDir, filepath.Dir(target)) != nil {
-			writeError(w, http.StatusConflict, "invalid import path")
-			return
-		}
+		target := filepath.Join(s.store.filesDir, entry.ID)
 		targets[entry.ID] = target
-		if entry.ParentID != nil && entryIDs[*entry.ParentID] {
-			continue
-		}
-		if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
-			writeError(w, http.StatusConflict, "import path already exists")
-			return
-		}
-		roots = append(roots, entry)
-	}
-	treeStage, err := os.MkdirTemp(s.store.dir, ".import-tree-*")
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not stage import tree")
-		return
-	}
-	defer os.RemoveAll(treeStage)
-	staged := make(map[string]string, len(entries))
-	for _, root := range roots {
-		rootTarget := targets[root.ID]
-		for _, entry := range entries {
-			rel, relErr := filepath.Rel(rootTarget, targets[entry.ID])
-			if relErr == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-				staged[entry.ID] = filepath.Join(treeStage, root.ID, rel)
-			}
-		}
-	}
-	ordered := append([]Entry(nil), entries...)
-	sort.Slice(ordered, func(i, j int) bool {
-		return strings.Count(staged[ordered[i].ID], string(filepath.Separator)) < strings.Count(staged[ordered[j].ID], string(filepath.Separator))
-	})
-	for _, entry := range ordered {
-		target := staged[entry.ID]
-		if entry.Kind == "folder" {
-			if err := os.MkdirAll(target, 0o700); err != nil {
-				writeError(w, http.StatusInternalServerError, "could not stage imported folder")
+		if entry.Kind == "file" {
+			if ensureNoSymlink(s.store.dir, target) != nil {
+				writeError(w, http.StatusConflict, "invalid import blob path")
 				return
 			}
-			continue
+			if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+				writeError(w, http.StatusConflict, "import blob already exists")
+				return
+			}
 		}
-		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
-			writeError(w, http.StatusInternalServerError, "could not stage imported file directory")
-			return
+	}
+	promoted := make([]string, 0, len(uploads))
+	committed := false
+	defer func() {
+		if !committed {
+			for _, id := range promoted {
+				_ = os.Remove(targets[id])
+			}
+		}
+	}()
+	for _, entry := range entries {
+		if entry.Kind != "file" {
+			continue
 		}
 		file, openErr := os.Open(uploads[entry.ID].path)
 		if openErr != nil {
 			writeError(w, http.StatusInternalServerError, "could not read staged file")
 			return
 		}
-		_, copyErr := atomicCopy(target, file, s.maxUpload)
+		promoted = append(promoted, entry.ID)
+		_, copyErr := atomicCopy(targets[entry.ID], file, s.maxUpload)
 		file.Close()
 		if copyErr != nil {
-			writeError(w, http.StatusInternalServerError, "could not stage imported file")
-			return
-		}
-	}
-	promoted := make([]Entry, 0, len(roots))
-	for _, root := range roots {
-		target := targets[root.ID]
-		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil || os.Rename(staged[root.ID], target) != nil {
-			for i := len(promoted) - 1; i >= 0; i-- {
-				_ = os.Rename(targets[promoted[i].ID], staged[promoted[i].ID])
+			for _, id := range promoted {
+				_ = os.Remove(targets[id])
 			}
-			writeError(w, http.StatusInternalServerError, "could not persist import tree")
+			writeError(w, http.StatusInternalServerError, "could not persist imported file")
 			return
 		}
-		promoted = append(promoted, root)
 	}
 	next.Revision = revision
 	result := importResponse{Revision: revision, Entries: entries}
 	responseBody, err := s.persistMutationLocked(next, r, http.StatusOK, result)
 	if err != nil {
-		for i := len(promoted) - 1; i >= 0; i-- {
-			_ = os.Rename(targets[promoted[i].ID], staged[promoted[i].ID])
+		for _, id := range promoted {
+			_ = os.Remove(targets[id])
 		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	for _, entry := range entries {
-		var indexErr error
-		if entry.Kind == "file" {
-			indexErr = s.store.trackExpectedFileLocked(targets[entry.ID], uploads[entry.ID].path)
-		} else {
-			indexErr = s.store.trackPathLocked(targets[entry.ID], "folder")
-		}
-		if indexErr != nil {
-			slog.Warn("could not index imported entry", "id", entry.ID, "error", indexErr)
-		}
-	}
-	if err := s.store.persistDiskIndexLocked(); err != nil {
-		slog.Warn("could not persist filesystem index", "error", err)
-	}
+	committed = true
 	s.store.publishLocked(revision)
 	writeJSONBody(w, http.StatusOK, responseBody)
 }
@@ -625,17 +530,14 @@ func (s *Server) upsertEntry(w http.ResponseWriter, r *http.Request) {
 	if s.replayMutationLocked(w, r) {
 		return
 	}
-	s.store.beginMutationLocked()
 	if !s.requireInitializedLocked(w) {
 		return
 	}
 	next := cloneWorkspace(s.store.workspace)
 	idx := entryIndex(next.Entries, entry.ID)
 	var old Entry
-	var oldPath string
 	if idx >= 0 {
 		old = next.Entries[idx]
-		oldPath, _ = s.store.entryPathLocked(next.Entries, old.ID)
 		if old.Kind != entry.Kind {
 			writeError(w, http.StatusConflict, "entry kind cannot be changed")
 			return
@@ -672,33 +574,9 @@ func (s *Server) upsertEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	target, pathErr := s.store.entryPathLocked(next.Entries, entry.ID)
-	if pathErr != nil || ensureNoSymlink(s.store.filesDir, filepath.Dir(target)) != nil {
+	if pathErr != nil || ensureNoSymlink(s.store.dir, target) != nil {
 		writeError(w, http.StatusConflict, "invalid entry path")
 		return
-	}
-	moved := idx >= 0 && oldPath != target
-	if moved {
-		if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
-			writeError(w, http.StatusConflict, "entry path already exists")
-			return
-		}
-		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil || os.Rename(oldPath, target) != nil {
-			writeError(w, http.StatusInternalServerError, "could not move entry")
-			return
-		}
-	}
-	rollbackMove := func() {
-		if moved {
-			if rollbackErr := os.Rename(target, oldPath); rollbackErr != nil {
-				slog.Error("could not roll back failed entry move", "from", target, "to", oldPath, "error", rollbackErr)
-			}
-		}
-	}
-	if entry.Kind == "folder" && idx < 0 {
-		if err := os.Mkdir(target, 0o700); err != nil {
-			writeError(w, http.StatusConflict, "could not create folder path")
-			return
-		}
 	}
 	var replacement *contentReplacement
 	if entry.Kind == "file" && (gotContent || idx < 0) {
@@ -708,17 +586,12 @@ func (s *Server) upsertEntry(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		if mkdirErr := os.MkdirAll(filepath.Dir(target), 0o700); mkdirErr != nil {
-			err = mkdirErr
-		} else {
-			source := contentPath
-			if !gotContent {
-				source = os.DevNull
-			}
-			replacement, err = replaceFileContent(target, source, s.store.dir, s.maxUpload)
+		source := contentPath
+		if !gotContent {
+			source = os.DevNull
 		}
+		replacement, err = replaceFileContent(target, source, s.store.dir, s.maxUpload)
 		if err != nil {
-			rollbackMove()
 			writeError(w, http.StatusInternalServerError, "could not persist content")
 			return
 		}
@@ -732,10 +605,8 @@ func (s *Server) upsertEntry(w http.ResponseWriter, r *http.Request) {
 				slog.Error("could not roll back failed content replacement", "path", target, "error", rollbackErr)
 			}
 		}
-		if moved {
-			rollbackMove()
-		} else if idx < 0 {
-			_ = os.RemoveAll(target)
+		if idx < 0 {
+			_ = os.Remove(target)
 		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -743,27 +614,6 @@ func (s *Server) upsertEntry(w http.ResponseWriter, r *http.Request) {
 	if replacement != nil {
 		if err := replacement.commit(); err != nil {
 			slog.Warn("could not remove replaced content backup", "path", replacement.backup, "error", err)
-		}
-	}
-	if moved {
-		s.store.moveDiskPathLocked(oldPath, target)
-	}
-	if idx < 0 || gotContent {
-		var indexErr error
-		if entry.Kind == "folder" {
-			indexErr = s.store.trackPathLocked(target, "folder")
-		} else if gotContent {
-			indexErr = s.store.trackExpectedFileLocked(target, contentPath)
-		} else {
-			indexErr = s.store.trackEmptyFileLocked(target)
-		}
-		if indexErr != nil {
-			slog.Warn("could not index entry path", "id", entry.ID, "error", indexErr)
-		}
-	}
-	if moved || idx < 0 || gotContent {
-		if err := s.store.persistDiskIndexLocked(); err != nil {
-			slog.Warn("could not persist filesystem index", "error", err)
 		}
 	}
 	s.store.publishLocked(next.Revision)
@@ -791,7 +641,6 @@ func (s *Server) patchEntry(w http.ResponseWriter, r *http.Request) {
 	if s.replayMutationLocked(w, r) {
 		return
 	}
-	s.store.beginMutationLocked()
 	if !s.requireInitializedLocked(w) {
 		return
 	}
@@ -802,7 +651,6 @@ func (s *Server) patchEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	old := next.Entries[idx]
-	oldPath, _ := s.store.entryPathLocked(next.Entries, id)
 	if entry.Kind != old.Kind {
 		writeError(w, http.StatusConflict, "entry kind cannot be changed")
 		return
@@ -821,38 +669,12 @@ func (s *Server) patchEntry(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
-	newPath, pathErr := s.store.entryPathLocked(next.Entries, id)
-	if pathErr != nil || ensureNoSymlink(s.store.filesDir, oldPath) != nil || ensureNoSymlink(s.store.filesDir, filepath.Dir(newPath)) != nil {
-		writeError(w, http.StatusConflict, "invalid entry path")
-		return
-	}
-	if oldPath != newPath {
-		if _, err := os.Lstat(newPath); !errors.Is(err, os.ErrNotExist) {
-			writeError(w, http.StatusConflict, "entry path already exists")
-			return
-		}
-		if err := os.MkdirAll(filepath.Dir(newPath), 0o700); err != nil || os.Rename(oldPath, newPath) != nil {
-			writeError(w, http.StatusInternalServerError, "could not move entry")
-			return
-		}
-	}
 	next.Revision++
 	result := entryResponse{Revision: next.Revision, Entry: entry}
 	responseBody, err := s.persistMutationLocked(next, r, http.StatusOK, result)
 	if err != nil {
-		if oldPath != newPath {
-			if rollbackErr := os.Rename(newPath, oldPath); rollbackErr != nil {
-				slog.Error("could not roll back failed entry move", "from", newPath, "to", oldPath, "error", rollbackErr)
-			}
-		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
-	}
-	if oldPath != newPath {
-		s.store.moveDiskPathLocked(oldPath, newPath)
-		if err := s.store.persistDiskIndexLocked(); err != nil {
-			slog.Warn("could not persist filesystem index", "error", err)
-		}
 	}
 	s.store.publishLocked(next.Revision)
 	writeJSONBody(w, http.StatusOK, responseBody)
@@ -883,7 +705,6 @@ func (s *Server) batchMoveEntries(w http.ResponseWriter, r *http.Request) {
 	if s.replayMutationLocked(w, r) {
 		return
 	}
-	s.store.beginMutationLocked()
 	if !s.requireInitializedLocked(w) {
 		return
 	}
@@ -918,11 +739,6 @@ func (s *Server) batchMoveEntries(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	oldPaths, err := entryPaths(next.Entries)
-	if err != nil {
-		writeError(w, http.StatusConflict, "invalid entry hierarchy")
-		return
-	}
 	revision := next.Revision + 1
 	modifiedAt := s.now().UnixMilli()
 	movedEntries := make([]Entry, 0, len(input.EntryIDs))
@@ -937,85 +753,12 @@ func (s *Server) batchMoveEntries(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
-	newPaths, err := entryPaths(next.Entries)
-	if err != nil {
-		writeError(w, http.StatusConflict, "invalid entry hierarchy")
-		return
-	}
-	type diskMove struct {
-		id, oldPath, newPath, stagedPath string
-		promoted                         bool
-	}
-	moves := make([]diskMove, 0, len(input.EntryIDs))
-	stage, err := os.MkdirTemp(s.store.dir, ".batch-move-*")
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not stage batch move")
-		return
-	}
-	defer os.RemoveAll(stage)
-	for _, id := range input.EntryIDs {
-		oldPath := filepath.Join(s.store.filesDir, oldPaths[id])
-		newPath := filepath.Join(s.store.filesDir, newPaths[id])
-		if oldPath == newPath {
-			continue
-		}
-		if ensureNoSymlink(s.store.filesDir, oldPath) != nil || ensureNoSymlink(s.store.filesDir, filepath.Dir(newPath)) != nil {
-			writeError(w, http.StatusConflict, "invalid entry path")
-			return
-		}
-		if _, err := os.Lstat(newPath); !errors.Is(err, os.ErrNotExist) {
-			writeError(w, http.StatusConflict, "entry path already exists")
-			return
-		}
-		moves = append(moves, diskMove{id: id, oldPath: oldPath, newPath: newPath, stagedPath: filepath.Join(stage, strconv.Itoa(len(moves)))})
-	}
-	rollback := func() {
-		for i := len(moves) - 1; i >= 0; i-- {
-			move := &moves[i]
-			if move.promoted {
-				if err := os.Rename(move.newPath, move.stagedPath); err != nil {
-					slog.Error("could not stage batch move rollback", "from", move.newPath, "to", move.stagedPath, "error", err)
-				}
-			}
-		}
-		for i := len(moves) - 1; i >= 0; i-- {
-			move := moves[i]
-			if err := os.MkdirAll(filepath.Dir(move.oldPath), 0o700); err != nil || os.Rename(move.stagedPath, move.oldPath) != nil {
-				slog.Error("could not roll back batch move", "from", move.stagedPath, "to", move.oldPath, "error", err)
-			}
-		}
-	}
-	for i := range moves {
-		if err := os.Rename(moves[i].oldPath, moves[i].stagedPath); err != nil {
-			moves = moves[:i]
-			rollback()
-			writeError(w, http.StatusInternalServerError, "could not stage batch move")
-			return
-		}
-	}
-	for i := range moves {
-		if err := os.MkdirAll(filepath.Dir(moves[i].newPath), 0o700); err != nil || os.Rename(moves[i].stagedPath, moves[i].newPath) != nil {
-			rollback()
-			writeError(w, http.StatusInternalServerError, "could not persist batch move")
-			return
-		}
-		moves[i].promoted = true
-	}
 	next.Revision = revision
 	result := batchMoveResponse{Revision: revision, Entries: movedEntries}
 	responseBody, err := s.persistMutationLocked(next, r, http.StatusOK, result)
 	if err != nil {
-		rollback()
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
-	}
-	for _, move := range moves {
-		s.store.moveDiskPathLocked(move.oldPath, move.newPath)
-	}
-	if len(moves) > 0 {
-		if err := s.store.persistDiskIndexLocked(); err != nil {
-			slog.Warn("could not persist filesystem index", "error", err)
-		}
 	}
 	s.store.publishLocked(revision)
 	writeJSONBody(w, http.StatusOK, responseBody)
@@ -1046,7 +789,6 @@ func (s *Server) batchDeleteEntries(w http.ResponseWriter, r *http.Request) {
 	if s.replayMutationLocked(w, r) {
 		return
 	}
-	s.store.beginMutationLocked()
 	if !s.requireInitializedLocked(w) {
 		return
 	}
@@ -1069,26 +811,16 @@ func (s *Server) batchDeleteEntries(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	paths, _ := entryPaths(s.store.workspace.Entries)
-	deletePaths := make([]string, 0, len(requested))
-	for id := range requested {
-		idx := entryIndex(s.store.workspace.Entries, id)
-		parentID := s.store.workspace.Entries[idx].ParentID
-		if parentID == nil || !deleted[*parentID] {
-			path := filepath.Join(s.store.filesDir, paths[id])
-			if ensureNoSymlink(s.store.filesDir, filepath.Dir(path)) != nil {
-				writeError(w, http.StatusConflict, "invalid entry path")
-				return
-			}
-			deletePaths = append(deletePaths, path)
-		}
-	}
+	deletePaths := make([]string, 0, len(deleted))
 	next := cloneWorkspace(s.store.workspace)
 	kept := make([]Entry, 0, len(next.Entries)-len(deleted))
 	deletedIDs := make([]string, 0, len(deleted))
 	for _, entry := range next.Entries {
 		if deleted[entry.ID] {
 			deletedIDs = append(deletedIDs, entry.ID)
+			if entry.Kind == "file" {
+				deletePaths = append(deletePaths, filepath.Join(s.store.filesDir, entry.ID))
+			}
 		} else {
 			kept = append(kept, entry)
 		}
@@ -1101,16 +833,14 @@ func (s *Server) batchDeleteEntries(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	for _, path := range deletePaths {
-		s.store.removeDiskPathLocked(path)
-	}
-	if err := s.store.persistDiskIndexLocked(); err != nil {
-		slog.Warn("could not persist filesystem index", "error", err)
-	}
 	s.store.publishLocked(next.Revision)
 	for _, path := range deletePaths {
-		if err := os.RemoveAll(path); err != nil {
-			slog.Warn("could not clean up deleted entry", "path", path, "error", err)
+		if err := ensureNoSymlink(s.store.dir, path); err != nil {
+			slog.Warn("could not safely clean up deleted blob", "path", path, "error", err)
+			continue
+		}
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			slog.Warn("could not clean up deleted blob", "path", path, "error", err)
 		}
 	}
 	writeJSONBody(w, http.StatusOK, responseBody)
@@ -1146,7 +876,6 @@ func (s *Server) putContent(w http.ResponseWriter, r *http.Request) {
 	if s.replayMutationLocked(w, r) {
 		return
 	}
-	s.store.beginMutationLocked()
 	if !s.requireInitializedLocked(w) {
 		return
 	}
@@ -1172,7 +901,7 @@ func (s *Server) putContent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	path, pathErr := s.store.entryPathLocked(next.Entries, id)
-	if pathErr != nil || ensureNoSymlink(s.store.filesDir, path) != nil {
+	if pathErr != nil || ensureNoSymlink(s.store.dir, path) != nil {
 		writeError(w, http.StatusConflict, "invalid file path")
 		return
 	}
@@ -1194,12 +923,6 @@ func (s *Server) putContent(w http.ResponseWriter, r *http.Request) {
 	if err := replacement.commit(); err != nil {
 		slog.Warn("could not remove replaced content backup", "path", replacement.backup, "error", err)
 	}
-	if err := s.store.trackExpectedFileLocked(path, tmpPath); err != nil {
-		slog.Warn("could not index updated file", "id", id, "error", err)
-	}
-	if err := s.store.persistDiskIndexLocked(); err != nil {
-		slog.Warn("could not persist filesystem index", "error", err)
-	}
 	s.store.publishLocked(next.Revision)
 	writeJSONBody(w, http.StatusOK, responseBody)
 }
@@ -1219,18 +942,12 @@ func (s *Server) getContent(w http.ResponseWriter, r *http.Request) {
 	}
 	entry := s.store.workspace.Entries[idx]
 	path, pathErr := s.store.entryPathLocked(s.store.workspace.Entries, id)
-	if pathErr != nil || ensureNoSymlink(s.store.filesDir, path) != nil {
+	if pathErr != nil || ensureNoSymlink(s.store.dir, path) != nil || regularFile(path, &entry.Size) != nil {
 		s.store.mu.RUnlock()
 		writeError(w, http.StatusNotFound, "file content not found")
 		return
 	}
-	f, err := os.Open(path)
-	if err == nil {
-		if info, statErr := f.Stat(); statErr != nil || !info.Mode().IsRegular() {
-			f.Close()
-			err = os.ErrNotExist
-		}
-	}
+	f, err := openRegularFile(path, &entry.Size)
 	if errors.Is(err, os.ErrNotExist) {
 		s.store.mu.RUnlock()
 		writeError(w, http.StatusNotFound, "file content not found")
@@ -1262,7 +979,6 @@ func (s *Server) deleteEntry(w http.ResponseWriter, r *http.Request) {
 	if s.replayMutationLocked(w, r) {
 		return
 	}
-	s.store.beginMutationLocked()
 	if !s.requireInitializedLocked(w) {
 		return
 	}
@@ -1284,66 +1000,33 @@ func (s *Server) deleteEntry(w http.ResponseWriter, r *http.Request) {
 	next := cloneWorkspace(s.store.workspace)
 	kept := make([]Entry, 0, len(next.Entries)-len(deleted))
 	deletedIDs := make([]string, 0, len(deleted))
-	deletePath, _ := s.store.entryPathLocked(next.Entries, id)
+	deletePaths := make([]string, 0, len(deleted))
 	for _, entry := range next.Entries {
 		if deleted[entry.ID] {
 			deletedIDs = append(deletedIDs, entry.ID)
+			if entry.Kind == "file" {
+				deletePaths = append(deletePaths, filepath.Join(s.store.filesDir, entry.ID))
+			}
 		} else {
 			kept = append(kept, entry)
 		}
 	}
 	next.Entries = kept
 	next.Revision++
-	trashDir := filepath.Join(s.store.dir, ".trash")
-	var quarantinedPath string
-	if _, err := os.Lstat(deletePath); err == nil {
-		if err := ensureNoSymlink(s.store.filesDir, filepath.Dir(deletePath)); err != nil {
-			writeError(w, http.StatusConflict, "invalid entry path")
-			return
-		}
-		if err := os.MkdirAll(trashDir, 0o700); err != nil {
-			writeError(w, http.StatusInternalServerError, "could not stage deleted entry")
-			return
-		}
-		tmp, err := os.CreateTemp(trashDir, ".deleted-*")
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "could not stage deleted entry")
-			return
-		}
-		quarantinedPath = tmp.Name()
-		if closeErr := tmp.Close(); closeErr != nil {
-			_ = os.Remove(quarantinedPath)
-			writeError(w, http.StatusInternalServerError, "could not stage deleted entry")
-			return
-		}
-		if err := os.Remove(quarantinedPath); err != nil || os.Rename(deletePath, quarantinedPath) != nil {
-			_ = os.Remove(quarantinedPath)
-			writeError(w, http.StatusInternalServerError, "could not quarantine deleted entry")
-			return
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		writeError(w, http.StatusInternalServerError, "could not inspect deleted entry")
-		return
-	}
 	result := deleteResponse{Revision: next.Revision, DeletedIDs: deletedIDs}
 	responseBody, err := s.persistMutationLocked(next, r, http.StatusOK, result)
 	if err != nil {
-		if quarantinedPath != "" {
-			if rollbackErr := os.Rename(quarantinedPath, deletePath); rollbackErr != nil {
-				slog.Error("could not roll back failed entry deletion", "from", quarantinedPath, "to", deletePath, "error", rollbackErr)
-			}
-		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	s.store.removeDiskPathLocked(deletePath)
-	if err := s.store.persistDiskIndexLocked(); err != nil {
-		slog.Warn("could not persist filesystem index", "error", err)
-	}
 	s.store.publishLocked(next.Revision)
-	if quarantinedPath != "" {
-		if err := os.RemoveAll(quarantinedPath); err != nil {
-			slog.Warn("could not clean up quarantined entry", "path", quarantinedPath, "error", err)
+	for _, path := range deletePaths {
+		if err := ensureNoSymlink(s.store.dir, path); err != nil {
+			slog.Warn("could not safely clean up deleted blob", "path", path, "error", err)
+			continue
+		}
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			slog.Warn("could not clean up deleted blob", "path", path, "error", err)
 		}
 	}
 	writeJSONBody(w, http.StatusOK, responseBody)
@@ -1365,7 +1048,6 @@ func (s *Server) putLayout(w http.ResponseWriter, r *http.Request) {
 	if s.replayMutationLocked(w, r) {
 		return
 	}
-	s.store.beginMutationLocked()
 	if !s.requireInitializedLocked(w) {
 		return
 	}
@@ -1416,7 +1098,6 @@ func (s *Server) putDesktopPositions(w http.ResponseWriter, r *http.Request) {
 	if s.replayMutationLocked(w, r) {
 		return
 	}
-	s.store.beginMutationLocked()
 	if !s.requireInitializedLocked(w) {
 		return
 	}
@@ -1471,7 +1152,6 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	if s.replayMutationLocked(w, r) {
 		return
 	}
-	s.store.beginMutationLocked()
 	if !s.requireInitializedLocked(w) {
 		return
 	}
@@ -1507,7 +1187,6 @@ func (s *Server) putThemeSelection(w http.ResponseWriter, r *http.Request) {
 	if s.replayMutationLocked(w, r) {
 		return
 	}
-	s.store.beginMutationLocked()
 	if !s.requireInitializedLocked(w) {
 		return
 	}
@@ -1549,7 +1228,6 @@ func (s *Server) putTheme(w http.ResponseWriter, r *http.Request) {
 	if s.replayMutationLocked(w, r) {
 		return
 	}
-	s.store.beginMutationLocked()
 	if !s.requireInitializedLocked(w) {
 		return
 	}
@@ -1596,7 +1274,6 @@ func (s *Server) deleteTheme(w http.ResponseWriter, r *http.Request) {
 	if s.replayMutationLocked(w, r) {
 		return
 	}
-	s.store.beginMutationLocked()
 	if !s.requireInitializedLocked(w) {
 		return
 	}

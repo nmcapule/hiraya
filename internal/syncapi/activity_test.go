@@ -1,14 +1,11 @@
 package syncapi
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -136,28 +133,6 @@ func TestActivityStateReceiptAndRecordRollBackTogether(t *testing.T) {
 	}
 	if store.snapshot().Revision != 0 || activities != 0 || receipts != 0 {
 		t.Fatalf("partial transaction: revision=%d activity=%d receipts=%d", store.snapshot().Revision, activities, receipts)
-	}
-}
-
-func TestExternalFilesystemReconciliationRecordsActivityWithoutBytes(t *testing.T) {
-	store, server := newTestServer(t, t.TempDir())
-	if response := bootstrapRequest(t, server, testBootstrap(), nil); response.Code != http.StatusCreated {
-		t.Fatalf("bootstrap = %d", response.Code)
-	}
-	contents := "private file bytes"
-	if err := os.WriteFile(filepath.Join(store.filesDir, "external-secret.txt"), []byte(contents), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.reconcileFilesystem(); err != nil {
-		t.Fatal(err)
-	}
-	page := getActivityPage(t, server, "/api/activity?q=external-secret")
-	if len(page.Activities) != 1 || page.Activities[0].Source != "filesystem" || page.Activities[0].Action != "reconcile" {
-		t.Fatalf("filesystem activity = %+v", page)
-	}
-	encoded, _ := json.Marshal(page)
-	if bytes.Contains(encoded, []byte(contents)) {
-		t.Fatal("activity exposed file bytes")
 	}
 }
 
