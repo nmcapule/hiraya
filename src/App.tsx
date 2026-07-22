@@ -51,14 +51,14 @@ import { topOverlay } from "./ui/overlay";
 import { createWorkspaceIndex } from "./ui/workspace-index";
 import { clampWindowBounds, initialWindowBounds, type WindowBounds } from "./ui/window-manager";
 import { namesMatch } from "./lib/entry-validation";
-import { restoreWindowSession, type WindowSession, type WindowSessionApp } from "./lib/window-session";
+import { parseWindowTargets, restoreWindowSession, windowTargetId, type WindowSession, type WindowSessionApp, type WindowTarget } from "./lib/window-session";
 
 type BaseRunningApp = { id: string; bounds: WindowBounds; minimized: boolean; zIndex: number };
 type FileApp = BaseRunningApp & { kind: "file"; fileId: string; file?: FileEntry; blob?: File; editable?: boolean; contentRevision: number; remoteChanged: boolean };
 type ExplorerApp = BaseRunningApp & { kind: "explorer"; folderId: string | null };
 type SettingsApp = BaseRunningApp & { kind: "settings" };
 type RunningApp = FileApp | ExplorerApp | SettingsApp;
-type RouteHistoryState = { hiraya: true; parentHash?: string };
+type RouteHistoryState = { hiraya: true; parentHash?: string; apps?: WindowTarget[] };
 type PendingPaste = { snapshot: ClipboardEntrySnapshot; parentId: string | null; position?: EntryPosition };
 const MINIMAP_LONG_PRESS_MS = 500;
 const DESKTOP_LONG_PRESS_MS = 500;
@@ -82,6 +82,7 @@ function App() {
   const [runningApps, setRunningApps] = useState<RunningApp[]>([]);
   const [focusedAppId, setFocusedAppId] = useState<string | null>(null);
   const [windowSessionRestored, setWindowSessionRestored] = useState(false);
+  const [routeHistoryReady, setRouteHistoryReady] = useState(false);
   const [route, setRoute] = useState<DesktopRoute | null>(null);
   const [clock, setClock] = useState(() => new Date());
   const [desktopSize, setDesktopSize] = useState(() => ({ width: window.innerWidth, height: Math.max(1, window.innerHeight - 44) }));
@@ -145,8 +146,9 @@ function App() {
   const routeRef = useRef<DesktopRoute | null>(null);
   const navigationReadyRef = useRef(false);
   const applyLocationRouteRef = useRef<(entriesValue?: DesktopEntry[], layoutValue?: DesktopLayout) => void>(() => undefined);
-  const navigateRouteRef = useRef<(next: DesktopRoute, mode?: "push" | "replace") => void>(() => undefined);
+  const navigateRouteRef = useRef<(next: DesktopRoute, mode?: "push" | "replace", previousApps?: WindowTarget[]) => void>(() => undefined);
   const openRouteAppsRef = useRef<(next: DesktopRoute) => void>(() => undefined);
+  const restoreHistoryAppsRef = useRef<(apps: WindowTarget[]) => void>(() => undefined);
   const restoreRunningAppsRef = useRef<(session: WindowSession, entries: DesktopEntry[]) => void>(() => undefined);
   const applyOpenQueryRef = useRef<(entries: DesktopEntry[], layout: DesktopLayout) => void>(() => undefined);
   const closeAppRef = useRef<(id: string) => void>(() => undefined);
@@ -235,15 +237,36 @@ function App() {
     replaceSelection(surface, [entry.id], entry.id);
   }
 
-  function writeRoute(next: DesktopRoute, mode: "push" | "replace" = "push") {
+  function runningAppTargets(apps = runningAppsRef.current): WindowTarget[] {
+    return apps.map((app) => {
+      if (app.kind === "file") return { kind: "file", fileId: app.fileId };
+      if (app.kind === "explorer") return { kind: "explorer", folderId: app.folderId };
+      return { kind: "settings" };
+    });
+  }
+
+  function historyApps(state: unknown) {
+    if (!state || typeof state !== "object" || !(state as Partial<RouteHistoryState>).hiraya || !("apps" in state)) return null;
+    try {
+      return parseWindowTargets((state as Partial<RouteHistoryState>).apps);
+    } catch {
+      return null;
+    }
+  }
+
+  function routeHistoryState(apps: WindowTarget[], parentHash?: string): RouteHistoryState {
+    return { hiraya: true, ...(parentHash ? { parentHash } : {}), apps };
+  }
+
+  function writeRoute(next: DesktopRoute, mode: "push" | "replace" = "push", previousApps?: WindowTarget[]) {
     const hash = formatDesktopRoute(next);
     if (mode === "push" && hash !== window.location.hash) {
-      const state: RouteHistoryState = { hiraya: true, parentHash: window.location.hash };
-      window.history.pushState(state, "", hash);
+      const current = window.history.state as Partial<RouteHistoryState> | null;
+      window.history.replaceState(routeHistoryState(previousApps ?? runningAppTargets(), current?.hiraya ? current.parentHash : undefined), "", window.location.href);
+      window.history.pushState(routeHistoryState(runningAppTargets(), window.location.hash), "", hash);
     } else if (mode === "replace" || hash !== window.location.hash) {
       const current = window.history.state as Partial<RouteHistoryState> | null;
-      const state: RouteHistoryState = { hiraya: true, parentHash: current?.hiraya ? current.parentHash : undefined };
-      window.history.replaceState(state, "", hash);
+      window.history.replaceState(routeHistoryState(runningAppTargets(), current?.hiraya ? current.parentHash : undefined), "", hash);
     }
     setCurrentRoute(next);
   }
@@ -258,9 +281,9 @@ function App() {
     else setCurrentRoute(normalized);
   }
 
-  function navigateRoute(next: DesktopRoute, mode: "push" | "replace" = "push") {
+  function navigateRoute(next: DesktopRoute, mode: "push" | "replace" = "push", previousApps?: WindowTarget[]) {
     const normalized = normalizeDesktopRoute(next, entriesRef.current);
-    if (normalized) writeRoute(normalized, mode);
+    if (normalized) writeRoute(normalized, mode, previousApps);
   }
 
   function routeForApp(app: RunningApp | null, current: DesktopRoute): DesktopRoute {
@@ -326,10 +349,10 @@ function App() {
     updateRunningApps((current) => current.map((app) => app.id === id ? { ...app, bounds } : app));
   }
 
-  function createAppBase(id: string, width: number, height: number, minWidth: number, minHeight: number): BaseRunningApp {
+  function createAppBase(id: string, width: number, height: number, minWidth: number, minHeight: number, index = runningAppsRef.current.length): BaseRunningApp {
     return {
       id,
-      bounds: initialWindowBounds(desktopSize, { width, height, minWidth, minHeight, index: runningAppsRef.current.length }),
+      bounds: initialWindowBounds(desktopSize, { width, height, minWidth, minHeight, index }),
       minimized: false,
       zIndex: ++nextWindowZRef.current,
     };
@@ -375,6 +398,55 @@ function App() {
     }
   }
 
+  function restoreHistoryApps(targets: WindowTarget[]) {
+    const existing = new Map(runningAppsRef.current.map((app) => [app.id, app]));
+    const targetIds = new Set(targets.map(windowTargetId));
+    const reusableExplorers = runningAppsRef.current.filter((app): app is ExplorerApp => app.kind === "explorer" && !targetIds.has(app.id));
+    const restored: RunningApp[] = [];
+    const filesToLoad: FileApp[] = [];
+    for (const target of targets) {
+      const id = windowTargetId(target);
+      const current = existing.get(id);
+      if (current) {
+        restored.push(current);
+        continue;
+      }
+      if (target.kind === "settings") {
+        restored.push({ ...createAppBase(id, 720, 700, 360, 280, restored.length), kind: "settings" });
+        continue;
+      }
+      if (target.kind === "explorer") {
+        if (target.folderId !== null && entriesRef.current.find((entry) => entry.id === target.folderId)?.kind !== "folder") continue;
+        const reusable = reusableExplorers.shift();
+        restored.push(reusable
+          ? { ...reusable, id, folderId: target.folderId }
+          : { ...createAppBase(id, 760, 590, 360, 280, restored.length), kind: "explorer", folderId: target.folderId });
+        continue;
+      }
+      const file = entriesRef.current.find((entry): entry is FileEntry => entry.id === target.fileId && entry.kind === "file");
+      if (!file) continue;
+      const app: FileApp = {
+        ...createAppBase(id, 920, 680, 420, 320, restored.length),
+        kind: "file",
+        fileId: file.id,
+        file,
+        contentRevision: contentRevisionsRef.current[file.id] ?? 0,
+        remoteChanged: false,
+      };
+      restored.push(app);
+      filesToLoad.push(app);
+    }
+    const restoredIds = new Set(restored.map((app) => app.id));
+    for (const app of runningAppsRef.current) {
+      if (restoredIds.has(app.id)) continue;
+      delete fileDirtyRef.current[app.id];
+      delete fileLoadGenerationsRef.current[app.id];
+    }
+    updateRunningApps(restored);
+    if (focusedAppIdRef.current && !restoredIds.has(focusedAppIdRef.current)) setFocusedApp(null);
+    for (const app of filesToLoad) loadFileApp(app.id, app.file!, app.contentRevision);
+  }
+
   function applyOpenQuery(loadedEntries: DesktopEntry[], loadedLayout: DesktopLayout) {
     void loadedLayout;
     const url = new URL(window.location.href);
@@ -403,6 +475,7 @@ function App() {
   }
 
   restoreRunningAppsRef.current = restoreRunningApps;
+  restoreHistoryAppsRef.current = restoreHistoryApps;
   applyOpenQueryRef.current = applyOpenQuery;
 
   applyLocationRouteRef.current = applyLocationRoute;
@@ -432,6 +505,8 @@ function App() {
         if (!active) return;
         if (result.loaded) {
           restoreRunningAppsRef.current(result.session, entriesRef.current);
+          const routedApps = historyApps(window.history.state);
+          if (routedApps) restoreHistoryAppsRef.current(routedApps);
           windowSessionReadyRef.current = true;
         } else {
           setError("The saved app session could not be loaded.");
@@ -483,6 +558,9 @@ function App() {
         setAppearance(loadedAppearance);
         setSyncStatus(loadedStatus);
         restoreSavedWindowSession();
+        const routedApps = historyApps(window.history.state);
+        if (routedApps) restoreHistoryAppsRef.current(routedApps);
+        setRouteHistoryReady(true);
         navigationReadyRef.current = true;
         applyOpenQueryRef.current(loadedEntries, loadedLayout);
       })
@@ -494,6 +572,7 @@ function App() {
           setWindowSessionRestored(true);
           setLoading(false);
         }
+        if (active) setRouteHistoryReady(true);
       });
     return () => {
       active = false;
@@ -503,20 +582,25 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!windowSessionReadyRef.current) return;
-    const session: WindowSession = {
-      version: 1,
-      apps: runningApps.map((app): WindowSessionApp => {
-        const base = { bounds: app.bounds, minimized: app.minimized, zIndex: app.zIndex };
-        if (app.kind === "file") return { ...base, kind: "file", fileId: app.fileId };
-        if (app.kind === "explorer") return { ...base, kind: "explorer", folderId: app.folderId };
-        return { ...base, kind: "settings" };
-      }),
-    };
-    windowSessionSaveRef.current = windowSessionSaveRef.current
-      .then(() => saveWindowSession(session))
-      .catch(() => { setError("The open app session could not be saved."); });
-  }, [runningApps]);
+    if (windowSessionReadyRef.current) {
+      const session: WindowSession = {
+        version: 1,
+        apps: runningApps.map((app): WindowSessionApp => {
+          const base = { bounds: app.bounds, minimized: app.minimized, zIndex: app.zIndex };
+          if (app.kind === "file") return { ...base, kind: "file", fileId: app.fileId };
+          if (app.kind === "explorer") return { ...base, kind: "explorer", folderId: app.folderId };
+          return { ...base, kind: "settings" };
+        }),
+      };
+      windowSessionSaveRef.current = windowSessionSaveRef.current
+        .then(() => saveWindowSession(session))
+        .catch(() => { setError("The open app session could not be saved."); });
+    }
+    if (navigationReadyRef.current && windowSessionRestored && routeHistoryReady) {
+      const current = window.history.state as Partial<RouteHistoryState> | null;
+      window.history.replaceState(routeHistoryState(runningAppTargets(runningApps), current?.hiraya ? current.parentHash : undefined), "", window.location.href);
+    }
+  }, [routeHistoryReady, runningApps, windowSessionRestored]);
 
   useEffect(() => {
     if (syncStatus !== "blocked") return;
@@ -580,20 +664,24 @@ function App() {
   }, []);
 
   useEffect(() => {
-    function restoreRoute() {
+    function restoreRoute(state?: unknown) {
       if (!navigationReadyRef.current) return;
       setDialog(null);
       setContextMenu(null);
       setMoveDialogEntryIds([]);
       setEditingViews(false);
       setDraggedPageKey(null);
+      const apps = historyApps(state);
+      if (apps) restoreHistoryAppsRef.current(apps);
       applyLocationRouteRef.current();
     }
-    window.addEventListener("popstate", restoreRoute);
-    window.addEventListener("hashchange", restoreRoute);
+    const onPopState = (event: PopStateEvent) => restoreRoute(event.state);
+    const onHashChange = () => restoreRoute();
+    window.addEventListener("popstate", onPopState);
+    window.addEventListener("hashchange", onHashChange);
     return () => {
-      window.removeEventListener("popstate", restoreRoute);
-      window.removeEventListener("hashchange", restoreRoute);
+      window.removeEventListener("popstate", onPopState);
+      window.removeEventListener("hashchange", onHashChange);
     };
   }, []);
 
@@ -1101,46 +1189,51 @@ function App() {
     const id = `explorer:${folderId ?? "root"}`;
     if (runningAppsRef.current.some((app) => app.id === id)) {
       if (focus) focusApp(id, syncRoute);
-      return;
+      return false;
     }
     const app: ExplorerApp = { ...createAppBase(id, 760, 590, 360, 280), kind: "explorer", folderId };
-    updateRunningApps((current) => [...current, app]);
+    updateRunningApps([...runningAppsRef.current, app]);
     if (focus) setFocusedApp(id);
+    return true;
   }
 
   function navigateExplorerWindow(appId: string, folderId: string | null) {
     const nextId = `explorer:${folderId ?? "root"}`;
     if (nextId === appId) return;
+    const previousApps = runningAppTargets();
+    const zIndex = ++nextWindowZRef.current;
     if (runningAppsRef.current.some((app) => app.id === nextId)) {
-      closeApp(appId);
-      focusApp(nextId);
+      delete fileDirtyRef.current[appId];
+      delete fileLoadGenerationsRef.current[appId];
+      updateRunningApps(runningAppsRef.current.filter((app) => app.id !== appId).map((app) => app.id === nextId ? { ...app, minimized: false, zIndex } : app));
     } else {
-      const zIndex = ++nextWindowZRef.current;
-      updateRunningApps((current) => current.map((app) => app.id === appId && app.kind === "explorer" ? { ...app, id: nextId, folderId, zIndex } : app));
-      setFocusedApp(nextId);
+      updateRunningApps(runningAppsRef.current.map((app) => app.id === appId && app.kind === "explorer" ? { ...app, id: nextId, folderId, zIndex } : app));
     }
+    setFocusedApp(nextId);
     const currentRoute = routeRef.current;
-    if (currentRoute) navigateRoute({ column: currentRoute.column, row: currentRoute.row, explorerFolderId: folderId });
+    if (currentRoute) navigateRoute({ column: currentRoute.column, row: currentRoute.row, explorerFolderId: folderId }, "push", previousApps);
   }
 
   function openSettingsWindow(syncRoute = true) {
     const id = "settings";
     if (runningAppsRef.current.some((app) => app.id === id)) {
       focusApp(id, syncRoute);
-      return;
+      return false;
     }
+    const previousApps = runningAppTargets();
     const app: SettingsApp = { ...createAppBase(id, 720, 700, 360, 280), kind: "settings" };
-    updateRunningApps((current) => [...current, app]);
+    updateRunningApps([...runningAppsRef.current, app]);
     setFocusedApp(id);
     const currentRoute = routeRef.current;
-    if (syncRoute && currentRoute) navigateRoute({ column: currentRoute.column, row: currentRoute.row, settings: true }, "push");
+    if (syncRoute && currentRoute) navigateRoute({ column: currentRoute.column, row: currentRoute.row, settings: true }, "push", previousApps);
+    return true;
   }
 
   function openFileWindow(file: FileEntry, syncRoute = true, focus = true) {
     const id = `file:${file.id}`;
     if (runningAppsRef.current.some((app) => app.id === id)) {
       if (focus) focusApp(id, syncRoute);
-      return;
+      return false;
     }
     const expectedRevision = contentRevisionsRef.current[file.id] ?? 0;
     const app: FileApp = {
@@ -1151,23 +1244,25 @@ function App() {
       contentRevision: expectedRevision,
       remoteChanged: false,
     };
-    updateRunningApps((current) => [...current, app]);
+    updateRunningApps([...runningAppsRef.current, app]);
     if (focus) setFocusedApp(id);
     loadFileApp(id, file, expectedRevision);
+    return true;
   }
 
   function handleOpen(entry: DesktopEntry) {
     setContextMenu(null);
     const currentRoute = routeRef.current;
     if (!currentRoute) return;
+    const previousApps = runningAppTargets();
     if (entry.kind === "folder") {
-      openExplorerWindow(entry.id, false);
-      navigateRoute({ column: currentRoute.column, row: currentRoute.row, explorerFolderId: entry.id });
+      const created = openExplorerWindow(entry.id, false);
+      navigateRoute({ column: currentRoute.column, row: currentRoute.row, explorerFolderId: entry.id }, created ? "push" : "replace", previousApps);
       return;
     }
     setError("");
-    openFileWindow(entry, false);
-    navigateRoute({ column: currentRoute.column, row: currentRoute.row, fileId: entry.id });
+    const created = openFileWindow(entry, false);
+    navigateRoute({ column: currentRoute.column, row: currentRoute.row, fileId: entry.id }, created ? "push" : "replace", previousApps);
   }
 
   async function download(file: FileEntry) {

@@ -16,10 +16,38 @@ export type WindowSessionApp = WindowSessionBase & (
 
 export type WindowSession = { version: 1; apps: WindowSessionApp[] };
 
+export type WindowTarget =
+  | { kind: "file"; fileId: string }
+  | { kind: "explorer"; folderId: string | null }
+  | { kind: "settings" };
+
 export const EMPTY_WINDOW_SESSION: WindowSession = { version: 1, apps: [] };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+export function windowTargetId(target: WindowTarget) {
+  if (target.kind === "file") return `file:${target.fileId}`;
+  if (target.kind === "explorer") return `explorer:${target.folderId ?? "root"}`;
+  return "settings";
+}
+
+export function parseWindowTargets(value: unknown): WindowTarget[] {
+  if (!Array.isArray(value) || value.length > 100) throw new Error("The route history has an unsupported app list.");
+  const ids = new Set<string>();
+  return value.map((item): WindowTarget => {
+    if (!isRecord(item)) throw new Error("The route history contains an invalid app.");
+    let target: WindowTarget;
+    if (item.kind === "file" && isValidId(item.fileId)) target = { kind: "file", fileId: item.fileId };
+    else if (item.kind === "explorer" && (item.folderId === null || isValidId(item.folderId))) target = { kind: "explorer", folderId: item.folderId as string | null };
+    else if (item.kind === "settings") target = { kind: "settings" };
+    else throw new Error("The route history contains an invalid app.");
+    const id = windowTargetId(target);
+    if (ids.has(id)) throw new Error("The route history contains duplicate apps.");
+    ids.add(id);
+    return target;
+  });
 }
 
 function parseBounds(value: unknown): WindowBounds {

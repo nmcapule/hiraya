@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { DesktopEntry } from "../src/types";
-import { parseWindowSession, restoreWindowSession } from "../src/lib/window-session";
+import { parseWindowSession, parseWindowTargets, restoreWindowSession } from "../src/lib/window-session";
 
 const entries: DesktopEntry[] = [
   { id: "folder", name: "Folder", kind: "folder", parentId: null, modifiedAt: 1, position: { x: 0, y: 0 } },
@@ -40,5 +40,17 @@ describe("window sessions", () => {
       { kind: "explorer", folderId: "folder", bounds: { x: 10, y: 20, width: 500, height: 400 }, minimized: false, zIndex: 1 },
       { kind: "file", fileId: "file", bounds: { x: 0, y: 280, width: 420, height: 320 }, minimized: true, zIndex: 2 },
     ]);
+  });
+
+  test("validates route history app targets", () => {
+    const targets = [
+      { kind: "explorer", folderId: null },
+      { kind: "file", fileId: "file" },
+      { kind: "settings" },
+    ];
+    expect(parseWindowTargets(targets)).toEqual(targets);
+    expect(() => parseWindowTargets([...targets, { kind: "file", fileId: "file" }])).toThrow("duplicate apps");
+    expect(() => parseWindowTargets([{ kind: "file", fileId: "" }])).toThrow("invalid app");
+    expect(() => parseWindowTargets(Array.from({ length: 101 }, () => ({ kind: "settings" })))).toThrow("unsupported app list");
   });
 });
