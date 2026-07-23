@@ -1,5 +1,5 @@
 import type { DesktopEntry, DesktopLayout, EditorSettings, FileEntry, FolderEntry } from "../types";
-import { isRecord, parseEditorSettings, parseEntries, parseLayout } from "./contracts";
+import { assertWallpaperSource, isRecord, parseEditorSettings, parseEntries, parseLayout } from "./contracts";
 import { parseThemeState, type ThemeState } from "./themes";
 
 declare const portableContentUrl: unique symbol;
@@ -45,11 +45,12 @@ function readSeeded(value: unknown, portable: boolean): PortableSeededManifest {
     void _contentUrl;
     return entry;
   });
+  const parsedEntries = parseEntries(plainEntries);
   const layout: DesktopLayout = parseLayout({
     snapToGrid: value.layout.snapToGrid,
     wallpaper: value.layout.wallpaper,
-  });
-  const parsedEntries = parseEntries(plainEntries);
+  }, true);
+  assertWallpaperSource(parsedEntries, layout.wallpaper);
   const entries = parsedEntries.map((entry) => entry.kind === "file"
     ? { ...entry, contentUrl: contentUrls.get(entry.id) as string }
     : entry) as Array<FolderEntry | PortableSeededFileEntry>;

@@ -1,10 +1,11 @@
 import type { DesktopStateSnapshot } from "../src/lib/opfs";
 import { DEFAULT_THEME_STATE } from "../src/lib/themes";
+import { DEFAULT_WALLPAPER } from "../src/types";
 
 export function desktopStateSnapshot(): DesktopStateSnapshot {
   return {
     entries: [],
-    layout: { snapToGrid: false, wallpaper: "dusk" },
+    layout: { snapToGrid: false, wallpaper: { ...DEFAULT_WALLPAPER } },
     editorSettings: { autoSave: true, autoFormat: false, fontSize: 13, language: "auto", lineWrap: true },
     appearance: DEFAULT_THEME_STATE,
     sync: { catalogId: null, catalogRevision: 0, entryRevisions: {}, contentRevisions: {}, layoutRevision: 0, settingsRevision: 0, themeSelectionRevision: 0, themeRevisions: {} },
@@ -31,7 +32,7 @@ export function remoteDesktopState() {
       revision: 1,
       contentRevision: 1,
     }],
-    layout: { snapToGrid: false, wallpaper: "dusk" },
+    layout: { snapToGrid: false, wallpaper: { ...DEFAULT_WALLPAPER } },
     layoutRevision: 1,
     editorSettings: { autoSave: true, autoFormat: false, fontSize: 13, language: "auto", lineWrap: true },
     settingsRevision: 1,

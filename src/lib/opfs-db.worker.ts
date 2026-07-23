@@ -162,14 +162,17 @@ function readDesktopState(db: Database, desktopId: string): PersistedDesktopStat
     themeSelectionRevision: numberValue(desktop.theme_selection_revision), themeRevisions,
   };
   const editorSettings: EditorSettings = { autoSave: numberValue(settings.auto_save) === 1, autoFormat: numberValue(settings.auto_format) === 1, fontSize: numberValue(settings.font_size), language: stringValue(settings.language) as EditorSettings["language"], lineWrap: numberValue(settings.line_wrap) === 1 };
-  return parseDesktopState({ entries, snapToGrid: numberValue(layout.snap_to_grid) === 1, wallpaper: stringValue(layout.wallpaper) as Wallpaper, editorSettings, appearance: parseThemeState({ selectedThemeId: stringValue(appearanceRow.selected_theme_id), customThemes }), sync });
+  const wallpaperText = stringValue(layout.wallpaper);
+  let wallpaper: Wallpaper | string;
+  try { wallpaper = JSON.parse(wallpaperText) as Wallpaper; } catch { wallpaper = wallpaperText; }
+  return parseDesktopState({ entries, snapToGrid: numberValue(layout.snap_to_grid) === 1, wallpaper, editorSettings, appearance: parseThemeState({ selectedThemeId: stringValue(appearanceRow.selected_theme_id), customThemes }), sync });
 }
 
 function replaceDesktopStateRows(db: Database, desktopId: string, value: PersistedDesktopState) {
   const state = parseDesktopState(value);
   db.exec({ sql: "UPDATE desktops SET catalog_id=?, catalog_revision=?, layout_revision=?, settings_revision=?, theme_selection_revision=? WHERE id=?", bind: [state.sync.catalogId, state.sync.catalogRevision, state.sync.layoutRevision, state.sync.settingsRevision, state.sync.themeSelectionRevision, desktopId] });
   if (db.changes() !== 1) throw new Error("That desktop no longer exists.");
-  db.exec({ sql: "INSERT INTO desktop_layouts VALUES (?, ?, ?) ON CONFLICT(desktop_id) DO UPDATE SET snap_to_grid=excluded.snap_to_grid, wallpaper=excluded.wallpaper", bind: [desktopId, state.snapToGrid, state.wallpaper] });
+  db.exec({ sql: "INSERT INTO desktop_layouts VALUES (?, ?, ?) ON CONFLICT(desktop_id) DO UPDATE SET snap_to_grid=excluded.snap_to_grid, wallpaper=excluded.wallpaper", bind: [desktopId, state.snapToGrid, JSON.stringify(state.wallpaper)] });
   db.exec({ sql: "INSERT INTO desktop_editor_settings VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(desktop_id) DO UPDATE SET auto_save=excluded.auto_save, auto_format=excluded.auto_format, font_size=excluded.font_size, language=excluded.language, line_wrap=excluded.line_wrap", bind: [desktopId, state.editorSettings.autoSave, state.editorSettings.autoFormat, state.editorSettings.fontSize, state.editorSettings.language, state.editorSettings.lineWrap] });
   db.exec({ sql: "INSERT INTO desktop_appearance VALUES (?, ?) ON CONFLICT(desktop_id) DO UPDATE SET selected_theme_id=excluded.selected_theme_id", bind: [desktopId, state.appearance.selectedThemeId] });
   db.exec({ sql: "DELETE FROM custom_themes WHERE desktop_id=?", bind: [desktopId] });

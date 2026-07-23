@@ -7,11 +7,16 @@ import {
   type EditorLanguage,
   type EditorSettings,
   type EntryPosition,
+  type Wallpaper,
 } from "../types";
 import { isBuiltinThemeId, parseCustomTheme, parseThemeState, type CustomTheme, type ThemeState } from "./themes";
 
 const EDITOR_LANGUAGES = new Set<EditorLanguage>(["auto", "plain", "markdown", "json", "javascript", "typescript", "jsx", "tsx", "css", "html", "xml", "yaml"]);
 const WALLPAPER_IDS = new Set<string>(WALLPAPERS);
+const WALLPAPER_COLOR = /^#[0-9A-F]{6}$/;
+const WALLPAPER_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+const MAX_WALLPAPER_BYTES = 20 * 1024 * 1024;
+const WALLPAPER_KEYS = new Set(["source", "fit", "positionX", "positionY", "blur", "dim", "overlayColor", "overlayOpacity"]);
 const MIME_TOKEN = "[!#$%&'*+.^_`|~\\w-]+";
 const MIME_TYPE = new RegExp(`^${MIME_TOKEN}/${MIME_TOKEN}(?:\\s*;\\s*${MIME_TOKEN}\\s*=\\s*(?:${MIME_TOKEN}|"(?:[^"\\\\]|\\\\.)*"))*\\s*$`);
 
@@ -206,11 +211,40 @@ export function parsePosition(value: unknown): EntryPosition {
   };
 }
 
-export function parseLayout(value: unknown): DesktopLayout {
-  if (!isRecord(value) || typeof value.snapToGrid !== "boolean" || typeof value.wallpaper !== "string" || !WALLPAPER_IDS.has(value.wallpaper)) {
+export function parseWallpaper(value: unknown, allowLegacyPreset = false): Wallpaper {
+  if (allowLegacyPreset && typeof value === "string" && WALLPAPER_IDS.has(value)) {
+    return { source: value as Wallpaper["source"], fit: "cover", positionX: 50, positionY: 50, blur: 0, dim: 0, overlayColor: "#000000", overlayOpacity: 0 };
+  }
+  if (!isRecord(value)
+    || Object.keys(value).length !== WALLPAPER_KEYS.size
+    || Object.keys(value).some((key) => !WALLPAPER_KEYS.has(key))
+    || typeof value.source !== "string"
+    || !(WALLPAPER_IDS.has(value.source) || value.source.startsWith("file:") && isValidId(value.source.slice(5)))
+    || value.fit !== "cover" && value.fit !== "contain"
+    || !Number.isInteger(value.positionX) || (value.positionX as number) < 0 || (value.positionX as number) > 100
+    || !Number.isInteger(value.positionY) || (value.positionY as number) < 0 || (value.positionY as number) > 100
+    || !Number.isInteger(value.blur) || (value.blur as number) < 0 || (value.blur as number) > 24
+    || typeof value.dim !== "number" || !Number.isFinite(value.dim) || value.dim < 0 || value.dim > 0.8
+    || typeof value.overlayColor !== "string" || !WALLPAPER_COLOR.test(value.overlayColor)
+    || typeof value.overlayOpacity !== "number" || !Number.isFinite(value.overlayOpacity) || value.overlayOpacity < 0 || value.overlayOpacity > 0.8) {
+    throw new Error("The desktop wallpaper has an unsupported format.");
+  }
+  return value as Wallpaper;
+}
+
+export function assertWallpaperSource(entries: readonly DesktopEntry[], wallpaper: Wallpaper) {
+  if (!wallpaper.source.startsWith("file:")) return;
+  const file = entries.find((entry) => entry.id === wallpaper.source.slice(5));
+  if (!file || file.kind !== "file" || !WALLPAPER_IMAGE_TYPES.has(file.mimeType.split(";", 1)[0].trim().toLowerCase()) || file.size > MAX_WALLPAPER_BYTES) {
+    throw new Error("The custom wallpaper must reference a JPEG, PNG, or WebP file on this desktop no larger than 20 MiB.");
+  }
+}
+
+export function parseLayout(value: unknown, allowLegacyWallpaper = false): DesktopLayout {
+  if (!isRecord(value) || typeof value.snapToGrid !== "boolean") {
     throw new Error("The desktop layout has an unsupported format.");
   }
-  return { snapToGrid: value.snapToGrid, wallpaper: value.wallpaper as DesktopLayout["wallpaper"] };
+  return { snapToGrid: value.snapToGrid, wallpaper: parseWallpaper(value.wallpaper, allowLegacyWallpaper) };
 }
 
 export function parseRootEntryPositions(value: unknown): RootEntryPositionUpdate[] {
@@ -326,7 +360,9 @@ export function parseRemoteDesktopState(value: unknown): RemoteDesktopState {
     catalogId: value.catalogId,
     catalogRevision: readRevision(value.catalogRevision),
   };
+  const entries = parseEntries(value.entries, true) as RemoteEntry[];
   const layout = parseLayout(value.layout);
+  assertWallpaperSource(entries, layout.wallpaper);
   if (!isRecord(value.appearance) || !Array.isArray(value.appearance.customThemes)) throw new Error("The server appearance has an unsupported format.");
   const customThemes = value.appearance.customThemes.map((candidate) => {
     const theme = parseCustomTheme(candidate);
@@ -341,7 +377,7 @@ export function parseRemoteDesktopState(value: unknown): RemoteDesktopState {
     ...identity,
     id: parseDesktopIdentity(value).id,
     name: parseDesktopIdentity(value).name,
-    entries: parseEntries(value.entries, true) as RemoteEntry[],
+    entries,
     layout,
     layoutRevision: readRevision(value.layoutRevision),
     editorSettings: parseEditorSettings(value.editorSettings),

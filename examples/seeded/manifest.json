@@ -2,7 +2,16 @@
   "schemaVersion": 1,
   "layout": {
     "snapToGrid": false,
-    "wallpaper": "dusk"
+    "wallpaper": {
+      "source": "dusk",
+      "fit": "cover",
+      "positionX": 50,
+      "positionY": 50,
+      "blur": 0,
+      "dim": 0,
+      "overlayColor": "#000000",
+      "overlayOpacity": 0
+    }
   },
   "editorSettings": {
     "autoSave": true,

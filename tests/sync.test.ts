@@ -169,7 +169,7 @@ describe("canonical synchronization", () => {
   });
 
   test("blocks deletion of a desktop with a pending edit", async () => {
-    const edit: OutboxRecord = { operationId: "edit", sequence: 1, clientId: "client", catalogId: "catalog", desktopId: "desktop-a", operation: { schemaVersion: 1, kind: "layout", layout: { snapToGrid: true, wallpaper: "dusk" } }, status: "pending", error: null };
+    const edit: OutboxRecord = { operationId: "edit", sequence: 1, clientId: "client", catalogId: "catalog", desktopId: "desktop-a", operation: { schemaVersion: 1, kind: "layout", layout: { snapToGrid: true, wallpaper: { source: "dusk", fit: "cover", positionX: 50, positionY: 50, blur: 0, dim: 0, overlayColor: "#000000", overlayOpacity: 0 } } }, status: "pending", error: null };
     const harness = deletionStorage([edit]);
     const engine = new SyncEngine({ storage: harness.storage, fetch: (async () => { throw new TypeError("offline"); }) as typeof fetch, eventSource: FakeEventSource as unknown as typeof EventSource });
     await engine.start("retained", { x: 0, y: 0 });
@@ -192,7 +192,7 @@ describe("canonical synchronization", () => {
     { name: "create-desktop", desktopId: "old-owner", operation: { schemaVersion: 1, kind: "create-desktop", desktop: { id: "old-created", name: "Old created" } } },
     { name: "delete-desktop", desktopId: "old-owner", operation: { schemaVersion: 1, kind: "delete-desktop", desktopId: "old-deleted" } },
     { name: "entry-transfer", desktopId: "old-source", operation: { schemaVersion: 1, kind: "entry-transfer", entryIds: ["old-entry"], destinationDesktopId: "old-destination", parentId: null } },
-    { name: "nonactive desktop mutation", desktopId: "old-nonactive", operation: { schemaVersion: 1, kind: "layout", layout: { snapToGrid: true, wallpaper: "dusk" } } },
+    { name: "nonactive desktop mutation", desktopId: "old-nonactive", operation: { schemaVersion: 1, kind: "layout", layout: { snapToGrid: true, wallpaper: { source: "dusk", fit: "cover", positionX: 50, positionY: 50, blur: 0, dim: 0, overlayColor: "#000000", overlayOpacity: 0 } } } },
   ];
 
   for (const stale of staleCases) test(`blocks stale ${stale.name} before replay and catalog retention`, async () => {
@@ -642,8 +642,8 @@ describe("canonical synchronization", () => {
     delete (localFile as Partial<typeof file>).revision;
     delete (localFile as Partial<typeof file>).contentRevision;
     const base = desktopStateSnapshot();
-    const source = { ...base, entries: [localFile], sync: { ...base.sync, catalogId: "catalog", catalogRevision: 5, entryRevisions: { [file.id]: 4 }, contentRevisions: { [file.id]: 3 } } };
-    const destination = { ...base, sync: { ...base.sync, catalogId: "catalog", catalogRevision: 5 } };
+    const source = { entries: [localFile], snapToGrid: base.layout.snapToGrid, wallpaper: base.layout.wallpaper, editorSettings: base.editorSettings, appearance: base.appearance, sync: { ...base.sync, catalogId: "catalog", catalogRevision: 5, entryRevisions: { [file.id]: 4 }, contentRevisions: { [file.id]: 3 } } };
+    const destination = { entries: base.entries, snapToGrid: base.layout.snapToGrid, wallpaper: base.layout.wallpaper, editorSettings: base.editorSettings, appearance: base.appearance, sync: { ...base.sync, catalogId: "catalog", catalogRevision: 5 } };
     const states = new Map([["source", source], ["destination", destination]]);
     let selected = "source";
     let online = false;

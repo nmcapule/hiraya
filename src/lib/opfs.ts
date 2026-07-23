@@ -1,6 +1,7 @@
 import { DEFAULT_WALLPAPER, type DesktopEntry, type DesktopIdentity, type DesktopLayout, type RootEntryPositionUpdate, type EditorSettings, type EntryPosition, type FileEntry, type FolderEntry } from "../types";
 import { assertUniqueName, namesMatch, validateEntryName } from "./entry-validation";
 import { parseBundledSeededManifest, type SeededManifest } from "./seeded-manifest";
+import { validateWallpaperImage } from "./wallpaper-image";
 import {
   DEFAULT_EDITOR_SETTINGS,
   emptySyncState,
@@ -11,7 +12,7 @@ import {
 } from "./desktop-state";
 import { normalizeDesktopName, parseDesktopIdentity, parseLayout, parsePosition, parseRootEntryPositionUpdates } from "./contracts";
 import { createStorageDbRequest, type StorageDbMethod, type StorageDbRequests, type StorageDbResponse, type StorageDbResponses } from "./opfs-db-protocol";
-import type { OutboxOperation, OutboxRecord } from "./outbox";
+import { wallpaperAfterEntryRemoval, type OutboxOperation, type OutboxRecord } from "./outbox";
 import { DEFAULT_THEME_STATE, parseCustomTheme, parseThemeState, type CustomTheme, type ThemeState } from "./themes";
 import { parseWindowSession, type WindowSession } from "./window-session";
 import { activityRecord, type ActivityQuery, type NewActivityRecord } from "./activity";
@@ -172,6 +173,11 @@ async function createDesktopStateFromSeeded(seeded: SeededManifest): Promise<Des
     }
     return blob.slice(0, blob.size, entry.mimeType);
   }));
+  const wallpaperFileId = parsedSeeded.layout.wallpaper.source.startsWith("file:") ? parsedSeeded.layout.wallpaper.source.slice(5) : null;
+  if (wallpaperFileId) {
+    const index = files.findIndex((entry) => entry.id === wallpaperFileId);
+    await validateWallpaperImage(new File([contents[index]], files[index].name, { type: files[index].mimeType }));
+  }
   const entries: DesktopEntry[] = parsedSeeded.entries.map((entry) => {
     if (entry.kind === "folder") return entry;
     const { contentUrl, ...file } = entry;
@@ -748,7 +754,7 @@ async function saveDesktopLayoutUnsafe(layout: DesktopLayout) {
   assertValidManifest(next);
   await writeManifest(next, activityRecord("Changed desktop layout", [
     `Snap to grid: ${parsed.snapToGrid ? "On" : "Off"}`,
-    `Wallpaper: ${parsed.wallpaper}`,
+    `Wallpaper: ${parsed.wallpaper.source}`,
   ]));
 }
 
@@ -925,6 +931,7 @@ async function deleteEntryUnsafe(id: string): Promise<DesktopEntry[]> {
   await writeManifest({
     ...manifest,
     entries: manifest.entries.filter((entry) => !deletedIds.has(entry.id)),
+    wallpaper: wallpaperAfterEntryRemoval(manifest.entries.filter((entry) => !deletedIds.has(entry.id)), manifest.wallpaper),
   }, activityRecord(deleted.length === 1 ? `Deleted ${deleted[0].kind}` : "Deleted items", activityDetails(deleted)));
   try {
     const directory = await getFilesDirectory();
@@ -959,7 +966,11 @@ async function deleteEntriesUnsafe(ids: string[]): Promise<DesktopEntry[]> {
   }
   const deleted = manifest.entries.filter((entry) => deletedIds.has(entry.id));
   await writeManifest(
-    { ...manifest, entries: manifest.entries.filter((entry) => !deletedIds.has(entry.id)) },
+    {
+      ...manifest,
+      entries: manifest.entries.filter((entry) => !deletedIds.has(entry.id)),
+      wallpaper: wallpaperAfterEntryRemoval(manifest.entries.filter((entry) => !deletedIds.has(entry.id)), manifest.wallpaper),
+    },
     activityRecord(deleted.length === 1 ? `Deleted ${deleted[0].kind}` : "Deleted items", activityDetails(deleted)),
   );
   try {

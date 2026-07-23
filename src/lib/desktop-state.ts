@@ -1,5 +1,5 @@
 import type { DesktopEntry, DesktopLayout, EditorSettings, Wallpaper } from "../types";
-import { isRecord, parseEditorSettings, parseEntries, parseLayout, readRevision } from "./contracts";
+import { assertWallpaperSource, isRecord, parseEditorSettings, parseEntries, parseLayout, readRevision } from "./contracts";
 import { parseThemeState, type ThemeState } from "./themes";
 
 export type DesktopSyncState = {
@@ -52,9 +52,11 @@ function parseSyncState(value: unknown): DesktopSyncState {
 
 export function parseDesktopState(value: unknown): PersistedDesktopState {
   if (!isRecord(value)) throw new Error("The desktop state has an unsupported format.");
-  const layout = parseLayout(value);
+  const entries = parseEntries(value.entries);
+  const layout = parseLayout(value, true);
+  assertWallpaperSource(entries, layout.wallpaper);
   return {
-    entries: parseEntries(value.entries),
+    entries,
     snapToGrid: layout.snapToGrid,
     wallpaper: layout.wallpaper,
     editorSettings: parseEditorSettings(value.editorSettings),

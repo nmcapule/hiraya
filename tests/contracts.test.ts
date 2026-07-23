@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { parseBlobMutationPreparation, parseContentAccessDescriptor, parseEntries, parseRemoteDesktopState, parseRootEntryPositionUpdates } from "../src/lib/contracts";
+import { parseBlobMutationPreparation, parseContentAccessDescriptor, parseEntries, parseLayout, parseRemoteDesktopState, parseRootEntryPositionUpdates } from "../src/lib/contracts";
 import { remoteDesktopState } from "./fixtures";
+import { DEFAULT_WALLPAPER } from "../src/types";
 
 describe("contracts", () => {
   test("requires createdAt", () => {
@@ -16,6 +17,29 @@ describe("contracts", () => {
     expect(parseRemoteDesktopState(remote)).toEqual(remote);
     expect(() => parseRemoteDesktopState({ ...remote, schemaVersion: 5 })).toThrow("schema version");
     expect(() => parseRemoteDesktopState({ ...remote, catalogId: undefined })).toThrow("catalog identity");
+  });
+
+  test("validates structured wallpaper and legacy persisted presets", () => {
+    expect(parseLayout({ snapToGrid: false, wallpaper: DEFAULT_WALLPAPER })).toEqual({ snapToGrid: false, wallpaper: DEFAULT_WALLPAPER });
+    expect(parseLayout({ snapToGrid: false, wallpaper: "ember" }, true).wallpaper).toEqual({ ...DEFAULT_WALLPAPER, source: "ember" });
+    expect(() => parseLayout({ snapToGrid: false, wallpaper: "dusk" })).toThrow("wallpaper");
+    expect(() => parseLayout({ snapToGrid: false, wallpaper: { ...DEFAULT_WALLPAPER, overlayColor: "#ffffff" } })).toThrow("wallpaper");
+    expect(() => parseLayout({ snapToGrid: false, wallpaper: { ...DEFAULT_WALLPAPER, dim: Number.NaN } })).toThrow("wallpaper");
+    expect(() => parseLayout({ snapToGrid: false, wallpaper: { ...DEFAULT_WALLPAPER, extra: true } })).toThrow("wallpaper");
+    const missingFit = { ...DEFAULT_WALLPAPER } as Partial<typeof DEFAULT_WALLPAPER>;
+    delete missingFit.fit;
+    expect(() => parseLayout({ snapToGrid: false, wallpaper: missingFit })).toThrow("wallpaper");
+  });
+
+  test("requires a custom wallpaper to resolve to an eligible file on the same desktop", () => {
+    const remote = remoteDesktopState();
+    const wallpaper = { ...DEFAULT_WALLPAPER, source: "file:file-1" as const };
+    expect(() => parseRemoteDesktopState({ ...remote, layout: { ...remote.layout, wallpaper } })).toThrow("JPEG, PNG, or WebP");
+    expect(parseRemoteDesktopState({
+      ...remote,
+      entries: remote.entries.map((entry) => ({ ...entry, name: "wallpaper.webp", mimeType: "image/webp; variant=lossless", size: 4 })),
+      layout: { ...remote.layout, wallpaper },
+    }).layout.wallpaper).toEqual(wallpaper);
   });
 
   test("accepts positions only for root entries", () => {

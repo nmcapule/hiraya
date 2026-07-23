@@ -64,6 +64,7 @@ import { namesMatch } from "./lib/entry-validation";
 import { parseWindowTargets, restoreWindowSession, windowTargetId, type WindowSession, type WindowSessionApp, type WindowTarget } from "./lib/window-session";
 import { parseInternetShortcut } from "./lib/internet-shortcut";
 import { createSerialTaskQueue } from "./lib/serial-task";
+import { validateWallpaperImage } from "./lib/wallpaper-image";
 import { AccountMenu } from "./components/AccountMenu";
 import type { AuthSession } from "./lib/auth";
 
@@ -115,6 +116,7 @@ function App({ session }: { session: AuthSession | null }) {
   const [clock, setClock] = useState(() => new Date());
   const [desktopSize, setDesktopSize] = useState(() => ({ width: window.innerWidth, height: Math.max(1, window.innerHeight - 44) }));
   const [layout, setLayout] = useState<DesktopLayout>(() => ({ snapToGrid: false, wallpaper: DEFAULT_WALLPAPER }));
+  const [wallpaperAsset, setWallpaperAsset] = useState<{ key: string; url: string } | null>(null);
   const [editorSettings, setEditorSettings] = useState<EditorSettings>(DEFAULT_EDITOR_SETTINGS);
   const [appearance, setAppearance] = useState<ThemeState>(DEFAULT_THEME_STATE);
   const [themePreview, setThemePreview] = useState<ThemeDefinition | null>(null);
@@ -184,6 +186,7 @@ function App({ session }: { session: AuthSession | null }) {
     targetSegment?: SurfaceSegment;
   } | null>(null);
   const layoutRef = useRef(layout);
+  const wallpaperAssetRef = useRef<{ key: string; url: string } | null>(null);
   const entriesRef = useRef(entries);
   const routeRef = useRef<DesktopRoute | null>(null);
   const navigationReadyRef = useRef(false);
@@ -199,6 +202,7 @@ function App({ session }: { session: AuthSession | null }) {
   const nextWindowZRef = useRef(1);
   const fileLoadGenerationsRef = useRef<Record<string, number>>({});
   const layoutSaveRef = useRef<Promise<void>>(Promise.resolve());
+  const layoutDraftRef = useRef<{ desktopId: string; layout: DesktopLayout } | null>(null);
   const editorSettingsSaveRef = useRef<Promise<void>>(Promise.resolve());
   const contentRevisionsRef = useRef<Record<string, number>>({});
   const activeDesktopIdRef = useRef("");
@@ -1065,6 +1069,39 @@ function App({ session }: { session: AuthSession | null }) {
     return () => window.clearTimeout(timer);
   }, [notice]);
 
+  const wallpaperFileId = layout.wallpaper.source.startsWith("file:") ? layout.wallpaper.source.slice(5) : null;
+  const wallpaperFile = wallpaperFileId ? entries.find((entry): entry is FileEntry => entry.id === wallpaperFileId && entry.kind === "file") : null;
+  const wallpaperFileExists = Boolean(wallpaperFile);
+  const wallpaperContentRevision = wallpaperFileId ? contentRevisionsRef.current[wallpaperFileId] ?? wallpaperFile?.modifiedAt ?? 0 : 0;
+  const wallpaperKey = wallpaperFileId && activeDesktopId ? `${activeDesktopId}:${wallpaperFileId}:${wallpaperContentRevision}` : null;
+  const wallpaperLoadReady = syncStatus !== "offline" && syncStatus !== "connecting";
+  const wallpaperUrl = wallpaperAsset?.key === wallpaperKey ? wallpaperAsset.url : null;
+
+  useEffect(() => {
+    const previous = wallpaperAssetRef.current;
+    wallpaperAssetRef.current = null;
+    setWallpaperAsset(null);
+    if (previous) URL.revokeObjectURL(previous.url);
+  }, [wallpaperKey]);
+
+  useEffect(() => {
+    let active = true;
+    if (!wallpaperKey || !wallpaperFileId || !wallpaperFileExists || !wallpaperLoadReady) return;
+    void readFile(wallpaperFileId).then((file) => {
+      if (!active) return;
+      const next = { key: wallpaperKey, url: URL.createObjectURL(file) };
+      const previous = wallpaperAssetRef.current;
+      wallpaperAssetRef.current = next;
+      setWallpaperAsset(next);
+      if (previous) URL.revokeObjectURL(previous.url);
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, [wallpaperFileExists, wallpaperFileId, wallpaperKey, wallpaperLoadReady]);
+
+  useEffect(() => () => {
+    if (wallpaperAssetRef.current) URL.revokeObjectURL(wallpaperAssetRef.current.url);
+  }, []);
+
   function childrenCount(parentId: string | null) {
     return parentId !== null ? entryIndex.children.get(parentId)?.length ?? 0 : activeDesktopSegment.entries.length;
   }
@@ -1122,14 +1159,27 @@ function App({ session }: { session: AuthSession | null }) {
     uploadRef.current?.click();
   }
 
-  function applyLayout(next: DesktopLayout, persist = true) {
-    if (persist && !canMutate) return;
+  function previewLayout(next: DesktopLayout, desktopId: string) {
+    if (!canMutate || desktopId !== activeDesktopIdRef.current) return;
+    layoutDraftRef.current = { desktopId, layout: next };
     layoutRef.current = next;
     setLayout(next);
-    if (!persist) return;
-    layoutSaveRef.current = layoutSaveRef.current
-      .then(() => saveDesktopLayout(next))
-      .catch(() => { setError("The desktop area layout could not be saved."); });
+  }
+
+  async function persistLayout(next: DesktopLayout, desktopId = activeDesktopIdRef.current) {
+    if (!canMutate || desktopId !== activeDesktopIdRef.current) return;
+    if (layoutDraftRef.current?.desktopId === desktopId) layoutDraftRef.current = null;
+    layoutRef.current = next;
+    setLayout(next);
+    const save = saveDesktopLayout(next).catch(() => { setError("The desktop area layout could not be saved."); });
+    layoutSaveRef.current = save;
+    await save;
+  }
+
+  async function flushLayoutDraft(desktopId: string) {
+    const pending = layoutDraftRef.current;
+    if (!pending || pending.desktopId !== desktopId) return;
+    await persistLayout(pending.layout, desktopId);
   }
 
   function applyEditorSettings(next: EditorSettings) {
@@ -1260,6 +1310,8 @@ function App({ session }: { session: AuthSession | null }) {
     setMoveDialogEntryIds([]);
     windowSessionReadyRef.current = false;
     try {
+      await flushLayoutDraft(previousDesktopId);
+      await layoutSaveRef.current;
       await stopDesktopSync();
       syncStopped = true;
       const desktop = await switchLocalDesktop(desktopId);
@@ -1389,6 +1441,35 @@ function App({ session }: { session: AuthSession | null }) {
     }
   }
   handleImportRef.current = handleImport;
+
+  async function handleWallpaperUpload(file: File, nextLayout: DesktopLayout, desktopId: string) {
+    if (!canMutate || desktopId !== activeDesktopIdRef.current) return;
+    setError("");
+    try {
+      await validateWallpaperImage(file);
+      const imported = await importFiles([file], null, [positionFor(null)]);
+      const image = imported[0];
+      setEntries((current) => current.some((entry) => entry.id === image.id) ? current : [...current, image]);
+      replaceSelection("desktop", [image.id]);
+      await persistLayout({ ...nextLayout, wallpaper: { ...nextLayout.wallpaper, source: `file:${image.id}` } }, desktopId);
+      setNotice(`${image.name} added as wallpaper`);
+    } catch (uploadError) {
+      setError(uploadError instanceof Error ? uploadError.message : "The wallpaper image could not be added.");
+    }
+  }
+
+  async function handleWallpaperSelect(fileId: string, nextLayout: DesktopLayout, desktopId: string) {
+    if (!canMutate || desktopId !== activeDesktopIdRef.current) return;
+    setError("");
+    try {
+      const file = await readFile(fileId);
+      await validateWallpaperImage(file);
+      if (desktopId !== activeDesktopIdRef.current || !entriesRef.current.some((entry) => entry.id === fileId && entry.kind === "file")) return;
+      await persistLayout({ ...nextLayout, wallpaper: { ...nextLayout.wallpaper, source: `file:${fileId}` } }, desktopId);
+    } catch (selectionError) {
+      setError(selectionError instanceof Error ? selectionError.message : "The wallpaper image could not be selected.");
+    }
+  }
 
   async function handleDesktopMove(entry: DesktopEntry, position: EntryPosition, targetParentId: string | null) {
     if (!canMutate) return false;
@@ -2123,7 +2204,14 @@ function App({ session }: { session: AuthSession | null }) {
 
       <section
         className="desktop"
-        data-wallpaper={layout.wallpaper}
+        data-wallpaper={layout.wallpaper.source.startsWith("file:") ? wallpaperUrl ? "file" : "dusk" : layout.wallpaper.source}
+        data-custom-loaded={wallpaperUrl ? true : undefined}
+        style={{
+          "--wallpaper-image": wallpaperUrl ? `url(${wallpaperUrl})` : "none",
+          "--wallpaper-fit": layout.wallpaper.fit,
+          "--wallpaper-position": `${layout.wallpaper.positionX}% ${layout.wallpaper.positionY}%`,
+          "--wallpaper-blur": `${layout.wallpaper.blur}px`,
+        } as React.CSSProperties}
         ref={desktopRef}
         aria-label={`${activeDesktopName} desktop`}
         onClickCapture={(event) => {
@@ -2161,6 +2249,9 @@ function App({ session }: { session: AuthSession | null }) {
         onPointerUp={finishDesktopSwipe}
         onPointerCancel={finishDesktopSwipe}
       >
+        <div className="wallpaper-image" aria-hidden="true" />
+        <div className="wallpaper-dim" aria-hidden="true" style={{ backgroundColor: "#000000", opacity: layout.wallpaper.dim }} />
+        <div className="wallpaper-color-overlay" aria-hidden="true" style={{ backgroundColor: layout.wallpaper.overlayColor, opacity: layout.wallpaper.overlayOpacity }} />
         <div className="wallpaper-grain" aria-hidden="true" />
         <div className="desktop-canvas" ref={canvasRef} style={{ width: segmentColumns * desktopSize.width, height: segmentRows * desktopSize.height, transform: `translate3d(${-canvasOffset.column * desktopSize.width}px, ${-canvasOffset.row * desktopSize.height}px, 0)` }}>
           {responsive.segments.flatMap((desktopSegment) => desktopSegment.entries.map((entry) => {
@@ -2315,6 +2406,9 @@ function App({ session }: { session: AuthSession | null }) {
                     onPageChange={setSettingsPage}
                     mobileHeaderElements={isMobile ? headerElements : undefined}
                     layout={layout}
+                    activeDesktopId={activeDesktopId}
+                    entries={entries}
+                    wallpaperUrl={wallpaperUrl}
                     appearance={appearance}
                     activeTheme={activeTheme}
                     canMutate={canMutate}
@@ -2331,7 +2425,10 @@ function App({ session }: { session: AuthSession | null }) {
                     serverBuildTimestamp={serverBuildTimestamp}
                     onListActivity={listActivity}
                     onSubscribeToActivity={subscribeToActivityChanges}
-                    onLayoutChange={applyLayout}
+                    onLayoutPreview={previewLayout}
+                    onLayoutChange={persistLayout}
+                    onWallpaperUpload={handleWallpaperUpload}
+                    onWallpaperSelect={handleWallpaperSelect}
                     onThemeSelect={changeTheme}
                     onThemePreview={setThemePreview}
                     onThemeSave={persistCustomTheme}
@@ -2482,7 +2579,9 @@ function App({ session }: { session: AuthSession | null }) {
             else {
               const next = await transferEntries(desktopId, moveDialogEntries.map((entry) => entry.id), parentId);
               entriesRef.current = next.entries;
+              layoutRef.current = next.layout;
               setEntries(next.entries);
+              setLayout(next.layout);
               replaceSelection(selectionScope, []);
               setNotice(`${moveDialogEntries.length === 1 ? moveDialogEntries[0].name : `${moveDialogEntries.length} items`} moved to ${desktops.find((desktop) => desktop.id === desktopId)?.name ?? "desktop"}`);
             }

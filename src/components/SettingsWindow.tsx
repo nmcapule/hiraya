@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowClockwise, ArrowLeft, ArrowsOut, CaretRight, ClockCounterClockwise, CornersIn, CornersOut, ExportIcon, GlobeSimple, GridFour, PaintBrush } from "@phosphor-icons/react";
+import { ArrowClockwise, ArrowLeft, ArrowsOut, CaretRight, ClockCounterClockwise, CornersIn, CornersOut, ExportIcon, GlobeSimple, GridFour, ImageSquare, PaintBrush, UploadSimple } from "@phosphor-icons/react";
 import { ActivityLog } from "./ActivityLog";
 import type { ActivityPage, ActivityQuery } from "../lib/activity";
 import {
@@ -13,10 +13,11 @@ import {
   type ThemeState,
   themeContrastIssues,
 } from "../lib/themes";
-import { WALLPAPERS, type DesktopLayout, type Wallpaper } from "../types";
+import { DEFAULT_WALLPAPER, WALLPAPERS, type DesktopEntry, type DesktopLayout, type FileEntry, type WallpaperPreset } from "../types";
+import { WALLPAPER_IMAGE_ACCEPT } from "../lib/wallpaper-image";
 import type { AppWindowHeaderElements } from "./AppWindow";
 
-const WALLPAPER_LABELS: Record<Wallpaper, { name: string; description: string }> = {
+const WALLPAPER_LABELS: Record<WallpaperPreset, { name: string; description: string }> = {
   dusk: { name: "Dusk", description: "Misty green with a warm horizon" },
   grove: { name: "Grove", description: "Deep forest layers in cool green" },
   ember: { name: "Ember", description: "Smoky earth with an amber glow" },
@@ -50,6 +51,9 @@ type Props = {
   onPageChange: (page: "main" | "themes" | "activity") => void;
   mobileHeaderElements?: AppWindowHeaderElements;
   layout: DesktopLayout;
+  activeDesktopId: string;
+  entries: DesktopEntry[];
+  wallpaperUrl: string | null;
   appearance: ThemeState;
   activeTheme: ThemeDefinition;
   canMutate: boolean;
@@ -66,7 +70,10 @@ type Props = {
   serverBuildTimestamp: string | null;
   onListActivity: (query?: ActivityQuery) => Promise<ActivityPage>;
   onSubscribeToActivity: (listener: () => void) => () => void;
-  onLayoutChange: (layout: DesktopLayout) => void;
+  onLayoutPreview: (layout: DesktopLayout, desktopId: string) => void;
+  onLayoutChange: (layout: DesktopLayout, desktopId: string) => Promise<void>;
+  onWallpaperUpload: (file: File, layout: DesktopLayout, desktopId: string) => Promise<void>;
+  onWallpaperSelect: (fileId: string, layout: DesktopLayout, desktopId: string) => Promise<void>;
   onThemeSelect: (themeId: string) => void | Promise<void>;
   onThemePreview: (theme: ThemeDefinition | null) => void;
   onThemeSave: (theme: CustomTheme) => void | Promise<void>;
@@ -79,6 +86,7 @@ type Props = {
 };
 
 type NumberControlProps = {
+  idPrefix?: string;
   label: string;
   value: number;
   min: number;
@@ -86,10 +94,11 @@ type NumberControlProps = {
   step: number;
   disabled: boolean;
   onChange: (value: number) => void;
+  onCommit?: () => void;
 };
 
-function NumberControl({ label, value, min, max, step, disabled, onChange }: NumberControlProps) {
-  const id = `theme-${label.toLowerCase().replaceAll(" ", "-")}`;
+function NumberControl({ idPrefix = "theme", label, value, min, max, step, disabled, onChange, onCommit }: NumberControlProps) {
+  const id = `${idPrefix}-${label.toLowerCase().replaceAll(" ", "-")}`;
   const changeValue = (next: number) => {
     if (Number.isFinite(next)) onChange(Math.min(max, Math.max(min, next)));
   };
@@ -97,8 +106,8 @@ function NumberControl({ label, value, min, max, step, disabled, onChange }: Num
     <div className="theme-control">
       <label htmlFor={id}>{label} <output>{value}</output></label>
       <div className="theme-control__inputs">
-        <input id={id} type="range" min={min} max={max} step={step} value={value} disabled={disabled} onChange={(event) => changeValue(event.target.valueAsNumber)} />
-        <input aria-label={`${label} value`} type="number" min={min} max={max} step={step} value={value} disabled={disabled} onChange={(event) => changeValue(event.target.valueAsNumber)} />
+        <input id={id} type="range" min={min} max={max} step={step} value={value} disabled={disabled} onChange={(event) => changeValue(event.target.valueAsNumber)} onPointerUp={onCommit} onKeyUp={onCommit} onBlur={onCommit} />
+        <input aria-label={`${label} value`} type="number" min={min} max={max} step={step} value={value} disabled={disabled} onChange={(event) => changeValue(event.target.valueAsNumber)} onBlur={onCommit} />
       </div>
     </div>
   );
@@ -124,6 +133,9 @@ export function SettingsWindow({
   onPageChange,
   mobileHeaderElements,
   layout,
+  activeDesktopId,
+  entries,
+  wallpaperUrl,
   appearance,
   activeTheme,
   canMutate,
@@ -140,7 +152,10 @@ export function SettingsWindow({
   serverBuildTimestamp,
   onListActivity,
   onSubscribeToActivity,
+  onLayoutPreview,
   onLayoutChange,
+  onWallpaperUpload,
+  onWallpaperSelect,
   onThemeSelect,
   onThemePreview,
   onThemeSave,
@@ -153,16 +168,26 @@ export function SettingsWindow({
 }: Props) {
   const [draft, setDraft] = useState<CustomTheme | null>(null);
   const [saving, setSaving] = useState(false);
+  const [wallpaperBusy, setWallpaperBusy] = useState(false);
+  const [layoutDraft, setLayoutDraft] = useState(() => ({ desktopId: activeDesktopId, layout }));
   const contentRef = useRef<HTMLDivElement>(null);
+  const wallpaperUploadRef = useRef<HTMLInputElement>(null);
+  const wallpaperCommitTimerRef = useRef<number | null>(null);
+  const pendingLayoutRef = useRef<{ desktopId: string; layout: DesktopLayout } | null>(null);
   const mainThemesButtonRef = useRef<HTMLButtonElement>(null);
   const mainActivityButtonRef = useRef<HTMLButtonElement>(null);
   const themesHeadingRef = useRef<HTMLHeadingElement>(null);
   const activityHeadingRef = useRef<HTMLHeadingElement>(null);
   const mutationsDisabled = !canMutate || saving;
+  const displayedLayout = layoutDraft.desktopId === activeDesktopId ? layoutDraft.layout : layout;
   const contrastIssues = draft ? themeContrastIssues(draft.definition) : [];
   const selectedThemeName = isBuiltinThemeId(appearance.selectedThemeId)
     ? BUILTIN_THEMES[appearance.selectedThemeId].name
     : appearance.customThemes.find((theme) => theme.id === appearance.selectedThemeId)?.name ?? "Custom theme";
+  const wallpaperFileId = displayedLayout.wallpaper.source.startsWith("file:") ? displayedLayout.wallpaper.source.slice(5) : null;
+  const wallpaperFile = wallpaperFileId ? entries.find((entry): entry is FileEntry => entry.id === wallpaperFileId && entry.kind === "file") : null;
+  const wallpaperFiles = entries.filter((entry): entry is FileEntry => entry.kind === "file" && ["image/jpeg", "image/png", "image/webp"].includes(entry.mimeType.split(";", 1)[0].trim().toLowerCase()) && entry.size <= 20 * 1024 * 1024);
+  const wallpaperName = displayedLayout.wallpaper.source in WALLPAPER_LABELS ? WALLPAPER_LABELS[displayedLayout.wallpaper.source as WallpaperPreset].name : wallpaperFile?.name ?? "Custom image";
   const formatBuildTimestamp = (timestamp: string | null) => {
     if (!timestamp) return "Unavailable";
     const date = new Date(timestamp);
@@ -171,6 +196,46 @@ export function SettingsWindow({
   };
 
   useEffect(() => () => onThemePreview(null), [onThemePreview]);
+
+  useEffect(() => {
+    if (pendingLayoutRef.current?.desktopId === activeDesktopId) return;
+    if (wallpaperCommitTimerRef.current !== null) window.clearTimeout(wallpaperCommitTimerRef.current);
+    wallpaperCommitTimerRef.current = null;
+    pendingLayoutRef.current = null;
+    setLayoutDraft({ desktopId: activeDesktopId, layout });
+  }, [activeDesktopId, layout]);
+
+  useEffect(() => () => {
+    if (wallpaperCommitTimerRef.current !== null) window.clearTimeout(wallpaperCommitTimerRef.current);
+  }, []);
+
+  const commitWallpaperDraft = async () => {
+    if (wallpaperCommitTimerRef.current !== null) window.clearTimeout(wallpaperCommitTimerRef.current);
+    wallpaperCommitTimerRef.current = null;
+    const pending = pendingLayoutRef.current;
+    pendingLayoutRef.current = null;
+    if (pending) await onLayoutChange(pending.layout, pending.desktopId);
+  };
+
+  const previewWallpaper = (wallpaper: DesktopLayout["wallpaper"]) => {
+    const next = { ...displayedLayout, wallpaper };
+    const pending = { desktopId: activeDesktopId, layout: next };
+    pendingLayoutRef.current = pending;
+    setLayoutDraft(pending);
+    onLayoutPreview(next, activeDesktopId);
+    if (wallpaperCommitTimerRef.current !== null) window.clearTimeout(wallpaperCommitTimerRef.current);
+    wallpaperCommitTimerRef.current = window.setTimeout(() => { void commitWallpaperDraft(); }, 400);
+  };
+
+  const commitWallpaperChange = async (wallpaper: DesktopLayout["wallpaper"]) => {
+    if (wallpaperCommitTimerRef.current !== null) window.clearTimeout(wallpaperCommitTimerRef.current);
+    wallpaperCommitTimerRef.current = null;
+    pendingLayoutRef.current = null;
+    const next = { ...displayedLayout, wallpaper };
+    setLayoutDraft({ desktopId: activeDesktopId, layout: next });
+    onLayoutPreview(next, activeDesktopId);
+    await onLayoutChange(next, activeDesktopId);
+  };
 
   const startDraft = (name: string, definition: ThemeDefinition, id: string = crypto.randomUUID()) => {
     const next = { id, name, definition: copyDefinition(definition) };
@@ -244,6 +309,7 @@ export function SettingsWindow({
   };
 
   const closeThemes = () => {
+    void commitWallpaperDraft();
     cancelDraft();
     contentRef.current?.scrollTo({ top: 0 });
     onPageChange("main");
@@ -278,7 +344,7 @@ export function SettingsWindow({
                 <span className="settings-row__icon"><PaintBrush size={17} /></span>
                 <span className="settings-row__copy">
                   <strong id="themes-link-heading">Themes</strong>
-                  <small>{selectedThemeName} theme with {WALLPAPER_LABELS[layout.wallpaper].name.toLowerCase()} wallpaper.</small>
+                  <small>{selectedThemeName} theme with {wallpaperName.toLowerCase()} wallpaper.</small>
                 </span>
                 <CaretRight className="settings-row__chevron" size={17} aria-hidden="true" />
               </button>
@@ -304,7 +370,7 @@ export function SettingsWindow({
                 <label className="settings-row">
                   <span className="settings-row__icon"><GridFour size={17} weight={layout.snapToGrid ? "fill" : "regular"} /></span>
                   <span className="settings-row__copy"><strong>Snap to grid</strong><small>Align icons when they are moved.</small></span>
-                  <input type="checkbox" checked={layout.snapToGrid} disabled={!canMutate} onChange={(event) => onLayoutChange({ ...layout, snapToGrid: event.target.checked })} />
+                  <input type="checkbox" checked={layout.snapToGrid} disabled={!canMutate} onChange={(event) => void onLayoutChange({ ...layout, snapToGrid: event.target.checked }, activeDesktopId)} />
                 </label>
                 {fullscreenEnabled && (
                   <div className="settings-row">
@@ -494,11 +560,55 @@ export function SettingsWindow({
           </div>
           <div className="wallpaper-options">
             {WALLPAPERS.map((wallpaper) => (
-              <button className="wallpaper-option" data-selected={layout.wallpaper === wallpaper || undefined} type="button" key={wallpaper} aria-pressed={layout.wallpaper === wallpaper} disabled={!canMutate} onClick={() => onLayoutChange({ ...layout, wallpaper })}>
+              <button className="wallpaper-option" data-selected={displayedLayout.wallpaper.source === wallpaper || undefined} type="button" key={wallpaper} aria-pressed={displayedLayout.wallpaper.source === wallpaper} disabled={!canMutate || wallpaperBusy} onClick={() => void commitWallpaperChange({ ...displayedLayout.wallpaper, source: wallpaper })}>
                 <span className="wallpaper-option__preview" data-wallpaper={wallpaper} aria-hidden="true"><span /></span>
                 <span className="wallpaper-option__copy"><strong>{WALLPAPER_LABELS[wallpaper].name}</strong><small>{WALLPAPER_LABELS[wallpaper].description}</small></span>
               </button>
             ))}
+          </div>
+          <div className="wallpaper-custom">
+            <div className="wallpaper-custom__current">
+              <span className="wallpaper-custom__thumbnail" style={wallpaperUrl ? { backgroundImage: `url(${wallpaperUrl})` } : undefined}><ImageSquare size={22} aria-hidden="true" /></span>
+              <span><strong>{wallpaperName}</strong><small>{wallpaperFile ? "Image stored on this desktop" : "Built-in wallpaper"}</small></span>
+              <button className="button button--quiet" type="button" disabled={!canMutate || wallpaperBusy || displayedLayout.wallpaper.source === DEFAULT_WALLPAPER.source && JSON.stringify(displayedLayout.wallpaper) === JSON.stringify(DEFAULT_WALLPAPER)} onClick={() => void commitWallpaperChange({ ...DEFAULT_WALLPAPER })}>Reset</button>
+            </div>
+            <div className="wallpaper-custom__actions">
+              <input ref={wallpaperUploadRef} className="visually-hidden" type="file" accept={WALLPAPER_IMAGE_ACCEPT} onChange={(event) => {
+                const file = event.target.files?.[0];
+                event.target.value = "";
+                if (!file) return;
+                if (wallpaperCommitTimerRef.current !== null) window.clearTimeout(wallpaperCommitTimerRef.current);
+                wallpaperCommitTimerRef.current = null;
+                pendingLayoutRef.current = null;
+                setWallpaperBusy(true);
+                void onWallpaperUpload(file, displayedLayout, activeDesktopId).finally(() => setWallpaperBusy(false));
+              }} />
+              <button className="button button--quiet" type="button" disabled={!canMutate || wallpaperBusy} onClick={() => wallpaperUploadRef.current?.click()}><UploadSimple size={15} /> {wallpaperBusy ? "Adding image..." : "Upload image"}</button>
+              <label className="wallpaper-custom__select">Choose existing image
+                <select value={wallpaperFileId ?? ""} disabled={!canMutate || wallpaperBusy || wallpaperFiles.length === 0} onChange={(event) => {
+                  const fileId = event.target.value;
+                  if (!fileId) return;
+                  if (wallpaperCommitTimerRef.current !== null) window.clearTimeout(wallpaperCommitTimerRef.current);
+                  wallpaperCommitTimerRef.current = null;
+                  pendingLayoutRef.current = null;
+                  setWallpaperBusy(true);
+                  void onWallpaperSelect(fileId, displayedLayout, activeDesktopId).finally(() => setWallpaperBusy(false));
+                }}>
+                  <option value="">{wallpaperFiles.length ? "Select an image" : "No supported images"}</option>
+                  {wallpaperFiles.map((file) => <option value={file.id} key={file.id}>{file.name}</option>)}
+                </select>
+              </label>
+            </div>
+            <fieldset className="wallpaper-controls" disabled={!canMutate || wallpaperBusy}>
+              <legend>Image treatment</legend>
+              <label className="theme-field">Fit<select value={displayedLayout.wallpaper.fit} onChange={(event) => void commitWallpaperChange({ ...displayedLayout.wallpaper, fit: event.target.value as "cover" | "contain" })}><option value="cover">Cover</option><option value="contain">Contain</option></select></label>
+              <NumberControl idPrefix="wallpaper" label="Horizontal alignment" value={displayedLayout.wallpaper.positionX} min={0} max={100} step={1} disabled={!canMutate || wallpaperBusy} onChange={(positionX) => previewWallpaper({ ...displayedLayout.wallpaper, positionX })} onCommit={() => void commitWallpaperDraft()} />
+              <NumberControl idPrefix="wallpaper" label="Vertical alignment" value={displayedLayout.wallpaper.positionY} min={0} max={100} step={1} disabled={!canMutate || wallpaperBusy} onChange={(positionY) => previewWallpaper({ ...displayedLayout.wallpaper, positionY })} onCommit={() => void commitWallpaperDraft()} />
+              <NumberControl idPrefix="wallpaper" label="Blur" value={displayedLayout.wallpaper.blur} min={0} max={24} step={1} disabled={!canMutate || wallpaperBusy} onChange={(blur) => previewWallpaper({ ...displayedLayout.wallpaper, blur })} onCommit={() => void commitWallpaperDraft()} />
+              <NumberControl idPrefix="wallpaper" label="Dim" value={displayedLayout.wallpaper.dim} min={0} max={0.8} step={0.05} disabled={!canMutate || wallpaperBusy} onChange={(dim) => previewWallpaper({ ...displayedLayout.wallpaper, dim })} onCommit={() => void commitWallpaperDraft()} />
+              <label className="theme-color wallpaper-color"><span>Overlay color</span><input type="color" value={displayedLayout.wallpaper.overlayColor} onInput={(event) => previewWallpaper({ ...displayedLayout.wallpaper, overlayColor: event.currentTarget.value.toUpperCase() })} onBlur={() => void commitWallpaperDraft()} /></label>
+              <NumberControl idPrefix="wallpaper" label="Overlay opacity" value={displayedLayout.wallpaper.overlayOpacity} min={0} max={0.8} step={0.05} disabled={!canMutate || wallpaperBusy} onChange={(overlayOpacity) => previewWallpaper({ ...displayedLayout.wallpaper, overlayOpacity })} onCommit={() => void commitWallpaperDraft()} />
+            </fieldset>
           </div>
         </section>
             {!canMutate && <p className="settings-window__offline" role="status">Connecting to the shared desktop. Appearance controls will be available shortly.</p>}

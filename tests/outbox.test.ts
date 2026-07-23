@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { applyOutboxOperation, desktopPendingOperationProtection, normalizeOutboxOperation, outboxDesktopRetentionIds, transferEntriesBetweenDesktopStates, type OutboxRecord } from "../src/lib/outbox";
 import { desktopStateSnapshot } from "./fixtures";
 import { BUILTIN_THEMES, DEFAULT_THEME_ID } from "../src/lib/themes";
+import { DEFAULT_WALLPAPER } from "../src/types";
 
 function state() {
   const snapshot = desktopStateSnapshot();
@@ -10,7 +11,7 @@ function state() {
 
 describe("strict outbox", () => {
   test("requires operation schema version 1", () => {
-    const operation = { schemaVersion: 1 as const, kind: "layout" as const, layout: { snapToGrid: true, wallpaper: "dusk" as const } };
+    const operation = { schemaVersion: 1 as const, kind: "layout" as const, layout: { snapToGrid: true, wallpaper: { ...DEFAULT_WALLPAPER } } };
     expect(normalizeOutboxOperation(operation)).toEqual(operation);
     expect(applyOutboxOperation(state(), operation).snapToGrid).toBe(true);
     expect(() => normalizeOutboxOperation({ ...operation, schemaVersion: 2 } as never)).toThrow("schema version");
@@ -33,7 +34,7 @@ describe("strict outbox", () => {
     projected = applyOutboxOperation(projected, { schemaVersion: 1, kind: "update-entry", entry: { ...folder, name: "Documents" } });
     projected = applyOutboxOperation(projected, { schemaVersion: 1, kind: "save-content", entry: { ...file, size: 4, modifiedAt: 2 } });
     projected = applyOutboxOperation(projected, { schemaVersion: 1, kind: "root-entry-positions", positions: [{ entryId: file.id, position: { x: -20, y: 30 } }] });
-    projected = applyOutboxOperation(projected, { schemaVersion: 1, kind: "layout", layout: { snapToGrid: true, wallpaper: "grove" } });
+    projected = applyOutboxOperation(projected, { schemaVersion: 1, kind: "layout", layout: { snapToGrid: true, wallpaper: { ...DEFAULT_WALLPAPER, source: "grove" } } });
     const settings = { ...projected.editorSettings, fontSize: 17, autoFormat: true };
     projected = applyOutboxOperation(projected, { schemaVersion: 1, kind: "editor-settings", settings });
     const theme = { id: "custom", name: "Custom", definition: BUILTIN_THEMES[DEFAULT_THEME_ID].definition };
@@ -42,7 +43,7 @@ describe("strict outbox", () => {
 
     expect(projected.entries.find(({ id }) => id === folder.id)?.name).toBe("Documents");
     expect(projected.entries.find(({ id }) => id === file.id)).toMatchObject({ size: 4, position: { x: -20, y: 30 } });
-    expect(projected).toMatchObject({ snapToGrid: true, wallpaper: "grove", editorSettings: settings });
+    expect(projected).toMatchObject({ snapToGrid: true, wallpaper: { source: "grove" }, editorSettings: settings });
     expect(projected.appearance.selectedThemeId).toBe(theme.id);
 
     projected = applyOutboxOperation(projected, { schemaVersion: 1, kind: "delete", entryId: folder.id });
@@ -79,6 +80,20 @@ describe("strict outbox", () => {
     expect(transferred.source.sync).toMatchObject({ catalogId: "catalog", catalogRevision: 8, entryRevisions: {}, contentRevisions: {} });
     expect(transferred.destination.entries).toEqual([{ ...folder, modifiedAt: 10 }, file]);
     expect(transferred.destination.sync).toMatchObject({ catalogId: "catalog", catalogRevision: 8, entryRevisions: { existing: 2, folder: 6, file: 7 }, contentRevisions: { file: 5 } });
+  });
+
+  test("resets a selected image when deleting or transferring its ancestor", () => {
+    const folder = { kind: "folder" as const, id: "folder", name: "Folder", parentId: null, createdAt: 1, modifiedAt: 1, position: { x: 0, y: 0 } };
+    const file = { kind: "file" as const, id: "image", name: "wallpaper.png", parentId: folder.id, createdAt: 1, modifiedAt: 1, position: { x: 0, y: 0 }, mimeType: "image/png", size: 4 };
+    const source = { ...state(), entries: [folder, file], wallpaper: { ...DEFAULT_WALLPAPER, source: `file:${file.id}` as const }, sync: { ...state().sync, catalogId: "catalog", catalogRevision: 8, layoutRevision: 3 } };
+    const destination = { ...state(), sync: { ...state().sync, catalogId: "catalog" } };
+
+    const deleted = applyOutboxOperation(source, { schemaVersion: 1, kind: "delete", entryId: folder.id });
+    const transferred = transferEntriesBetweenDesktopStates(source, destination, [folder.id], null).source;
+    expect(deleted.wallpaper).toEqual(DEFAULT_WALLPAPER);
+    expect(deleted.sync.layoutRevision).toBe(8);
+    expect(transferred.wallpaper).toEqual(DEFAULT_WALLPAPER);
+    expect(transferred.sync.layoutRevision).toBe(8);
   });
 
   test("protects desktops owning or referenced by pending and blocked operations", () => {

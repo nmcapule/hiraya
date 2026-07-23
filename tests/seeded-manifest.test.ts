@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { parsePortableSeededManifest, toPortableSeededManifest } from "../src/lib/seeded-manifest";
 import { desktopStateSnapshot } from "./fixtures";
+import { DEFAULT_WALLPAPER } from "../src/types";
 
 describe("seeded packages", () => {
   test("accepts only schema version 1 with complete entries", () => {
@@ -16,7 +17,7 @@ describe("seeded packages", () => {
 
   test("preserves current layout, appearance, empty folders, and normalized content URLs", () => {
     const snapshot = desktopStateSnapshot();
-    snapshot.layout = { snapToGrid: true, wallpaper: "ember" };
+    snapshot.layout = { snapToGrid: true, wallpaper: { ...DEFAULT_WALLPAPER, source: "ember" } };
     snapshot.entries = [
       { kind: "folder", id: "empty", name: "Empty", parentId: null, createdAt: 1, modifiedAt: 1, position: { x: -40, y: 20 } },
       { kind: "file", id: "file", name: "notes.txt", parentId: null, createdAt: 2, modifiedAt: 2, position: { x: 60, y: 20 }, mimeType: "text/plain", size: 0 },
@@ -24,5 +25,13 @@ describe("seeded packages", () => {
     const value = toPortableSeededManifest(snapshot, () => "content/notes.txt");
     expect(parsePortableSeededManifest(value)).toMatchObject({ schemaVersion: 1, layout: snapshot.layout, appearance: snapshot.appearance, entries: snapshot.entries });
     expect(() => parsePortableSeededManifest({ ...value, entries: value.entries.map((entry) => entry.kind === "file" ? { ...entry, contentUrl: "../notes.txt" } : entry) })).toThrow("normalized relative");
+  });
+
+  test("imports legacy preset strings and exports structured wallpaper", () => {
+    const snapshot = desktopStateSnapshot();
+    const value = toPortableSeededManifest(snapshot, () => "content/unused");
+    const legacy = parsePortableSeededManifest({ ...value, layout: { snapToGrid: false, wallpaper: "grove" } });
+    expect(legacy.layout.wallpaper).toEqual({ ...DEFAULT_WALLPAPER, source: "grove" });
+    expect(toPortableSeededManifest({ ...snapshot, layout: legacy.layout }, () => "content/unused").layout.wallpaper.source).toBe("grove");
   });
 });

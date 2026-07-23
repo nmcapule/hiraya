@@ -1,8 +1,27 @@
 export type EntryPosition = { x: number; y: number };
 
 export const WALLPAPERS = ["dusk", "grove", "ember"] as const;
-export type Wallpaper = typeof WALLPAPERS[number];
-export const DEFAULT_WALLPAPER: Wallpaper = "dusk";
+export type WallpaperPreset = typeof WALLPAPERS[number];
+export type Wallpaper = {
+  source: WallpaperPreset | `file:${string}`;
+  fit: "cover" | "contain";
+  positionX: number;
+  positionY: number;
+  blur: number;
+  dim: number;
+  overlayColor: string;
+  overlayOpacity: number;
+};
+export const DEFAULT_WALLPAPER: Wallpaper = {
+  source: "dusk",
+  fit: "cover",
+  positionX: 50,
+  positionY: 50,
+  blur: 0,
+  dim: 0,
+  overlayColor: "#000000",
+  overlayOpacity: 0,
+};
 
 export type DesktopLayout = {
   snapToGrid: boolean;

@@ -1,5 +1,5 @@
-import type { DesktopEntry, DesktopIdentity, DesktopLayout, RootEntryPositionUpdate, EditorSettings, FileEntry } from "../types";
-import { isValidId, parseDesktopIdentity, parseEditorSettings, parseEntries, parseLayout, parseLocalEntry, parseRootEntryPositions, parseRootEntryPositionUpdates } from "./contracts";
+import { DEFAULT_WALLPAPER, type DesktopEntry, type DesktopIdentity, type DesktopLayout, type RootEntryPositionUpdate, type EditorSettings, type FileEntry, type Wallpaper } from "../types";
+import { assertWallpaperSource, isValidId, parseDesktopIdentity, parseEditorSettings, parseEntries, parseLayout, parseLocalEntry, parseRootEntryPositions, parseRootEntryPositionUpdates } from "./contracts";
 import type { PersistedDesktopState } from "./desktop-state";
 import { DEFAULT_THEME_ID, parseCustomTheme, parseThemeState, type CustomTheme } from "./themes";
 
@@ -32,6 +32,22 @@ export type OutboxRecord = {
   status: "pending" | "blocked";
   error: string | null;
 };
+
+export function wallpaperAfterEntryRemoval(entries: readonly DesktopEntry[], wallpaper: Wallpaper) {
+  return wallpaper.source.startsWith("file:") && !entries.some((entry) => entry.id === wallpaper.source.slice(5))
+    ? { ...DEFAULT_WALLPAPER }
+    : wallpaper;
+}
+
+function resetWallpaperAfterEntryRemoval(state: PersistedDesktopState, entries: DesktopEntry[]): PersistedDesktopState {
+  const wallpaper = wallpaperAfterEntryRemoval(entries, state.wallpaper);
+  return {
+    ...state,
+    entries,
+    wallpaper,
+    sync: wallpaper === state.wallpaper ? state.sync : { ...state.sync, layoutRevision: state.sync.catalogRevision },
+  };
+}
 
 export function outboxDesktopRetentionIds(records: readonly OutboxRecord[], catalogId: string | null) {
   const retained = new Set<string>();
@@ -85,11 +101,11 @@ export function transferEntriesBetweenDesktopStates(
     }
   }
   const catalogRevision = Math.max(source.sync.catalogRevision, destination.sync.catalogRevision);
+  const nextSource = resetWallpaperAfterEntryRemoval(source, source.entries.filter((entry) => !included.has(entry.id)));
   return {
     source: {
-      ...source,
-      entries: source.entries.filter((entry) => !included.has(entry.id)),
-      sync: { ...source.sync, catalogRevision, entryRevisions: sourceEntryRevisions, contentRevisions: sourceContentRevisions },
+      ...nextSource,
+      sync: { ...nextSource.sync, catalogRevision, layoutRevision: nextSource.wallpaper === source.wallpaper ? nextSource.sync.layoutRevision : catalogRevision, entryRevisions: sourceEntryRevisions, contentRevisions: sourceContentRevisions },
     },
     destination: {
       ...destination,
@@ -203,7 +219,8 @@ export function applyOutboxOperation(state: PersistedDesktopState, operation: Ou
         delete entryRevisions[id];
         delete contentRevisions[id];
       }
-      return { ...state, entries, sync: { ...state.sync, entryRevisions, contentRevisions } };
+      const projected = resetWallpaperAfterEntryRemoval(state, entries);
+      return { ...projected, sync: { ...projected.sync, entryRevisions, contentRevisions } };
     }
     case "move-entries": {
       const moving = new Set(operation.entryIds);
@@ -223,6 +240,7 @@ export function applyOutboxOperation(state: PersistedDesktopState, operation: Ou
     }
     case "layout": {
       const layout = parseLayout(operation.layout);
+      assertWallpaperSource(entries, layout.wallpaper);
       return { ...state, snapToGrid: layout.snapToGrid, wallpaper: layout.wallpaper };
     }
     case "editor-settings":
@@ -244,5 +262,5 @@ export function applyOutboxOperation(state: PersistedDesktopState, operation: Ou
       return { ...state, appearance: parseThemeState({ selectedThemeId, customThemes }) };
     }
   }
-  return { ...state, entries };
+  return resetWallpaperAfterEntryRemoval(state, entries);
 }
