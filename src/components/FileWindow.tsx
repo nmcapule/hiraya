@@ -173,7 +173,7 @@ export function FileWindow({ file, blob, editable, editMode = false, readOnly = 
                     lastAutoSaveAttemptRef.current = null;
                     onEditorSettingsChange({ ...editorSettings, autoSave: event.target.checked });
                   }} />
-                  <span>Auto save</span>
+                  <span>Autosave</span>
                 </label>
                 <label className="mobile-header-menu__toggle">
                   <input type="checkbox" checked={editorSettings.lineWrap} onChange={(event) => onEditorSettingsChange({ ...editorSettings, lineWrap: event.target.checked })} />

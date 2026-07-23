@@ -14,9 +14,9 @@ import { parseDesktopCatalog } from "./desktop-catalog";
 export type SyncStatus = "connecting" | "online" | "offline" | "blocked" | "local";
 export type DesktopRegistry = { desktops: DesktopIdentity[]; activeDesktopId: string | null; defaultDesktopId: string };
 
-export async function fetchBackendBuildTimestamp(fetchImpl: typeof fetch = globalThis.fetch.bind(globalThis)) {
+export async function fetchServerBuildTimestamp(fetchImpl: typeof fetch = globalThis.fetch.bind(globalThis)) {
   const response = await fetchImpl(API_ROUTES.health, { cache: "no-store" });
-  if (!response.ok) throw new Error("The sync server is unavailable.");
+  if (!response.ok) throw new Error("The Hiraya server is unavailable.");
   const health = await response.json() as unknown;
   if (typeof health !== "object" || health === null || !("buildTimestamp" in health) || typeof health.buildTimestamp !== "string") return null;
   return health.buildTimestamp || null;
@@ -130,7 +130,7 @@ export class SyncEngine {
   private pendingWork = 0;
   private readonly desktopListeners = new Set<(next: storage.DesktopSnapshot) => void>();
   private readonly statusListeners = new Set<(next: SyncStatus) => void>();
-  private readonly syncActivityListeners = new Set<(syncing: boolean) => void>();
+  private readonly syncWorkListeners = new Set<(syncing: boolean) => void>();
   private readonly activityChangeListeners = new Set<() => void>();
   private readonly catalogListeners = new Set<(catalog: DesktopRegistry) => void>();
   private readonly contentLoads = new Map<string, Promise<File>>();
@@ -198,16 +198,16 @@ export class SyncEngine {
     await Promise.all([this.work, starting?.catch(() => undefined)]);
   }
 
-  subscribe(onDesktop: (next: storage.DesktopSnapshot) => void, onStatus: (next: SyncStatus) => void, onActivity?: (syncing: boolean) => void) {
+  subscribe(onDesktop: (next: storage.DesktopSnapshot) => void, onStatus: (next: SyncStatus) => void, onSyncWork?: (syncing: boolean) => void) {
     this.desktopListeners.add(onDesktop);
     this.statusListeners.add(onStatus);
-    if (onActivity) this.syncActivityListeners.add(onActivity);
+    if (onSyncWork) this.syncWorkListeners.add(onSyncWork);
     onStatus(this.status);
-    onActivity?.(!this.frontendOnly && this.pendingWork > 0);
+    onSyncWork?.(!this.frontendOnly && this.pendingWork > 0);
     return () => {
       this.desktopListeners.delete(onDesktop);
       this.statusListeners.delete(onStatus);
-      if (onActivity) this.syncActivityListeners.delete(onActivity);
+      if (onSyncWork) this.syncWorkListeners.delete(onSyncWork);
     };
   }
 
@@ -258,7 +258,7 @@ export class SyncEngine {
     if (!this.frontendOnly) {
       this.pendingWork += 1;
       if (this.pendingWork === 1) {
-        for (const listener of this.syncActivityListeners) listener(true);
+        for (const listener of this.syncWorkListeners) listener(true);
       }
     }
     const next = this.work.then(operation, operation);
@@ -267,7 +267,7 @@ export class SyncEngine {
       if (!this.frontendOnly) {
         this.pendingWork -= 1;
         if (this.pendingWork === 0) {
-          for (const listener of this.syncActivityListeners) listener(false);
+          for (const listener of this.syncWorkListeners) listener(false);
         }
       }
     });
@@ -279,11 +279,11 @@ export class SyncEngine {
       response = await this.fetchImpl(input, init);
     } catch {
       this.setStatus("offline");
-      throw new SyncRequestError("The sync server is unavailable. The change remains queued.", null, false);
+      throw new SyncRequestError("The Hiraya server is unavailable. The change remains queued.", null, false);
     }
     if (!response.ok) {
       const body = await response.json().catch(() => null) as { error?: string } | null;
-      throw new SyncRequestError(body?.error || `The sync server rejected the request (${response.status}).`, response.status, response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429);
+      throw new SyncRequestError(body?.error || `The Hiraya server rejected the request (${response.status}).`, response.status, response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429);
     }
     return response.json();
   }
@@ -339,7 +339,7 @@ export class SyncEngine {
       body: form,
     });
     this.assertActive(generation);
-    if (!workspace.initialized) throw new Error("The sync server did not initialize the workspace.");
+    if (!workspace.initialized) throw new Error("The Hiraya server did not initialize the desktop.");
     for (const record of pending) await this.storage.acknowledgeMutation(record.operationId);
     return this.applyWorkspace(workspace, generation);
   }
@@ -914,11 +914,11 @@ export class SyncEngine {
       response = await this.fetchImpl(API_ROUTES.activity(parsed), { cache: "no-store" });
     } catch {
       this.setStatus("offline");
-      throw new Error("Activity history is unavailable while the sync server is offline.");
+      throw new Error("Activity is unavailable while the Hiraya server is offline.");
     }
     if (!response.ok) {
       const body = await response.json().catch(() => null) as { error?: string } | null;
-      throw new Error(body?.error || `Activity history could not be loaded (${response.status}).`);
+      throw new Error(body?.error || `Activity could not be loaded (${response.status}).`);
     }
     return parseActivityPage(await response.json());
   }

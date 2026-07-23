@@ -1,6 +1,6 @@
 # Hiraya
 
-Hiraya is an installable mock desktop built with React, TypeScript, Vite, and the Origin Private File System (OPFS). It runs as a standalone browser-local desktop or as the frontend for a synchronized Hiraya server.
+Hiraya is an installable mock desktop built with React, TypeScript, Vite, and the Origin Private File System (OPFS). It runs as a browser-only desktop or as a shared desktop synchronized by a Hiraya server.
 
 [Open Hiraya on GitHub Pages](https://nmcapule.github.io/hiraya/)
 
@@ -26,7 +26,7 @@ To work without a server, start a frontend-only desktop:
 HIRAYA_FRONTEND_ONLY=true bun run dev
 ```
 
-In frontend-only mode, each browser's OPFS desktop is authoritative and no API requests are made. OPFS is origin-scoped: changing the hostname or port creates a separate local desktop, and clearing site data removes it.
+In frontend-only mode, each browser's OPFS desktop is authoritative, items are saved only in that browser, and no API requests are made. OPFS is origin-scoped: changing the hostname or port creates a separate local desktop, and clearing site data removes it.
 
 ## Checks
 
@@ -40,7 +40,7 @@ bun run build
 
 The synchronized frontend uses root-relative `/api` routes so the application and server can be deployed on one origin. The private server repository pins this repository as its `frontend` submodule, builds `dist`, and serves it alongside the API.
 
-The HTTP workspace schema is version 5. Its TypeScript response validation lives in `src/lib/contracts.ts`, route construction lives in `src/lib/api-routes.ts`, and synchronization lives in `src/lib/sync.ts`. API changes must remain compatible with service-worker-controlled clients and durable offline operations created by older frontend versions.
+A desktop is the user-facing named collection. The HTTP workspace is its technical synchronized document; its schema is version 5. TypeScript response validation lives in `src/lib/contracts.ts`, route construction lives in `src/lib/api-routes.ts`, and synchronization lives in `src/lib/sync.ts`. API changes must remain compatible with service-worker-controlled clients and durable offline operations created by older frontend versions.
 
 ## Offline behavior
 
@@ -59,7 +59,7 @@ HIRAYA_SEEDED_DIR=examples/seeded bun run build
 
 `examples/seeded` demonstrates the current version 7 format. Versions 1 through 6 remain accepted and are normalized. The build rejects malformed manifests, missing or size-mismatched content, paths outside the configured directory, and symbolic links.
 
-Seeded content initializes only browser origins without a Hiraya SQLite database or legacy manifest. It never replaces an existing desktop. Open **Settings** and use **Export desktop** to create a compatible seeded package from saved content.
+Seeded content initializes only browser origins without a Hiraya SQLite database or legacy manifest. It never replaces an existing desktop. Open **Settings** and use **Export desktop package** to create a compatible seeded package from saved content.
 
 ## GitHub Pages
 

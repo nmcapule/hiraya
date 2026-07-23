@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { DesktopEntry } from "../src/types";
-import { desktopSlots, nextAvailableDesktopSlot, projectLogicalAxis, projectLogicalPosition, reorderDesktopPages, reorderSurfaceSegments, responsiveDesktop, restoreLogicalPosition } from "../src/ui/desktop-geometry";
+import { desktopSlots, nextAvailableDesktopSlot, projectLogicalAxis, projectLogicalPosition, reorderDesktopSegments, reorderSurfaceSegments, responsiveDesktop, restoreLogicalPosition } from "../src/ui/desktop-geometry";
 
 function file(id: string, x = 22, y = 22): DesktopEntry {
   return { kind: "file", id, name: `${id}.txt`, parentId: null, modifiedAt: 1, position: { x, y }, mimeType: "text/plain", size: 0 };
@@ -22,12 +22,12 @@ describe("responsive desktop geometry", () => {
     expect(desktopSlots({ width: 500, height: 500 })).toHaveLength(16);
     expect(desktopSlots({ width: 220, height: 260 })).toHaveLength(2);
     const entries = [file("one"), file("two"), file("three")];
-    expect(responsiveDesktop(entries, { width: 220, height: 260 }).pages).toHaveLength(1);
+    expect(responsiveDesktop(entries, { width: 220, height: 260 }).segments).toHaveLength(1);
   });
 
   test("preserves collisions in the same coordinate tile", () => {
     const desktop = responsiveDesktop([file("one", 160, 30), file("two", 160, 30)], { width: 500, height: 500 });
-    expect(desktop.pages).toHaveLength(1);
+    expect(desktop.segments).toHaveLength(1);
     expect(desktop.positions.get("one")).toEqual({ x: 160, y: 30 });
     expect(desktop.positions.get("two")).toEqual({ x: 160, y: 30 });
   });
@@ -44,7 +44,7 @@ describe("responsive desktop geometry", () => {
     const entries = [file("origin", 22, 22), file("next", 412, 22)];
     const large = { width: 110, height: 114, stepX: 116, stepY: 124 };
     expect(desktopSlots(size, false, large).length).toBeLessThan(desktopSlots(size).length);
-    expect(responsiveDesktop(entries, size, large).pages.map((page) => page.key)).toEqual(["0:0", "0:1"]);
+    expect(responsiveDesktop(entries, size, large).segments.map((segment) => segment.key)).toEqual(["0:0", "0:1"]);
     expect(entries.map((entry) => entry.position)).toEqual([{ x: 22, y: 22 }, { x: 412, y: 22 }]);
   });
 
@@ -66,7 +66,7 @@ describe("responsive desktop geometry", () => {
   test("retains sparse surface segments without dense reassignment", () => {
     const entries = [file("origin", 22, 22), file("left", -368, 22), file("far", 1192, 1222)];
     const desktop = responsiveDesktop(entries, { width: 390, height: 600 });
-    expect(desktop.pages.map((page) => page.segment)).toEqual([
+    expect(desktop.segments.map((segment) => segment.segment)).toEqual([
       { column: -1, row: 0 },
       { column: 0, row: 0 },
       { column: 3, row: 2 },
@@ -80,31 +80,31 @@ describe("responsive desktop geometry", () => {
     const entries = [file("b", 400, 20), file("a", 20, 20), file("c", 400, 20)];
     const first = responsiveDesktop(entries, { width: 390, height: 600 });
     const reordered = responsiveDesktop([...entries].reverse(), { width: 390, height: 600 });
-    expect(first.pages.map((page) => [page.key, page.entries.map((entry) => entry.id)])).toEqual(
-      reordered.pages.map((page) => [page.key, page.entries.map((entry) => entry.id)]),
+    expect(first.segments.map((segment) => [segment.key, segment.entries.map((entry) => entry.id)])).toEqual(
+      reordered.segments.map((segment) => [segment.key, segment.entries.map((entry) => entry.id)]),
     );
-    expect(first.pages.map((page) => page.entries.map((entry) => entry.id))).toEqual([["a"], ["b", "c"]]);
+    expect(first.segments.map((segment) => segment.entries.map((entry) => entry.id))).toEqual([["a"], ["b", "c"]]);
   });
 
   test("reprojects from unchanged coordinates when the viewport changes", () => {
     const entries = [file("near", 22, 22), file("far", 900, 22)];
-    expect(responsiveDesktop(entries, { width: 390, height: 600 }).pages).toHaveLength(2);
-    expect(responsiveDesktop(entries, { width: 1200, height: 700 }).pages).toHaveLength(1);
+    expect(responsiveDesktop(entries, { width: 390, height: 600 }).segments).toHaveLength(2);
+    expect(responsiveDesktop(entries, { width: 1200, height: 700 }).segments).toHaveLength(1);
     expect(entries[1].position).toEqual({ x: 900, y: 22 });
   });
 
   test("uses one implicit origin extent for an empty desktop", () => {
     const desktop = responsiveDesktop([], { width: 390, height: 600 });
-    expect(desktop.pages).toEqual([]);
+    expect(desktop.segments).toEqual([]);
     expect(desktop.columns).toBe(1);
     expect(desktop.rows).toBe(1);
   });
 
-  test("reorders workspace groups by translating coordinates", () => {
+  test("reorders desktop segments by translating coordinates", () => {
     const size = { width: 390, height: 600 };
     const entries = [file("one", 22, 22), file("two", 412, 40), file("three", 802, 60)];
-    const pages = responsiveDesktop(entries, size).pages;
-    const updates = reorderDesktopPages(pages, "0:0", 2, size);
+    const segments = responsiveDesktop(entries, size).segments;
+    const updates = reorderDesktopSegments(segments, "0:0", 2, size);
     expect(updates).toEqual([
       { entryId: "two", position: { x: 22, y: 40 } },
       { entryId: "three", position: { x: 412, y: 60 } },

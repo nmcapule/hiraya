@@ -17,7 +17,7 @@ export type AppWindowProps = {
   zIndex: number;
   focused: boolean;
   minimized: boolean;
-  workspaceActive: boolean;
+  segmentActive: boolean;
   mobile: boolean;
   onFocus: (id: string) => void;
   onBoundsChange: (id: string, bounds: WindowBounds) => void;
@@ -58,7 +58,7 @@ export function AppWindow({
   zIndex,
   focused,
   minimized,
-  workspaceActive,
+  segmentActive,
   mobile,
   onFocus,
   onBoundsChange,
@@ -163,13 +163,13 @@ export function AppWindow({
       data-app-window={id}
       data-focused={focused || undefined}
       data-minimized={minimized || undefined}
-      data-workspace-hidden={!workspaceActive || undefined}
+      data-segment-hidden={!segmentActive || undefined}
       data-mobile={mobile || undefined}
       role="dialog"
       aria-modal="false"
       aria-labelledby={titleId}
-      aria-hidden={minimized || !workspaceActive || mobile && !focused || undefined}
-      inert={!workspaceActive}
+      aria-hidden={minimized || !segmentActive || mobile && !focused || undefined}
+      inert={!segmentActive}
       style={style}
       onPointerDown={() => { if (!focused) onFocus(id); }}
     >

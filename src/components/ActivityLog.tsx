@@ -12,7 +12,7 @@ function formatAction(action: string) {
 }
 
 function formatSource(source: string) {
-  if (source === "api") return "Shared workspace";
+  if (source === "api") return "Shared desktop";
   if (source === "filesystem") return "Files directory";
   if (source === "frontend") return "This browser";
   return source;
@@ -44,7 +44,7 @@ export function ActivityLog({ onListActivity, onSubscribe }: Props) {
       if (request !== requestRef.current) return;
       setActivities([]);
       setNextBefore(null);
-      setError(reason instanceof Error ? reason.message : "Activity history could not be loaded.");
+      setError(reason instanceof Error ? reason.message : "Activity could not be loaded.");
     }).finally(() => {
       if (request === requestRef.current) setLoading(false);
     });
@@ -71,21 +71,21 @@ export function ActivityLog({ onListActivity, onSubscribe }: Props) {
     <div className="activity-log">
       <label className="activity-search">
         <MagnifyingGlass size={16} aria-hidden="true" />
-        <span className="sr-only">Search logs</span>
+        <span className="sr-only">Search activity</span>
         <input type="search" value={search} maxLength={200} placeholder="Search changes, names, or values" onChange={(event) => setSearch(event.target.value)} />
-        {search && <button type="button" aria-label="Clear log search" onClick={() => setSearch("")}><X size={14} /></button>}
+        {search && <button type="button" aria-label="Clear activity search" onClick={() => setSearch("")}><X size={14} /></button>}
       </label>
 
       {loading ? (
-        <div className="activity-state" role="status"><SpinnerGap size={19} className="activity-spinner" /> Loading logs</div>
+        <div className="activity-state" role="status"><SpinnerGap size={19} className="activity-spinner" /> Loading activity...</div>
       ) : error && activities.length === 0 ? (
         <div className="activity-state activity-state--error" role="alert">{error}</div>
       ) : activities.length === 0 ? (
-        <div className="activity-state" role="status">{deferredSearch ? "No logs match this search." : "No workspace changes have been recorded yet."}</div>
+        <div className="activity-state" role="status">{deferredSearch ? "No activity matches this search." : "No desktop activity has been recorded yet."}</div>
       ) : (
         <>
-          <span className="sr-only" role="status">{activities.length} {activities.length === 1 ? "log" : "logs"} shown{deferredSearch ? " for this search" : ""}.</span>
-          <ol className="activity-list" aria-label="Workspace mutation logs">
+          <span className="sr-only" role="status">{activities.length} activity {activities.length === 1 ? "record" : "records"} shown{deferredSearch ? " for this search" : ""}.</span>
+          <ol className="activity-list" aria-label="Desktop activity">
             {activities.map((activity) => (
               <li className="activity-item" key={activity.revision}>
                 <div className="activity-item__rail" aria-hidden="true"><span /></div>

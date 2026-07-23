@@ -27,7 +27,7 @@ export function ContextMenu({ menu, entry, onOpen, onEditFile, onRename, onDownl
         <FolderOpen size={17} /> Open
       </button>}
       {selectionCount === 1 && entry.kind === "file" && onEditFile && <button type="button" role="menuitem" disabled={readOnly} onClick={onEditFile}>
-        <PencilSimple size={17} /> Edit File
+        <PencilSimple size={17} /> Edit file
       </button>}
       {selectionCount === 1 && <button type="button" role="menuitem" disabled={readOnly} onClick={onRename}>
         <PencilSimple size={17} /> Rename

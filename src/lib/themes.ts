@@ -213,12 +213,12 @@ export function parseCustomTheme(value: unknown): CustomTheme {
 export function parseThemeState(value: unknown): ThemeState {
   const candidate = record(value);
   if (typeof candidate.selectedThemeId !== "string" || !Array.isArray(candidate.customThemes) || candidate.customThemes.length > MAX_CUSTOM_THEMES) {
-    throw new Error("The workspace themes have an unsupported format.");
+    throw new Error("The desktop themes have an unsupported format.");
   }
   const customThemes = candidate.customThemes.map(parseCustomTheme);
   const ids = new Set<string>();
   for (const theme of customThemes) {
-    if (ids.has(theme.id)) throw new Error("The workspace contains duplicate custom theme IDs.");
+    if (ids.has(theme.id)) throw new Error("The desktop contains duplicate custom theme IDs.");
     ids.add(theme.id);
   }
   if (!isBuiltinThemeId(candidate.selectedThemeId) && !ids.has(candidate.selectedThemeId)) {

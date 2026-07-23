@@ -10,7 +10,7 @@ const MINIMAP_RESERVED_SIZE = { width: 138, height: 111 } as const;
 
 export type SurfaceSegment = { column: number; row: number };
 
-export type DesktopPage = {
+export type DesktopSegment = {
   entries: DesktopEntry[];
   key: string;
   segment: SurfaceSegment;
@@ -24,7 +24,7 @@ export type ResponsiveDesktop = {
   minRow: number;
   maxColumn: number;
   maxRow: number;
-  pages: DesktopPage[];
+  segments: DesktopSegment[];
   positions: ReadonlyMap<string, EntryPosition>;
 };
 
@@ -101,22 +101,22 @@ export function restoreLogicalPosition(position: EntryPosition, segment: Surface
 }
 
 export function responsiveDesktop(entries: readonly DesktopEntry[], size: { width: number; height: number }, metrics = DEFAULT_ICON_METRICS): ResponsiveDesktop {
-  const buckets = new Map<string, DesktopPage>();
+  const buckets = new Map<string, DesktopSegment>();
   const positions = new Map<string, EntryPosition>();
   for (const entry of entries) {
     if (entry.parentId !== null) continue;
     const projection = projectLogicalPosition(entry.position, size);
     const key = segmentKey(projection.segment);
-    const page = buckets.get(key) ?? { entries: [], key, segment: projection.segment };
-    page.entries.push(entry);
-    buckets.set(key, page);
+    const segment = buckets.get(key) ?? { entries: [], key, segment: projection.segment };
+    segment.entries.push(entry);
+    buckets.set(key, segment);
     positions.set(entry.id, projection.local);
   }
-  const pages = [...buckets.values()]
-    .map((page) => ({ ...page, entries: [...page.entries].sort((a, b) => a.id.localeCompare(b.id)) }))
+  const segments = [...buckets.values()]
+    .map((segment) => ({ ...segment, entries: [...segment.entries].sort((a, b) => a.id.localeCompare(b.id)) }))
     .sort((a, b) => a.segment.row - b.segment.row || a.segment.column - b.segment.column);
-  const columns = pages.map((page) => page.segment.column);
-  const rows = pages.map((page) => page.segment.row);
+  const columns = segments.map((segment) => segment.segment.column);
+  const rows = segments.map((segment) => segment.segment.row);
   const minColumn = Math.min(0, ...columns);
   const maxColumn = Math.max(0, ...columns);
   const minRow = Math.min(0, ...rows);
@@ -129,26 +129,26 @@ export function responsiveDesktop(entries: readonly DesktopEntry[], size: { widt
     minRow,
     maxColumn,
     maxRow,
-    pages,
+    segments,
     positions,
   };
 }
 
-export function reorderDesktopPages(
-  pages: readonly DesktopPage[],
+export function reorderDesktopSegments(
+  segments: readonly DesktopSegment[],
   sourceKey: string,
   targetIndex: number,
   size: { width: number; height: number },
 ): DesktopPositionUpdate[] {
-  const sourceIndex = pages.findIndex((page) => page.key === sourceKey);
-  const boundedTarget = Math.max(0, Math.min(pages.length - 1, targetIndex));
+  const sourceIndex = segments.findIndex((segment) => segment.key === sourceKey);
+  const boundedTarget = Math.max(0, Math.min(segments.length - 1, targetIndex));
   if (sourceIndex < 0 || sourceIndex === boundedTarget) return [];
-  const groups = pages.map((page) => page.entries);
+  const groups = segments.map((segment) => segment.entries);
   const [moved] = groups.splice(sourceIndex, 1);
   groups.splice(boundedTarget, 0, moved);
   return groups.flatMap((entries, index) => entries.map((entry) => {
     const local = projectLogicalPosition(entry.position, size).local;
-    return { entryId: entry.id, position: restoreLogicalPosition(local, pages[index].segment, size) };
+    return { entryId: entry.id, position: restoreLogicalPosition(local, segments[index].segment, size) };
   }));
 }
 

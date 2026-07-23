@@ -667,7 +667,7 @@ async function dispatch<M extends StorageDbMethod>(method: M, params: StorageDbR
       db.transaction("IMMEDIATE", () => {
         if (!projectedDesktopId) throw new Error("No desktop is active for this request.");
         const desktopId = projectedDesktopId;
-        const error = "Pending changes belong to a different server workspace.";
+        const error = "Pending changes belong to a different shared desktop.";
         db.exec({
           sql: "UPDATE outbox SET status='blocked', error=? WHERE desktop_id=? AND workspace_id IS NOT NULL AND workspace_id<>?",
           bind: [error, desktopId, workspaceId],
@@ -685,7 +685,7 @@ async function dispatch<M extends StorageDbMethod>(method: M, params: StorageDbR
         for (const record of readOutbox(db, projectedDesktopId ?? undefined)) {
           if (record.operationId === input.acknowledgedOperationId) continue;
           if (record.workspaceId !== null && record.workspaceId !== remote.sync.workspaceId) {
-            const error = "Pending changes belong to a different server workspace.";
+            const error = "Pending changes belong to a different shared desktop.";
             db.exec({ sql: "UPDATE outbox SET status='blocked', error=? WHERE operation_id=?", bind: [error, record.operationId] });
             blocked.push({ ...record, status: "blocked", error });
             continue;

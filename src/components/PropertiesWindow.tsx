@@ -3,6 +3,7 @@ import type { DesktopEntry, FolderEntry } from "../types";
 
 type Props = {
   entry: DesktopEntry;
+  rootLabel: string;
   ancestors: FolderEntry[];
   descendants: DesktopEntry[];
 };
@@ -26,11 +27,11 @@ function formatSize(bytes: number) {
   return `${new Intl.NumberFormat(undefined, { maximumFractionDigits: value < 10 ? 2 : 1 }).format(value)} ${units[unit]} (${numberFormatter.format(bytes)} bytes)`;
 }
 
-export function PropertiesWindow({ entry, ancestors, descendants }: Props) {
+export function PropertiesWindow({ entry, rootLabel, ancestors, descendants }: Props) {
   const files = entry.kind === "folder" ? descendants.filter((item) => item.kind === "file") : [];
   const folders = entry.kind === "folder" ? descendants.filter((item) => item.kind === "folder") : [];
   const size = entry.kind === "file" ? entry.size : files.reduce((total, file) => total + file.size, 0);
-  const location = ancestors.length ? `Desktop / ${ancestors.map((ancestor) => ancestor.name).join(" / ")}` : "Desktop";
+  const location = ancestors.length ? `${rootLabel} / ${ancestors.map((ancestor) => ancestor.name).join(" / ")}` : rootLabel;
 
   return (
     <div className="properties-window">
@@ -45,7 +46,7 @@ export function PropertiesWindow({ entry, ancestors, descendants }: Props) {
         {entry.kind === "folder" && <div><dt>Contains</dt><dd>{numberFormatter.format(files.length)} {files.length === 1 ? "file" : "files"}, {numberFormatter.format(folders.length)} {folders.length === 1 ? "folder" : "folders"}</dd></div>}
         <div><dt>Created</dt><dd><time dateTime={entry.createdAt === null ? undefined : new Date(entry.createdAt).toISOString()}>{formatDate(entry.createdAt)}</time></dd></div>
         <div><dt>Modified</dt><dd><time dateTime={new Date(entry.modifiedAt).toISOString()}>{formatDate(entry.modifiedAt)}</time></dd></div>
-        <div><dt>Identifier</dt><dd className="properties-window__id">{entry.id}</dd></div>
+        <div><dt>ID</dt><dd className="properties-window__id">{entry.id}</dd></div>
       </dl>
     </div>
   );

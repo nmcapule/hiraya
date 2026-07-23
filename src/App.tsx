@@ -21,7 +21,7 @@ import {
   captureEntries,
   deleteEntries,
   deleteDesktop as deleteDesktopMutation,
-  fetchBackendBuildTimestamp,
+  fetchServerBuildTimestamp,
   getOutboxStatus,
   importFiles,
   initializeDesktop,
@@ -57,7 +57,7 @@ import { DEFAULT_WALLPAPER, type ContextMenuState, type DesktopEntry, type Deskt
 import { GRID_ORIGIN, nextAvailableDesktopSlot, nextDesktopPosition, projectLogicalPosition, reorderSurfaceSegments, responsiveDesktop, restoreLogicalPosition, segmentKey, snapAxis, type SurfaceSegment } from "./ui/desktop-geometry";
 import { fileCapabilities } from "./ui/file-capabilities";
 import { topOverlay } from "./ui/overlay";
-import { createWorkspaceIndex } from "./ui/workspace-index";
+import { createEntryIndex } from "./ui/entry-index";
 import { clampWindowBounds, initialWindowBounds, type WindowBounds } from "./ui/window-manager";
 import { namesMatch } from "./lib/entry-validation";
 import { parseWindowTargets, restoreWindowSession, windowTargetId, type WindowSession, type WindowSessionApp, type WindowTarget } from "./lib/window-session";
@@ -118,11 +118,11 @@ function App() {
   const [exporting, setExporting] = useState(false);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("connecting");
   const [isSyncing, setIsSyncing] = useState(false);
-  const [editingViews, setEditingViews] = useState(false);
-  const [draggedPageKey, setDraggedPageKey] = useState<string | null>(null);
+  const [editingAreas, setEditingAreas] = useState(false);
+  const [draggedSegmentKey, setDraggedSegmentKey] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(() => Boolean(document.fullscreenElement));
   const [isMobile, setIsMobile] = useState(() => window.matchMedia("(max-width: 620px)").matches);
-  const [settingsPage, setSettingsPage] = useState<"main" | "themes" | "logs">("main");
+  const [settingsPage, setSettingsPage] = useState<"main" | "themes" | "activity">("main");
   const [autoUpdate, setAutoUpdate] = useState(true);
   const [externalEmbeddedPreviews, setExternalEmbeddedPreviews] = useState<boolean | null>(null);
   const [updateSupported, setUpdateSupported] = useState(false);
@@ -131,7 +131,7 @@ function App() {
   const [showUpdateToast, setShowUpdateToast] = useState(false);
   const [updateBlocked, setUpdateBlocked] = useState(false);
   const [updateApplying, setUpdateApplying] = useState(false);
-  const [backendBuildTimestamp, setBackendBuildTimestamp] = useState<string | null>(null);
+  const [serverBuildTimestamp, setServerBuildTimestamp] = useState<string | null>(null);
   const [pendingPaste, setPendingPaste] = useState<PendingPaste | null>(null);
   const [marquee, setMarquee] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
   const desktopRef = useRef<HTMLElement>(null);
@@ -147,7 +147,7 @@ function App() {
     startX: number;
     startY: number;
     timer: number;
-    pageKey: string;
+    segmentKey: string;
     initialPositions: Array<{ entryId: string; position: EntryPosition }>;
     initialAppBounds: Array<{ appId: string; bounds: WindowBounds }>;
   } | null>(null);
@@ -220,50 +220,51 @@ function App() {
   const routeSettings = route?.settings;
   const canMutate = syncStatus !== "connecting";
   const syncIndicatorStatus = syncStatus === "online" && isSyncing ? "syncing" : syncStatus;
-  const workspace = useMemo(() => createWorkspaceIndex(entries), [entries]);
+  const activeDesktopName = desktops.find((desktop) => desktop.id === activeDesktopId)?.name ?? "Desktop";
+  const entryIndex = useMemo(() => createEntryIndex(entries), [entries]);
   const activeTheme = useMemo(() => themePreview ?? resolveTheme(appearance), [appearance, themePreview]);
   const iconMetrics = useMemo(() => themeIconMetrics(activeTheme), [activeTheme]);
-  const rootEntries = workspace.roots;
+  const rootEntries = entryIndex.roots;
   const responsive = useMemo(() => responsiveDesktop(entries, desktopSize, iconMetrics), [desktopSize, entries, iconMetrics]);
-  const activePageKey = segmentKey(activeSegment);
-  const actualActivePage = responsive.pages.find((candidate) => candidate.key === activePageKey);
-  const occupiedPages = useMemo(() => {
-    const byKey = new Map(responsive.pages.map((page) => [page.key, page]));
+  const activeSegmentKey = segmentKey(activeSegment);
+  const actualActiveSegment = responsive.segments.find((candidate) => candidate.key === activeSegmentKey);
+  const occupiedSegments = useMemo(() => {
+    const byKey = new Map(responsive.segments.map((segment) => [segment.key, segment]));
     for (const app of runningApps) {
       const segment = projectLogicalPosition(app.bounds, desktopSize).segment;
       const key = segmentKey(segment);
       if (!byKey.has(key)) byKey.set(key, { entries: [], key, segment });
     }
     return [...byKey.values()].sort((a, b) => a.segment.row - b.segment.row || a.segment.column - b.segment.column);
-  }, [desktopSize, responsive.pages, runningApps]);
-  const pages = occupiedPages.some((candidate) => candidate.key === activePageKey)
-    ? occupiedPages
-    : [...occupiedPages, { entries: [], key: activePageKey, segment: activeSegment }]
+  }, [desktopSize, responsive.segments, runningApps]);
+  const visibleSegments = occupiedSegments.some((candidate) => candidate.key === activeSegmentKey)
+    ? occupiedSegments
+    : [...occupiedSegments, { entries: [], key: activeSegmentKey, segment: activeSegment }]
       .sort((a, b) => a.segment.row - b.segment.row || a.segment.column - b.segment.column);
-  const occupiedColumns = occupiedPages.map((candidate) => candidate.segment.column);
-  const occupiedRows = occupiedPages.map((candidate) => candidate.segment.row);
+  const occupiedColumns = occupiedSegments.map((candidate) => candidate.segment.column);
+  const occupiedRows = occupiedSegments.map((candidate) => candidate.segment.row);
   const minColumn = Math.min(0, activeSegment.column, ...occupiedColumns);
   const minRow = Math.min(0, activeSegment.row, ...occupiedRows);
   const maxColumn = Math.max(0, activeSegment.column, ...occupiedColumns);
   const maxRow = Math.max(0, activeSegment.row, ...occupiedRows);
-  const pageColumns = maxColumn - minColumn + 1;
-  const pageRows = maxRow - minRow + 1;
-  const page = { column: activeSegment.column - minColumn, row: activeSegment.row - minRow };
-  const activeDesktopPage = actualActivePage ?? { entries: [], key: activePageKey, segment: activeSegment };
-  const minimapWidth = Math.min(112, Math.max(42, pageColumns * 24)) + 26;
-  const minimapHeight = Math.min(84, Math.max(30, pageRows * 20)) + 27;
-  const minimapObscured = !editingViews && activeDesktopPage.entries.some((entry) => {
+  const segmentColumns = maxColumn - minColumn + 1;
+  const segmentRows = maxRow - minRow + 1;
+  const canvasOffset = { column: activeSegment.column - minColumn, row: activeSegment.row - minRow };
+  const activeDesktopSegment = actualActiveSegment ?? { entries: [], key: activeSegmentKey, segment: activeSegment };
+  const minimapWidth = Math.min(112, Math.max(42, segmentColumns * 24)) + 26;
+  const minimapHeight = Math.min(84, Math.max(30, segmentRows * 20)) + 27;
+  const minimapObscured = !editingAreas && activeDesktopSegment.entries.some((entry) => {
     const position = responsive.positions.get(entry.id) ?? entry.position;
     return position.x + iconMetrics.width > desktopSize.width - minimapWidth
       && position.y + iconMetrics.height > desktopSize.height - minimapHeight;
   });
   const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   selectedIdsRef.current = selectedIds;
-  const selectedEntries = selectedIds.map((id) => workspace.byId.get(id)).filter((entry): entry is DesktopEntry => Boolean(entry));
-  const dialogEntry = dialog?.type === "rename" ? workspace.byId.get(dialog.entryId) ?? null : dialog?.type === "delete" ? workspace.byId.get(dialog.entryIds[0]) ?? null : null;
-  const contextMenuEntry = contextMenu?.type === "entry" ? workspace.byId.get(contextMenu.entryId) ?? null : null;
+  const selectedEntries = selectedIds.map((id) => entryIndex.byId.get(id)).filter((entry): entry is DesktopEntry => Boolean(entry));
+  const dialogEntry = dialog?.type === "rename" ? entryIndex.byId.get(dialog.entryId) ?? null : dialog?.type === "delete" ? entryIndex.byId.get(dialog.entryIds[0]) ?? null : null;
+  const contextMenuEntry = contextMenu?.type === "entry" ? entryIndex.byId.get(contextMenu.entryId) ?? null : null;
   const contextMenuEntries = contextMenuEntry && selectedIdSet.has(contextMenuEntry.id) ? selectedEntries : contextMenuEntry ? [contextMenuEntry] : [];
-  const moveDialogEntries = moveDialogEntryIds.map((id) => workspace.byId.get(id)).filter((entry): entry is DesktopEntry => Boolean(entry));
+  const moveDialogEntries = moveDialogEntryIds.map((id) => entryIndex.byId.get(id)).filter((entry): entry is DesktopEntry => Boolean(entry));
   function setCurrentRoute(next: DesktopRoute) {
     routeRef.current = next;
     setRoute(next);
@@ -576,10 +577,10 @@ function App() {
   openRouteAppsRef.current = (next) => {
     if (next.explorerFolderId !== undefined) openExplorerWindow(next.explorerFolderId, false, !next.fileId && !next.propertiesEntryId && !next.settings);
     if (next.fileId) {
-      const entry = workspace.byId.get(next.fileId);
+      const entry = entryIndex.byId.get(next.fileId);
       if (entry?.kind === "file") openFileWindow(entry, false, !next.propertiesEntryId && !next.settings);
     }
-    if (next.propertiesEntryId && workspace.byId.has(next.propertiesEntryId)) openPropertiesWindow(next.propertiesEntryId, false);
+    if (next.propertiesEntryId && entryIndex.byId.has(next.propertiesEntryId)) openPropertiesWindow(next.propertiesEntryId, false);
     if (next.settings) openSettingsWindow(false);
     if (next.explorerFolderId === undefined && !next.fileId && !next.propertiesEntryId && !next.settings) setFocusedApp(null);
   };
@@ -721,13 +722,13 @@ function App() {
   }, [activeDesktopId, desktops, moveDialogEntryIds.length]);
 
   useEffect(() => {
-    if (syncStatus !== "online" || backendBuildTimestamp) return;
+    if (syncStatus !== "online" || serverBuildTimestamp) return;
     let active = true;
-    void fetchBackendBuildTimestamp()
-      .then((timestamp) => { if (active) setBackendBuildTimestamp(timestamp); })
+    void fetchServerBuildTimestamp()
+      .then((timestamp) => { if (active) setServerBuildTimestamp(timestamp); })
       .catch(() => undefined);
     return () => { active = false; };
-  }, [backendBuildTimestamp, syncStatus]);
+  }, [serverBuildTimestamp, syncStatus]);
 
   useEffect(() => {
     if (windowSessionReadyRef.current) {
@@ -770,14 +771,14 @@ function App() {
         setUpdateReady(true);
         if (manualUpdateCheckRef.current || updatePreferenceLoadedRef.current && autoUpdateRef.current) setShowUpdateToast(true);
       },
-      onError: () => { if (active) setError("Hiraya could not check for frontend updates."); },
+      onError: () => { if (active) setError("Hiraya could not check for app updates."); },
     });
     updaterRef.current = updater;
     setUpdateSupported(updater.supported);
 
     const checkAutomatically = () => {
       if (!active || !autoUpdateRef.current || !updater.supported) return;
-      void updater.check().catch(() => { if (active) setError("Hiraya could not check for frontend updates."); });
+      void updater.check().catch(() => { if (active) setError("Hiraya could not check for app updates."); });
     };
     const checkWhenVisible = () => { if (document.visibilityState === "visible") checkAutomatically(); };
     window.addEventListener("online", checkAutomatically);
@@ -820,8 +821,8 @@ function App() {
       setDialog(null);
       setContextMenu(null);
       setMoveDialogEntryIds([]);
-      setEditingViews(false);
-      setDraggedPageKey(null);
+      setEditingAreas(false);
+      setDraggedSegmentKey(null);
       const requestedRoute = parseDesktopRoute(window.location.hash);
       const requestedDesktopId = requestedRoute?.desktopId;
       if (requestedDesktopId && requestedDesktopId !== activeDesktopIdRef.current && desktopsRef.current.some((desktop) => desktop.id === requestedDesktopId)) {
@@ -895,7 +896,7 @@ function App() {
     const reconciledApps = currentApps.flatMap((app): RunningApp[] => {
       if (app.kind === "settings" || app.kind === "explorer" && app.folderId === null) return [app];
       const entryId = app.kind === "file" ? app.fileId : app.kind === "properties" ? app.entryId : app.folderId;
-      const entry = entryId ? workspace.byId.get(entryId) : null;
+      const entry = entryId ? entryIndex.byId.get(entryId) : null;
       if (!entry || app.kind === "file" && entry.kind !== "file" || app.kind === "explorer" && entry.kind !== "folder") return [];
       if (app.kind === "properties") return [app];
       if (app.kind === "explorer") return [app];
@@ -914,7 +915,7 @@ function App() {
 
     for (const app of currentApps) {
       if (app.kind !== "file" || fileDirtyRef.current[app.id]) continue;
-      const entry = workspace.byId.get(app.fileId);
+      const entry = entryIndex.byId.get(app.fileId);
       const expectedRevision = contentRevisionsRef.current[app.fileId] ?? 0;
       if (entry?.kind !== "file" || app.contentRevision === expectedRevision) continue;
       const generation = (fileLoadGenerationsRef.current[app.id] ?? 0) + 1;
@@ -931,7 +932,7 @@ function App() {
         } : candidate));
       }).catch(() => setError("An open file changed on the server but could not be refreshed."));
     }
-  }, [loading, workspace]);
+  }, [entryIndex, loading]);
 
   useEffect(() => {
     if (loading || !windowSessionRestored) return;
@@ -947,18 +948,18 @@ function App() {
 
   useEffect(() => {
     applyLocationRouteRef.current();
-  }, [responsive.pages.length]);
+  }, [responsive.segments.length]);
 
   useEffect(() => {
     function onPointerDown(event: PointerEvent) {
-      if (editingViews && !(event.target as Element).closest?.(".desktop-minimap")) {
-        setEditingViews(false);
-        setDraggedPageKey(null);
+      if (editingAreas && !(event.target as Element).closest?.(".desktop-minimap")) {
+        setEditingAreas(false);
+        setDraggedSegmentKey(null);
       }
     }
     window.addEventListener("pointerdown", onPointerDown);
     return () => window.removeEventListener("pointerdown", onPointerDown);
-  }, [editingViews]);
+  }, [editingAreas]);
 
   useEffect(() => () => {
     if (desktopPressRef.current) window.clearTimeout(desktopPressRef.current.timer);
@@ -1000,7 +1001,7 @@ function App() {
       if (modifier && key === "a") {
         const explorer = activeExplorer();
         const surface = explorer?.id ?? "desktop";
-        const ids = explorer ? workspace.children.get(explorer.folderId)?.map((entry) => entry.id) ?? [] : activeDesktopPage.entries.map((entry) => entry.id);
+        const ids = explorer ? entryIndex.children.get(explorer.folderId)?.map((entry) => entry.id) ?? [] : activeDesktopSegment.entries.map((entry) => entry.id);
         event.preventDefault();
         replaceSelection(surface, ids);
       } else if (modifier && key === "c" && selectedIdsRef.current.length) {
@@ -1028,7 +1029,7 @@ function App() {
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("paste", onPaste);
     return () => { window.removeEventListener("keydown", onKeyDown); window.removeEventListener("paste", onPaste); };
-  }, [activeDesktopPage.entries, canMutate, dialog, moveDialogEntryIds.length, pendingPaste, selectionSurface, workspace]);
+  }, [activeDesktopSegment.entries, canMutate, dialog, entryIndex, moveDialogEntryIds.length, pendingPaste, selectionSurface]);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -1040,7 +1041,7 @@ function App() {
         contextMenu: Boolean(contextMenu),
         file: false,
         explorer: false,
-        viewEditor: editingViews,
+        viewEditor: editingAreas,
       });
       if (!owner && !focusedAppIdRef.current) return;
        if (owner === "moveDialog" && moveDialogSubmitting) return;
@@ -1048,12 +1049,12 @@ function App() {
       if (owner === "dialog") setDialog(null);
        else if (owner === "moveDialog") setMoveDialogEntryIds([]);
       else if (owner === "contextMenu") setContextMenu(null);
-      else if (owner === "viewEditor") { setEditingViews(false); setDraggedPageKey(null); }
+      else if (owner === "viewEditor") { setEditingAreas(false); setDraggedSegmentKey(null); }
       else if (focusedAppIdRef.current) closeAppRef.current(focusedAppIdRef.current);
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [contextMenu, dialog, editingViews, moveDialogEntries.length, moveDialogSubmitting]);
+  }, [contextMenu, dialog, editingAreas, moveDialogEntries.length, moveDialogSubmitting]);
 
   useEffect(() => {
     if (!notice) return;
@@ -1062,14 +1063,14 @@ function App() {
   }, [notice]);
 
   function childrenCount(parentId: string | null) {
-    return parentId !== null ? workspace.children.get(parentId)?.length ?? 0 : activeDesktopPage.entries.length;
+    return parentId !== null ? entryIndex.children.get(parentId)?.length ?? 0 : activeDesktopSegment.entries.length;
   }
 
   function positionFor(parentId: string | null) {
     if (parentId === null) {
-      const pageCount = childrenCount(null);
-      const occupied = activeDesktopPage.entries.map((entry) => responsive.positions.get(entry.id) ?? projectLogicalPosition(entry.position, desktopSize).local);
-      const localPosition = nextAvailableDesktopSlot(desktopSize, occupied, responsive.pages.length > 1, pageCount, iconMetrics);
+      const segmentEntryCount = childrenCount(null);
+      const occupied = activeDesktopSegment.entries.map((entry) => responsive.positions.get(entry.id) ?? projectLogicalPosition(entry.position, desktopSize).local);
+      const localPosition = nextAvailableDesktopSlot(desktopSize, occupied, responsive.segments.length > 1, segmentEntryCount, iconMetrics);
       return restoreLogicalPosition(localPosition, activeSegment, desktopSize);
     }
     const position = nextDesktopPosition(childrenCount(parentId), window.innerHeight, undefined, iconMetrics);
@@ -1125,7 +1126,7 @@ function App() {
     if (!persist) return;
     layoutSaveRef.current = layoutSaveRef.current
       .then(() => saveDesktopLayout(next))
-      .catch(() => { setError("The desktop view layout could not be saved."); });
+      .catch(() => { setError("The desktop area layout could not be saved."); });
   }
 
   function applyEditorSettings(next: EditorSettings) {
@@ -1186,7 +1187,7 @@ function App() {
       const result = await updater.check();
       if (result === "current") setNotice("Hiraya is already up to date.");
     } catch {
-      setError("Hiraya could not check for frontend updates.");
+      setError("Hiraya could not check for app updates.");
     } finally {
       manualUpdateCheckRef.current = false;
       setUpdateChecking(false);
@@ -1201,7 +1202,7 @@ function App() {
     setAutoUpdate(enabled);
     try {
       await saveLocalPreferences(next);
-      if (enabled) void updaterRef.current?.check().catch(() => setError("Hiraya could not check for frontend updates."));
+      if (enabled) void updaterRef.current?.check().catch(() => setError("Hiraya could not check for app updates."));
     } catch {
       autoUpdateRef.current = previous.autoUpdate;
       localPreferencesRef.current = previous;
@@ -1321,7 +1322,7 @@ function App() {
       await updater.activate();
     } catch {
       setUpdateApplying(false);
-      setError("The frontend update could not be applied.");
+      setError("The app update could not be applied.");
     }
   }
 
@@ -1363,13 +1364,13 @@ function App() {
     try {
       const offset = childrenCount(parentId);
       const occupied = parentId === null
-        ? activeDesktopPage.entries.map((entry) => responsive.positions.get(entry.id) ?? projectLogicalPosition(entry.position, desktopSize).local)
+        ? activeDesktopSegment.entries.map((entry) => responsive.positions.get(entry.id) ?? projectLogicalPosition(entry.position, desktopSize).local)
         : [];
       const positions = sources.map((_, index) => {
         if (parentId !== null) return nextDesktopPosition(offset + index, window.innerHeight, base, iconMetrics);
         const localPosition = base && index === 0
           ? layoutRef.current.snapToGrid ? snapPositionInView(base) : base
-          : nextAvailableDesktopSlot(desktopSize, occupied, responsive.pages.length > 1, offset + index, iconMetrics);
+          : nextAvailableDesktopSlot(desktopSize, occupied, responsive.segments.length > 1, offset + index, iconMetrics);
         occupied.push(localPosition);
         return restoreLogicalPosition(localPosition, activeSegment, desktopSize);
       });
@@ -1681,7 +1682,7 @@ function App() {
       anchor.download = "hiraya-seeded.zip";
       anchor.click();
       window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-      setNotice("Saved desktop exported");
+      setNotice("Desktop package exported");
     } catch (exportError) {
       setError(exportError instanceof Error ? exportError.message : "The desktop could not be exported.");
     } finally {
@@ -1702,8 +1703,8 @@ function App() {
     const currentRoute = routeRef.current;
     if (!currentRoute) return;
     if (canvasRef.current) {
-      const nextMinColumn = Math.min(0, segment.column, ...occupiedPages.map((page) => page.segment.column));
-      const nextMinRow = Math.min(0, segment.row, ...occupiedPages.map((page) => page.segment.row));
+      const nextMinColumn = Math.min(0, segment.column, ...occupiedSegments.map((candidate) => candidate.segment.column));
+      const nextMinRow = Math.min(0, segment.row, ...occupiedSegments.map((candidate) => candidate.segment.row));
       canvasRef.current.style.transform = `translate3d(${-(segment.column - nextMinColumn) * desktopSize.width}px, ${-(segment.row - nextMinRow) * desktopSize.height}px, 0)`;
     }
     const nextApp = preferredApp && appIsInSegment(preferredApp, segment)
@@ -1783,15 +1784,15 @@ function App() {
     const targetMinRow = Math.min(responsive.minRow, targetSegment.row);
     const targetMaxColumn = Math.max(responsive.maxColumn, targetSegment.column);
     const targetMaxRow = Math.max(responsive.maxRow, targetSegment.row);
-    const previousViewColumn = previousSegment.column - minColumn;
-    const previousViewRow = previousSegment.row - minRow;
-    const targetViewColumn = targetSegment.column - targetMinColumn;
-    const targetViewRow = targetSegment.row - targetMinRow;
+    const previousCanvasColumn = previousSegment.column - minColumn;
+    const previousCanvasRow = previousSegment.row - minRow;
+    const targetCanvasColumn = targetSegment.column - targetMinColumn;
+    const targetCanvasRow = targetSegment.row - targetMinRow;
     edgeDragRef.current = { direction: edge.direction, time: now };
     goToSegment(targetSegment, "replace");
     return {
-      deltaX: (targetViewColumn - previousViewColumn) * desktopSize.width,
-      deltaY: (targetViewRow - previousViewRow) * desktopSize.height,
+      deltaX: (targetCanvasColumn - previousCanvasColumn) * desktopSize.width,
+      deltaY: (targetCanvasRow - previousCanvasRow) * desktopSize.height,
       maxX: Math.max(8, (targetMaxColumn - targetMinColumn + 1) * desktopSize.width - iconMetrics.width),
       maxY: Math.max(8, (targetMaxRow - targetMinRow + 1) * desktopSize.height - iconMetrics.height),
     };
@@ -1941,17 +1942,17 @@ function App() {
     goToSegment(nextSegment);
   }
 
-  function previewPageMove(pageKey: string, targetIndex: number) {
-    const byKey = new Map(responsiveDesktop(entriesRef.current, desktopSize, iconMetrics).pages.map((page) => [page.key, page.segment]));
+  function previewSegmentMove(sourceSegmentKey: string, targetIndex: number) {
+    const byKey = new Map(responsiveDesktop(entriesRef.current, desktopSize, iconMetrics).segments.map((candidate) => [candidate.key, candidate.segment]));
     for (const app of runningAppsRef.current) {
       const segment = segmentForApp(app);
       byKey.set(segmentKey(segment), segment);
     }
     const segments = [...byKey.values()].sort((a, b) => a.row - b.row || a.column - b.column);
-    const moves = reorderSurfaceSegments(segments, pageKey, targetIndex);
+    const moves = reorderSurfaceSegments(segments, sourceSegmentKey, targetIndex);
     if (!moves.length) return null;
     const targets = new Map(moves.map((move) => [segmentKey(move.source), move.target]));
-    const targetSegment = targets.get(pageKey);
+    const targetSegment = targets.get(sourceSegmentKey);
     const next = entriesRef.current.map((entry) => {
       if (entry.parentId !== null) return entry;
       const projection = projectLogicalPosition(entry.position, desktopSize);
@@ -1968,7 +1969,7 @@ function App() {
     updateRunningApps(nextApps);
     const focused = nextApps.find((app) => app.id === focusedAppIdRef.current && !app.minimized && appIsInSegment(app, activeSegment));
     if (!focused) setFocusedApp(topAppInSegment(nextApps, activeSegment)?.id ?? null);
-    return targetSegment ? segmentKey(targetSegment) : pageKey;
+    return targetSegment ? segmentKey(targetSegment) : sourceSegmentKey;
   }
 
   function restoreArrangement(initialPositions: Array<{ entryId: string; position: EntryPosition }>, initialAppBounds: Array<{ appId: string; bounds: WindowBounds }>) {
@@ -1989,19 +1990,19 @@ function App() {
       restoreArrangement(initialPositions, initialAppBounds);
       const currentRoute = routeRef.current;
       if (currentRoute) goToSegment(currentRoute, "replace");
-      setError("The workspace arrangement could not be saved.");
+      setError("The desktop area arrangement could not be saved.");
     });
   }
 
-  function startMinimapPress(event: React.PointerEvent<HTMLButtonElement>, pageKey: string) {
+  function startMinimapPress(event: React.PointerEvent<HTMLButtonElement>, pressedSegmentKey: string) {
     if (event.button !== 0 || !canMutate) return;
     const press = {
-      activated: editingViews,
+      activated: editingAreas,
       pointerId: event.pointerId,
       startX: event.clientX,
       startY: event.clientY,
       timer: 0,
-      pageKey,
+      segmentKey: pressedSegmentKey,
       initialPositions: entriesRef.current
         .filter((entry) => entry.parentId === null)
         .map((entry) => ({ entryId: entry.id, position: { ...entry.position } })),
@@ -2009,10 +2010,10 @@ function App() {
     };
     press.timer = window.setTimeout(() => {
       press.activated = true;
-      setEditingViews(true);
-      setDraggedPageKey(pageKey);
+      setEditingAreas(true);
+      setDraggedSegmentKey(pressedSegmentKey);
       suppressClickRef.current = true;
-    }, editingViews ? 0 : MINIMAP_LONG_PRESS_MS);
+    }, editingAreas ? 0 : MINIMAP_LONG_PRESS_MS);
     minimapPointerRef.current = press;
     event.currentTarget.setPointerCapture(event.pointerId);
   }
@@ -2028,14 +2029,14 @@ function App() {
     }
     if (!press.activated) return;
     const target = document.elementsFromPoint(event.clientX, event.clientY)
-      .map((element) => element.closest<HTMLElement>("[data-page-key]"))
+      .map((element) => element.closest<HTMLElement>("[data-segment-key]"))
       .find(Boolean);
-    if (!target?.dataset.pageKey) return;
-    const targetIndex = occupiedPages.findIndex((candidate) => candidate.key === target.dataset.pageKey);
-    const targetKey = previewPageMove(press.pageKey, targetIndex);
+    if (!target?.dataset.segmentKey) return;
+    const targetIndex = occupiedSegments.findIndex((candidate) => candidate.key === target.dataset.segmentKey);
+    const targetKey = previewSegmentMove(press.segmentKey, targetIndex);
     if (targetKey) {
-      press.pageKey = targetKey;
-      setDraggedPageKey(targetKey);
+      press.segmentKey = targetKey;
+      setDraggedSegmentKey(targetKey);
     }
   }
 
@@ -2047,22 +2048,22 @@ function App() {
     minimapPointerRef.current = null;
     if (press.activated && cancelled) {
       restoreArrangement(press.initialPositions, press.initialAppBounds);
-      setDraggedPageKey(null);
+      setDraggedSegmentKey(null);
       goToSegment(activeSegment, "replace");
     } else if (press.activated) {
-      setDraggedPageKey(null);
+      setDraggedSegmentKey(null);
       suppressClickRef.current = true;
       window.setTimeout(() => { suppressClickRef.current = false; }, 0);
       persistArrangement(press.initialPositions, press.initialAppBounds);
       goToSegment(activeSegment, "replace");
     } else if (!cancelled) {
-      const selectedPage = occupiedPages.find((candidate) => candidate.key === press.pageKey);
-      if (selectedPage) goToSegment(selectedPage.segment);
+      const selectedSegment = occupiedSegments.find((candidate) => candidate.key === press.segmentKey);
+      if (selectedSegment) goToSegment(selectedSegment.segment);
     }
   }
 
   function invalidMoveIds(items: readonly DesktopEntry[]) {
-    return new Set(items.flatMap((entry) => [entry.id, ...workspace.descendants(entry.id).map((descendant) => descendant.id)]));
+    return new Set(items.flatMap((entry) => [entry.id, ...entryIndex.descendants(entry.id).map((descendant) => descendant.id)]));
   }
 
   async function toggleFullscreen() {
@@ -2081,10 +2082,10 @@ function App() {
     <main className="desktop-shell" data-theme={isBuiltinThemeId(appearance.selectedThemeId) ? appearance.selectedThemeId : "custom"} style={themeStyle(activeTheme)}>
       <header className="menu-bar">
         {activeDesktopId && <DesktopSwitcher desktops={desktops} activeDesktopId={activeDesktopId} defaultDesktopId={defaultDesktopId} disabled={loading} onSwitch={(id) => void activateDesktop(id)} onCreate={createDesktop} onRename={renameDesktop} onDelete={deleteDesktop} />}
-        <nav className="taskbar" aria-label="Running apps">
+        <nav className="taskbar" aria-label="Open windows">
           {activeApps.map((app) => {
-            const entry = app.kind === "file" ? workspace.byId.get(app.fileId) : app.kind === "properties" ? workspace.byId.get(app.entryId) : app.kind === "explorer" && app.folderId ? workspace.byId.get(app.folderId) : null;
-            const label = app.kind === "settings" ? "Settings" : app.kind === "properties" ? `${entry?.name ?? "Item"} Properties` : app.kind === "explorer" ? entry?.name ?? "Desktop" : entry?.name ?? app.file?.name ?? "File";
+            const entry = app.kind === "file" ? entryIndex.byId.get(app.fileId) : app.kind === "properties" ? entryIndex.byId.get(app.entryId) : app.kind === "explorer" && app.folderId ? entryIndex.byId.get(app.folderId) : null;
+            const label = app.kind === "settings" ? "Settings" : app.kind === "properties" ? `${entry?.name ?? "Item"} properties` : app.kind === "explorer" ? entry?.name ?? activeDesktopName : entry?.name ?? app.file?.name ?? "File";
             return (
               <button
                 className="taskbar__entry"
@@ -2104,11 +2105,11 @@ function App() {
           })}
         </nav>
         <div className="menu-bar__actions">
-          <button type="button" aria-label="New file" disabled={!canMutate} onClick={() => setDialog({ type: "create-file", parentId: null })}><Plus size={15} weight="bold" /> <span>New file</span></button>
+          <button type="button" aria-label="New text file" disabled={!canMutate} onClick={() => setDialog({ type: "create-file", parentId: null })}><Plus size={15} weight="bold" /> <span>New text file</span></button>
           <button type="button" aria-label="New folder" disabled={!canMutate} onClick={() => setDialog({ type: "create-folder", parentId: null })}><FolderPlus size={16} /> <span>New folder</span></button>
-          <button type="button" aria-label="Upload files" disabled={!canMutate} onClick={() => chooseUpload(null)}><UploadSimple size={16} /> <span>Upload</span></button>
+          <button type="button" aria-label="Upload files" disabled={!canMutate} onClick={() => chooseUpload(null)}><UploadSimple size={16} /> <span>Upload files</span></button>
           <button type="button" aria-label="Open settings" title="Settings" onClick={() => openSettingsWindow()}><GearSix size={16} /> <span>Settings</span></button>
-          <span className="menu-bar__sync" data-status={syncIndicatorStatus} role="status" title={syncIndicatorStatus === "local" ? "Changes are saved in this browser" : syncIndicatorStatus === "syncing" ? "Syncing changes" : syncIndicatorStatus === "online" ? "Changes are synced" : syncIndicatorStatus === "connecting" ? "Connecting to sync server" : syncIndicatorStatus === "blocked" ? "A queued change needs attention before synchronization can continue" : "Offline changes are saved and will sync after reconnecting"}>
+          <span className="menu-bar__sync" data-status={syncIndicatorStatus} role="status" title={syncIndicatorStatus === "local" ? "Changes are saved only in this browser" : syncIndicatorStatus === "syncing" ? "Synchronizing saved changes" : syncIndicatorStatus === "online" ? "Changes are saved and synchronized" : syncIndicatorStatus === "connecting" ? "Connecting to the Hiraya server" : syncIndicatorStatus === "blocked" ? "A queued change needs attention before synchronization can continue" : "Offline changes are saved and will synchronize after reconnecting"}>
             {syncIndicatorStatus === "local" ? <HardDrive size={15} /> : syncIndicatorStatus === "online" ? <CloudCheck size={15} /> : syncIndicatorStatus === "blocked" ? <WarningCircle size={15} weight="fill" /> : syncIndicatorStatus === "connecting" || syncIndicatorStatus === "syncing" ? <SpinnerGap size={15} /> : <CloudSlash size={15} />}
             <span>{syncIndicatorStatus === "local" ? "Saved locally" : syncIndicatorStatus === "syncing" ? "Syncing" : syncIndicatorStatus === "online" ? "Synced" : syncIndicatorStatus === "connecting" ? "Connecting" : syncIndicatorStatus === "blocked" ? "Sync blocked" : "Offline"}</span>
           </span>
@@ -2120,7 +2121,7 @@ function App() {
         className="desktop"
         data-wallpaper={layout.wallpaper}
         ref={desktopRef}
-        aria-label="Desktop"
+        aria-label={`${activeDesktopName} desktop`}
         onClickCapture={(event) => {
           if (!suppressClickRef.current) return;
           suppressClickRef.current = false;
@@ -2157,16 +2158,16 @@ function App() {
         onPointerCancel={finishDesktopSwipe}
       >
         <div className="wallpaper-grain" aria-hidden="true" />
-        <div className="desktop-canvas" ref={canvasRef} style={{ width: pageColumns * desktopSize.width, height: pageRows * desktopSize.height, transform: `translate3d(${-page.column * desktopSize.width}px, ${-page.row * desktopSize.height}px, 0)` }}>
-          {responsive.pages.flatMap((desktopPage) => desktopPage.entries.map((entry) => {
-            const viewColumn = desktopPage.segment.column - minColumn;
-            const viewRow = desktopPage.segment.row - minRow;
+        <div className="desktop-canvas" ref={canvasRef} style={{ width: segmentColumns * desktopSize.width, height: segmentRows * desktopSize.height, transform: `translate3d(${-canvasOffset.column * desktopSize.width}px, ${-canvasOffset.row * desktopSize.height}px, 0)` }}>
+          {responsive.segments.flatMap((desktopSegment) => desktopSegment.entries.map((entry) => {
+            const segmentColumn = desktopSegment.segment.column - minColumn;
+            const segmentRow = desktopSegment.segment.row - minRow;
             const projectedPosition = responsive.positions.get(entry.id) ?? entry.position;
             const renderedEntry = {
               ...entry,
               position: {
-                x: viewColumn * desktopSize.width + projectedPosition.x,
-                y: viewRow * desktopSize.height + projectedPosition.y,
+                x: segmentColumn * desktopSize.width + projectedPosition.x,
+                y: segmentRow * desktopSize.height + projectedPosition.y,
               },
             };
             return <FileIcon
@@ -2199,28 +2200,28 @@ function App() {
           <div className="desktop-state empty-state">
             <span className="empty-state__icon"><HardDrive size={28} weight="duotone" /></span>
             <h1>Your space is ready.</h1>
-            <p>Create a note or folder, or drop a file anywhere. Everything stays in this browser.</p>
+            <p>{syncStatus === "local" ? "Create an item or drop files anywhere. Items are saved only in this browser." : "Create an item or drop files anywhere. Items are saved to this shared desktop and synchronized by the Hiraya server."}</p>
             <div className="empty-state__actions">
-              <button className="button button--primary" type="button" disabled={!canMutate} onClick={() => setDialog({ type: "create-file", parentId: null })}><Plus size={17} /> New file</button>
+              <button className="button button--primary" type="button" disabled={!canMutate} onClick={() => setDialog({ type: "create-file", parentId: null })}><Plus size={17} /> New text file</button>
               <button className="button button--quiet" type="button" disabled={!canMutate} onClick={() => setDialog({ type: "create-folder", parentId: null })}><FolderPlus size={17} /> New folder</button>
-              <button className="button button--quiet" type="button" disabled={!canMutate} onClick={() => chooseUpload(null)}><UploadSimple size={17} /> Upload</button>
+              <button className="button button--quiet" type="button" disabled={!canMutate} onClick={() => chooseUpload(null)}><UploadSimple size={17} /> Upload files</button>
             </div>
           </div>
         )}
-        <div className="drop-message" aria-hidden="true"><UploadSimple size={25} /> Drop files to store them privately</div>
+        <div className="drop-message" aria-hidden="true"><UploadSimple size={25} /> Drop files to add them</div>
 
-        <div className="app-window-layer" aria-label="Running applications">
+        <div className="app-window-layer" aria-label="Open windows">
           {runningApps.map((app, index) => {
             const projection = projectLogicalPosition(app.bounds, desktopSize);
-            const workspaceActive = projection.segment.column === activeSegment.column && projection.segment.row === activeSegment.row;
+            const segmentActive = projection.segment.column === activeSegment.column && projection.segment.row === activeSegment.row;
             const localBounds = { ...app.bounds, ...projection.local };
             const titleId = `running-app-title-${index}`;
-            const folderEntry = app.kind === "explorer" && app.folderId ? workspace.byId.get(app.folderId) : null;
+            const folderEntry = app.kind === "explorer" && app.folderId ? entryIndex.byId.get(app.folderId) : null;
             const folder = folderEntry?.kind === "folder" ? folderEntry : null;
-            const fileEntry = app.kind === "file" ? app.file ?? workspace.byId.get(app.fileId) : null;
+            const fileEntry = app.kind === "file" ? app.file ?? entryIndex.byId.get(app.fileId) : null;
             const file = fileEntry?.kind === "file" ? fileEntry : null;
-            const propertiesEntry = app.kind === "properties" ? workspace.byId.get(app.entryId) : null;
-            const title = app.kind === "settings" ? isMobile && settingsPage !== "main" ? settingsPage === "themes" ? "Themes" : "Logs" : "Settings" : app.kind === "properties" ? `${propertiesEntry?.name ?? "Item"} Properties` : app.kind === "explorer" ? folder?.name ?? "Desktop" : file?.name ?? "Opening file";
+            const propertiesEntry = app.kind === "properties" ? entryIndex.byId.get(app.entryId) : null;
+            const title = app.kind === "settings" ? isMobile && settingsPage !== "main" ? settingsPage === "themes" ? "Themes" : "Activity" : "Settings" : app.kind === "properties" ? `${propertiesEntry?.name ?? "Item"} properties` : app.kind === "explorer" ? folder?.name ?? activeDesktopName : file?.name ?? "Opening file";
             return (
               <AppWindow
                 key={app.id}
@@ -2233,7 +2234,7 @@ function App() {
                 zIndex={app.zIndex}
                 focused={focusedAppId === app.id}
                 minimized={app.minimized}
-                workspaceActive={workspaceActive}
+                segmentActive={segmentActive}
                 mobile={isMobile}
                 onFocus={focusApp}
                 onBoundsChange={updateAppBounds}
@@ -2272,8 +2273,9 @@ function App() {
                 {app.kind === "explorer" && (
                   <FolderExplorer
                     folder={folder}
-                    breadcrumbs={folder ? workspace.ancestors(folder.id) : []}
-                    children={workspace.children.get(folder?.id ?? null) ?? []}
+                    rootLabel={activeDesktopName}
+                    breadcrumbs={folder ? entryIndex.ancestors(folder.id) : []}
+                    children={entryIndex.children.get(folder?.id ?? null) ?? []}
                     selectedIds={selectionSurface === app.id ? selectedIdSet : new Set()}
                     onSelect={(entry, options) => selectEntry(app.id, entry, options)}
                     onNavigate={(nextFolder) => navigateExplorerWindow(app.id, nextFolder?.id ?? null)}
@@ -2298,8 +2300,9 @@ function App() {
                 {app.kind === "properties" && propertiesEntry && (
                   <PropertiesWindow
                     entry={propertiesEntry}
-                    ancestors={workspace.ancestors(propertiesEntry.id)}
-                    descendants={propertiesEntry.kind === "folder" ? workspace.descendants(propertiesEntry.id) : []}
+                    rootLabel={activeDesktopName}
+                    ancestors={entryIndex.ancestors(propertiesEntry.id)}
+                    descendants={propertiesEntry.kind === "folder" ? entryIndex.descendants(propertiesEntry.id) : []}
                   />
                 )}
                 {app.kind === "settings" && (
@@ -2321,7 +2324,7 @@ function App() {
                     autoUpdate={autoUpdate}
                     externalEmbeddedPreviews={externalEmbeddedPreviews === true}
                     localPreferencesLoaded={externalEmbeddedPreviews !== null}
-                    backendBuildTimestamp={backendBuildTimestamp}
+                    serverBuildTimestamp={serverBuildTimestamp}
                     onListActivity={listActivity}
                     onSubscribeToActivity={subscribeToActivityChanges}
                     onLayoutChange={applyLayout}
@@ -2343,55 +2346,55 @@ function App() {
         </div>
       </section>
 
-      {(pageColumns > 1 || pageRows > 1 || occupiedPages.length > 1) && (
-        <nav className="desktop-minimap" data-editing={editingViews || undefined} data-obscured={minimapObscured || undefined} aria-label="Desktop workspaces">
-          {editingViews && (
+      {(segmentColumns > 1 || segmentRows > 1 || occupiedSegments.length > 1) && (
+        <nav className="desktop-minimap" data-editing={editingAreas || undefined} data-obscured={minimapObscured || undefined} aria-label={`${activeDesktopName} desktop areas`}>
+          {editingAreas && (
             <div className="desktop-minimap__toolbar">
-              <span>Arrange workspaces</span>
-              <button type="button" onClick={() => { setEditingViews(false); setDraggedPageKey(null); }}><Check size={12} /> Done</button>
+              <span>Arrange desktop areas</span>
+              <button type="button" onClick={() => { setEditingAreas(false); setDraggedSegmentKey(null); }}><Check size={12} /> Done</button>
             </div>
           )}
-          <div className="desktop-minimap__grid" style={{ "--minimap-columns": pageColumns, "--minimap-rows": pageRows } as React.CSSProperties}>
-            {pages.map((desktopPage) => {
-              const column = desktopPage.segment.column - minColumn;
-              const row = desktopPage.segment.row - minRow;
-              const pageKey = desktopPage.key;
-              const actualIndex = occupiedPages.findIndex((candidate) => candidate.key === pageKey);
-              const isActualPage = actualIndex >= 0;
+          <div className="desktop-minimap__grid" style={{ "--minimap-columns": segmentColumns, "--minimap-rows": segmentRows } as React.CSSProperties}>
+            {visibleSegments.map((desktopSegment) => {
+              const column = desktopSegment.segment.column - minColumn;
+              const row = desktopSegment.segment.row - minRow;
+              const currentSegmentKey = desktopSegment.key;
+              const actualIndex = occupiedSegments.findIndex((candidate) => candidate.key === currentSegmentKey);
+              const isOccupiedSegment = actualIndex >= 0;
               return (
-                <div className="desktop-minimap__slot" data-page-key={isActualPage ? pageKey : undefined} data-dragging={draggedPageKey === pageKey || undefined} key={pageKey} style={{ gridColumn: column + 1, gridRow: row + 1 }}>
+                <div className="desktop-minimap__slot" data-segment-key={isOccupiedSegment ? currentSegmentKey : undefined} data-dragging={draggedSegmentKey === currentSegmentKey || undefined} key={currentSegmentKey} style={{ gridColumn: column + 1, gridRow: row + 1 }}>
                   <button
-                    className="desktop-minimap__page"
-                    data-active={pageKey === activePageKey || undefined}
+                    className="desktop-minimap__area"
+                    data-active={currentSegmentKey === activeSegmentKey || undefined}
                     type="button"
-                    aria-label={`Workspace ${desktopPage.segment.column}, ${desktopPage.segment.row}${editingViews && isActualPage ? ", use arrow keys to move" : isActualPage ? ", long press to arrange" : ""}`}
-                    aria-current={pageKey === activePageKey ? "true" : undefined}
-                    onClick={(event) => { if (event.detail === 0 && !editingViews) goToSegment(desktopPage.segment); }}
-                    onContextMenu={isActualPage ? (event) => { event.preventDefault(); setEditingViews(true); } : undefined}
-                    onPointerDown={isActualPage ? (event) => startMinimapPress(event, pageKey) : undefined}
+                    aria-label={`${activeDesktopName} desktop area ${desktopSegment.segment.column}, ${desktopSegment.segment.row}${editingAreas && isOccupiedSegment ? ", use arrow keys to move" : isOccupiedSegment ? ", long press to arrange" : ""}`}
+                    aria-current={currentSegmentKey === activeSegmentKey ? "true" : undefined}
+                    onClick={(event) => { if (event.detail === 0 && !editingAreas) goToSegment(desktopSegment.segment); }}
+                    onContextMenu={isOccupiedSegment ? (event) => { event.preventDefault(); setEditingAreas(true); } : undefined}
+                    onPointerDown={isOccupiedSegment ? (event) => startMinimapPress(event, currentSegmentKey) : undefined}
                     onPointerMove={moveMinimapPress}
                     onPointerUp={(event) => finishMinimapPress(event)}
                     onPointerCancel={(event) => finishMinimapPress(event, true)}
                     onKeyDown={(event) => {
                       if ((event.shiftKey && event.key === "F10") || event.key === "ContextMenu") {
                         event.preventDefault();
-                        setEditingViews(true);
-                      } else if (editingViews && isActualPage && (event.key === "ArrowLeft" || event.key === "ArrowUp")) {
+                        setEditingAreas(true);
+                      } else if (editingAreas && isOccupiedSegment && (event.key === "ArrowLeft" || event.key === "ArrowUp")) {
                         event.preventDefault();
                         const initial = entriesRef.current.filter((entry) => entry.parentId === null).map((entry) => ({ entryId: entry.id, position: { ...entry.position } }));
                         const initialApps = runningAppsRef.current.map((app) => ({ appId: app.id, bounds: { ...app.bounds } }));
-                        const targetKey = previewPageMove(pageKey, actualIndex - 1);
-                        if (targetKey) { setDraggedPageKey(targetKey); persistArrangement(initial, initialApps); goToSegment(activeSegment, "replace"); }
-                      } else if (editingViews && isActualPage && (event.key === "ArrowRight" || event.key === "ArrowDown")) {
+                        const targetKey = previewSegmentMove(currentSegmentKey, actualIndex - 1);
+                        if (targetKey) { setDraggedSegmentKey(targetKey); persistArrangement(initial, initialApps); goToSegment(activeSegment, "replace"); }
+                      } else if (editingAreas && isOccupiedSegment && (event.key === "ArrowRight" || event.key === "ArrowDown")) {
                         event.preventDefault();
                         const initial = entriesRef.current.filter((entry) => entry.parentId === null).map((entry) => ({ entryId: entry.id, position: { ...entry.position } }));
                         const initialApps = runningAppsRef.current.map((app) => ({ appId: app.id, bounds: { ...app.bounds } }));
-                        const targetKey = previewPageMove(pageKey, actualIndex + 1);
-                        if (targetKey) { setDraggedPageKey(targetKey); persistArrangement(initial, initialApps); goToSegment(activeSegment, "replace"); }
+                        const targetKey = previewSegmentMove(currentSegmentKey, actualIndex + 1);
+                        if (targetKey) { setDraggedSegmentKey(targetKey); persistArrangement(initial, initialApps); goToSegment(activeSegment, "replace"); }
                       }
                     }}
                   >
-                    {desktopPage.entries.map((entry) => {
+                    {desktopSegment.entries.map((entry) => {
                       const position = responsive.positions.get(entry.id) ?? entry.position;
                       return <span className="desktop-minimap__file" key={entry.id} style={{ left: `${position.x / desktopSize.width * 100}%`, top: `${position.y / desktopSize.height * 100}%` }} />;
                     })}
@@ -2400,7 +2403,7 @@ function App() {
               );
             })}
           </div>
-          <span className="visually-hidden" aria-live="polite">Desktop workspace column {activeSegment.column}, row {activeSegment.row}</span>
+          <span className="visually-hidden" aria-live="polite">{activeDesktopName} desktop area column {activeSegment.column}, row {activeSegment.row}</span>
         </nav>
       )}
 

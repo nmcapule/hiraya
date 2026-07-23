@@ -1,6 +1,6 @@
 import type { DesktopEntry, FolderEntry } from "../types";
 
-export type WorkspaceIndex = {
+export type EntryIndex = {
   byId: ReadonlyMap<string, DesktopEntry>;
   children: ReadonlyMap<string | null, readonly DesktopEntry[]>;
   folders: readonly FolderEntry[];
@@ -9,7 +9,7 @@ export type WorkspaceIndex = {
   descendants: (entryId: string) => DesktopEntry[];
 };
 
-export function createWorkspaceIndex(entries: readonly DesktopEntry[]): WorkspaceIndex {
+export function createEntryIndex(entries: readonly DesktopEntry[]): EntryIndex {
   const byId = new Map(entries.map((entry) => [entry.id, entry]));
   const children = new Map<string | null, DesktopEntry[]>();
   const folders: FolderEntry[] = [];

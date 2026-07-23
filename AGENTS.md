@@ -70,7 +70,7 @@ Prefer small changes in existing modules. Do not introduce global state or a com
 
 - Dragging applies direct transforms during pointer movement and commits state only on release.
 - Use Pointer Events and keep icons reachable on desktop and mobile.
-- Root coordinates occupy one continuous logical surface; workspace tiles are derived and never persisted.
+- Root coordinates occupy one continuous logical surface; surface segments are derived and never persisted.
 - External file input and drag-and-drop must use the same import path.
 - Revoke every object URL created for media or document previews.
 - Preserve keyboard access, `Escape` dismissal, and `Ctrl+S` / `Cmd+S` saving.

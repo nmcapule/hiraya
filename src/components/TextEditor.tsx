@@ -172,7 +172,7 @@ class MediaPreviewWidget extends WidgetType {
       preview.setAttribute("role", "button");
       preview.setAttribute("tabindex", "0");
       preview.setAttribute("aria-label", `Open preview for ${path}`);
-      preview.textContent = `Loading ${path}…`;
+      preview.textContent = `Loading ${path}...`;
       preview.addEventListener("mousedown", (event) => event.preventDefault());
       row.append(preview);
 

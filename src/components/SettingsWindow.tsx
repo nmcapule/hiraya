@@ -46,8 +46,8 @@ const COLOR_LABELS: Record<keyof ThemeColors, string> = {
 };
 
 type Props = {
-  page: "main" | "themes" | "logs";
-  onPageChange: (page: "main" | "themes" | "logs") => void;
+  page: "main" | "themes" | "activity";
+  onPageChange: (page: "main" | "themes" | "activity") => void;
   mobileHeaderElements?: AppWindowHeaderElements;
   layout: DesktopLayout;
   appearance: ThemeState;
@@ -63,7 +63,7 @@ type Props = {
   autoUpdate: boolean;
   externalEmbeddedPreviews: boolean;
   localPreferencesLoaded: boolean;
-  backendBuildTimestamp: string | null;
+  serverBuildTimestamp: string | null;
   onListActivity: (query?: ActivityQuery) => Promise<ActivityPage>;
   onSubscribeToActivity: (listener: () => void) => () => void;
   onLayoutChange: (layout: DesktopLayout) => void;
@@ -137,7 +137,7 @@ export function SettingsWindow({
   autoUpdate,
   externalEmbeddedPreviews,
   localPreferencesLoaded,
-  backendBuildTimestamp,
+  serverBuildTimestamp,
   onListActivity,
   onSubscribeToActivity,
   onLayoutChange,
@@ -155,9 +155,9 @@ export function SettingsWindow({
   const [saving, setSaving] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
   const mainThemesButtonRef = useRef<HTMLButtonElement>(null);
-  const mainLogsButtonRef = useRef<HTMLButtonElement>(null);
+  const mainActivityButtonRef = useRef<HTMLButtonElement>(null);
   const themesHeadingRef = useRef<HTMLHeadingElement>(null);
-  const logsHeadingRef = useRef<HTMLHeadingElement>(null);
+  const activityHeadingRef = useRef<HTMLHeadingElement>(null);
   const mutationsDisabled = !canMutate || saving;
   const contrastIssues = draft ? themeContrastIssues(draft.definition) : [];
   const selectedThemeName = isBuiltinThemeId(appearance.selectedThemeId)
@@ -250,22 +250,22 @@ export function SettingsWindow({
     requestAnimationFrame(() => mainThemesButtonRef.current?.focus());
   };
 
-  const openLogs = () => {
+  const openActivity = () => {
     contentRef.current?.scrollTo({ top: 0 });
-    onPageChange("logs");
-    if (!mobileHeaderElements) requestAnimationFrame(() => logsHeadingRef.current?.focus());
+    onPageChange("activity");
+    if (!mobileHeaderElements) requestAnimationFrame(() => activityHeadingRef.current?.focus());
   };
 
-  const closeLogs = () => {
+  const closeActivity = () => {
     contentRef.current?.scrollTo({ top: 0 });
     onPageChange("main");
-    requestAnimationFrame(() => mainLogsButtonRef.current?.focus());
+    requestAnimationFrame(() => mainActivityButtonRef.current?.focus());
   };
 
   return (
     <div className="settings-window settings-window--embedded">
       {page !== "main" && mobileHeaderElements?.leading && createPortal(
-        <button className="app-window__control mobile-header-back" type="button" aria-label="Back to settings" disabled={page === "themes" && saving} onClick={page === "themes" ? closeThemes : closeLogs}>
+        <button className="app-window__control mobile-header-back" type="button" aria-label="Back to settings" disabled={page === "themes" && saving} onClick={page === "themes" ? closeThemes : closeActivity}>
           <ArrowLeft size={18} />
         </button>,
         mobileHeaderElements.leading,
@@ -284,12 +284,12 @@ export function SettingsWindow({
               </button>
             </section>
 
-            <section className="settings-section" aria-labelledby="logs-link-heading">
-              <button className="settings-row settings-row--navigation" type="button" ref={mainLogsButtonRef} onClick={openLogs}>
+            <section className="settings-section" aria-labelledby="activity-link-heading">
+              <button className="settings-row settings-row--navigation" type="button" ref={mainActivityButtonRef} onClick={openActivity}>
                 <span className="settings-row__icon"><ClockCounterClockwise size={17} /></span>
                 <span className="settings-row__copy">
-                  <strong id="logs-link-heading">Logs</strong>
-                  <small>Review and search accepted workspace changes.</small>
+                  <strong id="activity-link-heading">Activity</strong>
+                  <small>Review and search accepted desktop changes.</small>
                 </span>
                 <CaretRight className="settings-row__chevron" size={17} aria-hidden="true" />
               </button>
@@ -333,42 +333,42 @@ export function SettingsWindow({
             <section className="settings-section" aria-labelledby="updates-heading">
               <div className="settings-section__heading">
                 <ArrowClockwise size={18} />
-                <div><h3 id="updates-heading">Updates</h3><p>Keep this installed frontend current.</p></div>
+                <div><h3 id="updates-heading">Updates</h3><p>Keep this installed app current.</p></div>
               </div>
               <div className="settings-list">
                 <div className="settings-row">
                   <span className="settings-row__icon"><ArrowClockwise size={17} weight={updateReady ? "bold" : "regular"} /></span>
-                  <span className="settings-row__copy"><strong>Update to latest version</strong><small>{!updateSupported ? "Available in production PWA builds." : updateReady ? "A new version is ready to install." : "Check for a newer frontend release."}</small></span>
+                  <span className="settings-row__copy"><strong>Update to latest version</strong><small>{!updateSupported ? "Available in production PWA builds." : updateReady ? "A new version is ready to install." : "Check for a newer app release."}</small></span>
                   <button className="button button--quiet" type="button" disabled={!updateSupported || updateChecking} onClick={onCheckForUpdate}>{updateChecking ? "Checking" : updateReady ? "Review" : "Check now"}</button>
                 </div>
                 <label className="settings-row">
                   <span className="settings-row__icon"><ArrowClockwise size={17} /></span>
-                  <span className="settings-row__copy"><strong>Auto-update to latest version</strong><small>Check automatically, then ask before reloading.</small></span>
+                  <span className="settings-row__copy"><strong>Automatic updates</strong><small>Check automatically, then ask before reloading.</small></span>
                   <input type="checkbox" checked={autoUpdate} disabled={!updateSupported} onChange={(event) => onAutoUpdateChange(event.target.checked)} />
                 </label>
                 <div className="settings-row">
                   <span className="settings-row__icon"><ClockCounterClockwise size={17} /></span>
-                  <span className="settings-row__copy"><strong>Frontend build</strong><small><time dateTime={import.meta.env.HIRAYA_BUILD_TIMESTAMP}>{formatBuildTimestamp(import.meta.env.HIRAYA_BUILD_TIMESTAMP)}</time></small></span>
+                  <span className="settings-row__copy"><strong>App build</strong><small><time dateTime={import.meta.env.HIRAYA_BUILD_TIMESTAMP}>{formatBuildTimestamp(import.meta.env.HIRAYA_BUILD_TIMESTAMP)}</time></small></span>
                 </div>
                 <div className="settings-row">
                   <span className="settings-row__icon"><ClockCounterClockwise size={17} /></span>
-                  <span className="settings-row__copy"><strong>Backend build</strong><small>{backendBuildTimestamp ? <time dateTime={backendBuildTimestamp}>{formatBuildTimestamp(backendBuildTimestamp)}</time> : "Unavailable"}</small></span>
+                  <span className="settings-row__copy"><strong>Server build</strong><small>{serverBuildTimestamp ? <time dateTime={serverBuildTimestamp}>{formatBuildTimestamp(serverBuildTimestamp)}</time> : "Unavailable"}</small></span>
                 </div>
               </div>
             </section>
 
-            <section className="settings-section" aria-labelledby="data-heading">
+            <section className="settings-section" aria-labelledby="export-heading">
               <div className="settings-section__heading">
                 <ExportIcon size={18} />
-                <div><h3 id="data-heading">Saved desktop</h3><p>Package saved files and settings for another Hiraya build.</p></div>
+                <div><h3 id="export-heading">Export</h3><p>Package saved items and settings for another Hiraya app.</p></div>
               </div>
               <div className="settings-export">
                 <span>Unsaved editor changes are not included.</span>
-                <button className="button button--quiet" type="button" disabled={exportDisabled || exporting} onClick={onExport}><ExportIcon size={16} /> {exporting ? "Exporting" : "Export desktop"}</button>
+                <button className="button button--quiet" type="button" disabled={exportDisabled || exporting} onClick={onExport}><ExportIcon size={16} /> {exporting ? "Exporting..." : "Export desktop package"}</button>
               </div>
             </section>
 
-            {!canMutate && <p className="settings-window__offline" role="status">Connecting to the shared workspace. Settings will be available shortly.</p>}
+            {!canMutate && <p className="settings-window__offline" role="status">Connecting to the shared desktop. Settings will be available shortly.</p>}
           </>
         ) : page === "themes" ? (
           <div className="settings-page">
@@ -376,7 +376,7 @@ export function SettingsWindow({
               <button className="settings-page__back" type="button" aria-label="Back to settings" disabled={saving} onClick={closeThemes}><ArrowLeft size={17} /></button>
               <div>
                 <h3 ref={themesHeadingRef} tabIndex={-1}>Themes</h3>
-                <p>Change the workspace appearance and backdrop.</p>
+                <p>Change the desktop theme and wallpaper.</p>
               </div>
             </header>
 
@@ -385,7 +385,7 @@ export function SettingsWindow({
             <PaintBrush size={18} />
             <div>
               <h3 id="appearance-heading">Appearance</h3>
-              <p>Choose a shared theme or make one for this workspace.</p>
+              <p>Choose a shared theme or make one for this desktop.</p>
             </div>
           </div>
 
@@ -489,7 +489,7 @@ export function SettingsWindow({
             <PaintBrush size={18} />
             <div>
               <h3 id="wallpaper-heading">Wallpaper</h3>
-              <p>Choose the backdrop shared by this workspace.</p>
+              <p>Choose the wallpaper shared by this desktop.</p>
             </div>
           </div>
           <div className="wallpaper-options">
@@ -501,15 +501,15 @@ export function SettingsWindow({
             ))}
           </div>
         </section>
-            {!canMutate && <p className="settings-window__offline" role="status">Connecting to the shared workspace. Appearance controls will be available shortly.</p>}
+            {!canMutate && <p className="settings-window__offline" role="status">Connecting to the shared desktop. Appearance controls will be available shortly.</p>}
           </div>
         ) : (
-          <div className="settings-page settings-page--logs">
+          <div className="settings-page settings-page--activity">
             <header className="settings-page__header">
-              <button className="settings-page__back" type="button" aria-label="Back to settings" onClick={closeLogs}><ArrowLeft size={17} /></button>
+              <button className="settings-page__back" type="button" aria-label="Back to settings" onClick={closeActivity}><ArrowLeft size={17} /></button>
               <div>
-                <h3 ref={logsHeadingRef} tabIndex={-1}>Logs</h3>
-                <p>Accepted changes from this workspace, newest first.</p>
+                <h3 ref={activityHeadingRef} tabIndex={-1}>Activity</h3>
+                <p>Accepted changes from this desktop, newest first.</p>
               </div>
             </header>
             <ActivityLog onListActivity={onListActivity} onSubscribe={onSubscribeToActivity} />

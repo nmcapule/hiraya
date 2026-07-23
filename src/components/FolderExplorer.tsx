@@ -15,7 +15,8 @@ import { MobileHeaderMenu } from "./MobileHeaderMenu";
 
 export interface FolderExplorerProps {
   folder: FolderEntry | null;
-  /** Ordered ancestors of folder, starting immediately below Desktop. */
+  rootLabel: string;
+  /** Ordered ancestors of folder, starting immediately below the desktop root. */
   breadcrumbs: readonly FolderEntry[];
   children: readonly DesktopEntry[];
   onNavigate: (folder: FolderEntry | null) => void;
@@ -46,6 +47,7 @@ const byKindAndName = (a: DesktopEntry, b: DesktopEntry) =>
 
 export function FolderExplorer({
   folder,
+  rootLabel,
   breadcrumbs,
   children,
   onNavigate,
@@ -160,13 +162,13 @@ export function FolderExplorer({
           <MobileHeaderMenu label="Folder actions" icon={<DotsThreeVertical size={19} weight="bold" />}>
             {(dismiss) => <>
               <nav className="mobile-folder-path" aria-label="Folder path">
-                <button type="button" data-folder-target="" data-current={!folder || undefined} onClick={() => { dismiss(); onNavigate(null); }}>Desktop</button>
+                <button type="button" data-folder-target="" data-current={!folder || undefined} onClick={() => { dismiss(); onNavigate(null); }}>{rootLabel}</button>
                 {trail.map((item) => <button type="button" key={item.id} data-folder-target={item.id} data-current={item.id === folder?.id || undefined} onClick={() => { dismiss(); onNavigate(item); }}>{item.name}</button>)}
               </nav>
               <div className="mobile-header-menu__separator" />
               <button type="button" disabled={readOnly} onClick={() => { dismiss(); onCreateFolder(parentId); }}><FolderPlus size={17} /> New folder</button>
-              <button type="button" disabled={readOnly} onClick={() => { dismiss(); onCreateFile(parentId); }}><FilePlus size={17} /> New text</button>
-              <button type="button" disabled={readOnly} onClick={() => { dismiss(); onUpload(parentId); }}><UploadSimple size={17} /> Upload</button>
+              <button type="button" disabled={readOnly} onClick={() => { dismiss(); onCreateFile(parentId); }}><FilePlus size={17} /> New text file</button>
+              <button type="button" disabled={readOnly} onClick={() => { dismiss(); onUpload(parentId); }}><UploadSimple size={17} /> Upload files</button>
             </>}
           </MobileHeaderMenu>,
           headerElements.actions,
@@ -183,7 +185,7 @@ export function FolderExplorer({
               <p>This folder is empty.</p>
             </div>
           ) : (
-            <div className="folder-explorer__list" role="listbox" aria-multiselectable="true" aria-label={`Contents of ${folder?.name ?? "Desktop"}`}>
+            <div className="folder-explorer__list" role="listbox" aria-multiselectable="true" aria-label={`Contents of ${folder?.name ?? rootLabel}`}>
               {orderedChildren.map((entry) => (
                 <button
                   className="folder-explorer__row"
