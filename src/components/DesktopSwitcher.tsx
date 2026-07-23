@@ -1,19 +1,30 @@
 import { useEffect, useRef, useState } from "react";
 import { CaretDown, Check, Desktop, PencilSimple, Plus, Trash, X } from "@phosphor-icons/react";
 import type { DesktopIdentity } from "../types";
-import { desktopDeleteProtection } from "../lib/desktop-catalog";
+import { desktopCreateProtection, desktopDeleteProtection, type CatalogQuota } from "../lib/desktop-catalog";
 
 type Props = {
   desktops: readonly DesktopIdentity[];
   activeDesktopId: string;
   disabled?: boolean;
+  quota?: CatalogQuota | null;
+  quotaStale?: boolean;
   onSwitch: (id: string) => void;
   onCreate: (name: string) => Promise<void>;
   onRename: (id: string, name: string) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
 };
 
-export function DesktopSwitcher({ desktops, activeDesktopId, disabled, onSwitch, onCreate, onRename, onDelete }: Props) {
+function formatBytes(value: number) {
+  if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(2)} GB`;
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)} MB`;
+  if (value >= 1000) return `${(value / 1000).toFixed(1)} kB`;
+  return `${value} bytes`;
+}
+
+function quotaPercent(used: number, limit: number) { return Math.min(100, used / limit * 100); }
+
+export function DesktopSwitcher({ desktops, activeDesktopId, disabled, quota, quotaStale, onSwitch, onCreate, onRename, onDelete }: Props) {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<{ mode: "create" | "rename"; id?: string; value: string } | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -22,6 +33,7 @@ export function DesktopSwitcher({ desktops, activeDesktopId, disabled, onSwitch,
   const triggerRef = useRef<HTMLButtonElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const active = desktops.find((desktop) => desktop.id === activeDesktopId) ?? desktops[0];
+  const createProtection = desktopCreateProtection(desktops.length, quota);
 
   function close(returnFocus = true) {
     setOpen(false);
@@ -42,7 +54,7 @@ export function DesktopSwitcher({ desktops, activeDesktopId, disabled, onSwitch,
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
-    if (!editing || !editing.value.trim()) return;
+    if (!editing || !editing.value.trim() || editing.mode === "create" && createProtection) return;
     setSubmitting(true);
     setError("");
     try {
@@ -73,10 +85,17 @@ export function DesktopSwitcher({ desktops, activeDesktopId, disabled, onSwitch,
           {protectedReason && <span className="visually-hidden" id={descriptionId}>{protectedReason}</span>}
         </div>})}
       </div>
+      {quota && <section className="desktop-switcher__quota" aria-label="Account limits">
+        <div className="desktop-switcher__quota-heading"><strong>Account limits</strong>{quotaStale && <span>Last synced</span>}</div>
+        <div className="desktop-switcher__quota-row" data-limit={quota.storageBytes.used >= quota.storageBytes.limit || undefined}><span>Storage</span><strong>{formatBytes(quota.storageBytes.used)} / {formatBytes(quota.storageBytes.limit)}</strong><progress max="100" value={quotaPercent(quota.storageBytes.used, quota.storageBytes.limit)} /></div>
+        <div className="desktop-switcher__quota-row" data-limit={desktops.length >= quota.desktops.limit || undefined}><span>Desktops</span><strong>{desktops.length.toLocaleString()} / {quota.desktops.limit.toLocaleString()}</strong><progress max="100" value={quotaPercent(desktops.length, quota.desktops.limit)} /></div>
+        <div className="desktop-switcher__quota-row" data-limit={quota.entries.used >= quota.entries.limit || undefined}><span>Entries</span><strong>{quota.entries.used.toLocaleString()} / {quota.entries.limit.toLocaleString()}</strong><progress max="100" value={quotaPercent(quota.entries.used, quota.entries.limit)} /></div>
+      </section>}
       {editing ? <form className="desktop-switcher__form" onSubmit={submit}>
         <label>{editing.mode === "create" ? "New desktop name" : "Rename desktop"}<input ref={inputRef} value={editing.value} maxLength={180} onChange={(event) => setEditing({ ...editing, value: event.target.value })} /></label>
-        <button className="button button--primary" type="submit" disabled={submitting || !editing.value.trim()}>{submitting ? "Saving..." : "Save"}</button>
-      </form> : <button className="desktop-switcher__create" type="button" onClick={() => setEditing({ mode: "create", value: `Desktop ${desktops.length + 1}` })}><Plus size={16} /> New desktop</button>}
+        <button className="button button--primary" type="submit" disabled={submitting || !editing.value.trim() || editing.mode === "create" && Boolean(createProtection)}>{submitting ? "Saving..." : "Save"}</button>
+      </form> : <button className="desktop-switcher__create" type="button" aria-disabled={Boolean(createProtection)} aria-describedby={createProtection ? "desktop-create-protection" : undefined} onClick={() => { if (!createProtection) setEditing({ mode: "create", value: `Desktop ${desktops.length + 1}` }); }}><Plus size={16} /> New desktop</button>}
+      {createProtection && <p id="desktop-create-protection" className="desktop-switcher__limit-note">{createProtection}</p>}
       {error && <p className="form-error" role="alert">{error}</p>}
     </section>}
   </div>;

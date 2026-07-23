@@ -9,6 +9,7 @@ import { FileWindow } from "./components/FileWindow";
 import { FolderExplorer } from "./components/FolderExplorer";
 import { MoveDialog } from "./components/MoveDialog";
 import { DesktopSwitcher } from "./components/DesktopSwitcher";
+import type { CatalogQuota } from "./lib/desktop-catalog";
 import { PasteConflictDialog } from "./components/PasteConflictDialog";
 import { PropertiesWindow } from "./components/PropertiesWindow";
 import { SettingsWindow } from "./components/SettingsWindow";
@@ -93,6 +94,7 @@ function topRunningAppInSegment(apps: RunningApp[], segment: SurfaceSegment, siz
 function App({ session }: { session: AuthSession | null }) {
   const [entries, setEntries] = useState<DesktopEntry[]>([]);
   const [desktops, setDesktops] = useState<DesktopIdentity[]>([]);
+  const [catalogQuota, setCatalogQuota] = useState<CatalogQuota | null>(null);
   const [activeDesktopId, setActiveDesktopId] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -644,6 +646,7 @@ function App({ session }: { session: AuthSession | null }) {
       if (!active) return;
       desktopsRef.current = registry.desktops;
       setDesktops(registry.desktops);
+      setCatalogQuota(registry.quota);
       const retainedIds = registry.desktops.map((desktop) => desktop.id);
       if (activeDesktopIdRef.current && !retainedIds.includes(activeDesktopIdRef.current)) {
         const fallback = registry.desktops[0];
@@ -661,6 +664,7 @@ function App({ session }: { session: AuthSession | null }) {
           ? registry.activeDesktopId
           : registry.desktops[0].id;
       setDesktops(registry.desktops);
+      setCatalogQuota(registry.quota);
       activeDesktopIdRef.current = desktopId;
       setActiveDesktopId(desktopId);
       return switchLocalDesktop(desktopId)
@@ -2080,7 +2084,7 @@ function App({ session }: { session: AuthSession | null }) {
   return (
     <main className="desktop-shell" data-theme={isBuiltinThemeId(appearance.selectedThemeId) ? appearance.selectedThemeId : "custom"} style={themeStyle(activeTheme)}>
       <header className="menu-bar">
-        {activeDesktopId && <DesktopSwitcher desktops={desktops} activeDesktopId={activeDesktopId} disabled={loading} onSwitch={(id) => void activateDesktop(id)} onCreate={createDesktop} onRename={renameDesktop} onDelete={deleteDesktop} />}
+        {activeDesktopId && <DesktopSwitcher desktops={desktops} activeDesktopId={activeDesktopId} disabled={loading} quota={catalogQuota} quotaStale={syncStatus === "offline"} onSwitch={(id) => void activateDesktop(id)} onCreate={createDesktop} onRename={renameDesktop} onDelete={deleteDesktop} />}
         <nav className="taskbar" aria-label="Open windows">
           {activeApps.map((app) => {
             const entry = app.kind === "file" ? entryIndex.byId.get(app.fileId) : app.kind === "properties" ? entryIndex.byId.get(app.entryId) : app.kind === "explorer" && app.folderId ? entryIndex.byId.get(app.folderId) : null;

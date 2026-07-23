@@ -9,7 +9,7 @@ import { desktopPendingOperationProtection, outboxDesktopRetentionIds } from "./
 import { parseCustomTheme, parseThemeState, type CustomTheme } from "./themes";
 import type { ClipboardEntrySnapshot } from "./clipboard";
 import { parseActivityPage, parseActivityQuery, type ActivityQuery } from "./activity";
-import { parseDesktopCatalog } from "./desktop-catalog";
+import { parseDesktopCatalog, type CatalogQuota } from "./desktop-catalog";
 import { AuthenticationRequiredError, redirectToLogin, requireAuthenticatedResponse } from "./auth";
 
 type OutboxOperationInput = OutboxOperation extends infer Operation
@@ -17,7 +17,7 @@ type OutboxOperationInput = OutboxOperation extends infer Operation
   : never;
 
 export type SyncStatus = "connecting" | "online" | "offline" | "blocked" | "local";
-export type DesktopRegistry = { schemaVersion: 1; catalogId: string | null; catalogRevision: number; desktops: DesktopIdentity[]; activeDesktopId: string | null };
+export type DesktopRegistry = { schemaVersion: 1; catalogId: string | null; catalogRevision: number; desktops: DesktopIdentity[]; activeDesktopId: string | null; quota: CatalogQuota | null };
 
 export async function fetchServerBuildTimestamp(fetchImpl: typeof fetch = globalThis.fetch.bind(globalThis)) {
   const response = await fetchImpl(API_ROUTES.health, { cache: "no-store" });
@@ -134,6 +134,7 @@ export class SyncEngine {
   private desktopId = "";
   private catalogId: string | null = null;
   private catalogRevision = 0;
+  private lastQuota: { catalogId: string; quota: CatalogQuota } | null = null;
   private pendingWork = 0;
   private readonly desktopListeners = new Set<(next: storage.DesktopStateSnapshot) => void>();
   private readonly statusListeners = new Set<(next: SyncStatus) => void>();
@@ -719,7 +720,7 @@ export class SyncEngine {
         const desktop = await this.storage.createDesktop("Desktop");
         local = { desktops: [desktop], activeDesktopId: desktop.id };
       }
-      return { schemaVersion: 1 as const, catalogId: null, catalogRevision: 0, ...local };
+      return { schemaVersion: 1 as const, catalogId: null, catalogRevision: 0, quota: null, ...local };
     }
     try {
       const catalog = parseDesktopCatalog(await this.requestJson(API_ROUTES.catalog, { cache: "no-store" }));
@@ -735,22 +736,26 @@ export class SyncEngine {
       const remoteDesktops = catalog.desktops
         .filter((desktop) => !pendingDeletes.has(desktop.id))
         .map((desktop) => pendingRenames.has(desktop.id) ? { ...desktop, name: pendingRenames.get(desktop.id)! } : desktop);
-      return {
+      const registry = {
         schemaVersion: 1 as const,
         catalogId: catalog.catalogId,
         catalogRevision: catalog.catalogRevision,
+        quota: catalog.quota,
         activeDesktopId: local.activeDesktopId && (remoteIds.has(local.activeDesktopId) || retainedLocalIds.has(local.activeDesktopId))
           ? local.activeDesktopId
           : catalog.desktops[0]?.id ?? null,
         desktops: [...remoteDesktops, ...local.desktops.filter((desktop) => !remoteIds.has(desktop.id) && retainedLocalIds.has(desktop.id))],
       };
+      this.lastQuota = { catalogId: catalog.catalogId, quota: catalog.quota };
+      return registry;
     } catch (error) {
       if (error instanceof AuthenticationRequiredError) throw error;
       if (local.desktops.length === 0) {
         const created = await this.storage.createOfflineDesktop("Offline desktop");
         local = { desktops: [created.desktop], activeDesktopId: created.desktop.id };
       }
-      return { schemaVersion: 1 as const, catalogId: null, catalogRevision: 0, ...local };
+      const quota = this.lastQuota?.catalogId === this.catalogId ? this.lastQuota.quota : null;
+      return { schemaVersion: 1 as const, catalogId: null, catalogRevision: 0, quota, ...local };
     }
   }
 
