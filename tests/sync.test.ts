@@ -26,6 +26,7 @@ function remoteStorage() {
   let outbox: OutboxRecord[] = [];
   let sequence = 0;
   const cached = new Map<string, File>();
+  const pending = new Map<string, Map<string, Blob>>();
   const stats = { cacheWrites: 0, blockWrites: 0 };
   const storage = {
     loadDesktop: async () => current,
@@ -42,11 +43,12 @@ function remoteStorage() {
       return file;
     },
     readOutbox: async () => outbox,
-    enqueueMutation: async (operation: OutboxOperation) => {
+    enqueueMutation: async (operation: OutboxOperation, contents = new Map<string, Blob>()) => {
       const state = applyOutboxOperation({ entries: current.entries, snapToGrid: current.layout.snapToGrid, wallpaper: current.layout.wallpaper, editorSettings: current.editorSettings, appearance: current.appearance, sync: current.sync }, operation);
       current = { entries: state.entries, layout: { snapToGrid: state.snapToGrid, wallpaper: state.wallpaper }, editorSettings: state.editorSettings, appearance: state.appearance, sync: state.sync };
       const record: OutboxRecord = { operationId: String(++sequence), sequence, clientId: "client", catalogId: current.sync.catalogId!, desktopId: "desk", operation, status: "pending", error: null };
       outbox.push(record);
+      pending.set(record.operationId, contents);
       return { desktop: current, record };
     },
     enqueueTransfer: async (_source: string, destinationDesktopId: string, entryIds: string[], parentId: string | null) => {
@@ -57,7 +59,8 @@ function remoteStorage() {
       outbox.push(record);
       return { desktop: current, record };
     },
-    acknowledgeMutation: async (operationId: string) => { outbox = outbox.filter((record) => record.operationId !== operationId); },
+    acknowledgeMutation: async (operationId: string) => { outbox = outbox.filter((record) => record.operationId !== operationId); pending.delete(operationId); },
+    readPendingContent: async (operationId: string, entryId: string) => pending.get(operationId)?.get(entryId) ?? (() => { throw new Error("missing pending content"); })(),
     blockMutation: async (operationId: string, error: string) => {
       stats.blockWrites += 1;
       outbox = outbox.map((record) => record.operationId === operationId ? { ...record, status: "blocked" as const, error } : record);
@@ -292,7 +295,8 @@ describe("canonical synchronization", () => {
     const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
       requests.push(`${init?.method ?? "GET"} ${String(input)}`);
       if (String(input) === "/api/desktops/desk") return Response.json({ ...remote, catalogRevision: ++reads });
-      if (String(input) === "/api/desktops/desk/entries/file-1/content") return new Response("note", { headers: { "X-Hiraya-Revision": "1" } });
+      if (String(input) === "/api/desktops/desk/entries/file-1/content-access?revision=1") return Response.json({ entryId: "file-1", contentRevision: 1, size: 4, sha256: "edb465624291e4053c6c5ea4b7eb320dec773e10a57d26b95dcf0564f8e310f8", access: { url: "https://downloads.example.test/file-1", method: "GET", headers: {}, expiresAt: 2_000_000_000_000 } });
+      if (String(input) === "https://downloads.example.test/file-1") return new Response("note");
       if (String(input) === "/api/desktops/desk/root-entry-positions") return Response.json({});
       throw new Error(`Unexpected request: ${String(input)}`);
     }) as typeof fetch;
@@ -342,12 +346,14 @@ describe("canonical synchronization", () => {
     const remote = remoteDesktopState();
     const storage = remoteStorage();
     let contentRequests = 0;
-    const fetchImpl = (async (input: RequestInfo | URL) => {
+    let directInit: RequestInit | undefined;
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
       if (String(input) === "/api/desktops/desk") return Response.json(remote);
-      if (String(input) === "/api/desktops/desk/entries/file-1/content") {
+      if (String(input) === "/api/desktops/desk/entries/file-1/content-access?revision=1") {
         contentRequests += 1;
-        return new Response("note", { headers: { "X-Hiraya-Revision": "1" } });
+        return Response.json({ entryId: "file-1", contentRevision: 1, size: 4, sha256: "edb465624291e4053c6c5ea4b7eb320dec773e10a57d26b95dcf0564f8e310f8", access: { url: "https://downloads.example.test/file-1", method: "GET", headers: { "X-Test-Download": "yes" }, expiresAt: 2_000_000_000_000 } });
       }
+      if (String(input) === "https://downloads.example.test/file-1") { directInit = init; return new Response("note"); }
       throw new Error(`Unexpected request: ${String(input)}`);
     }) as typeof fetch;
     const engine = new SyncEngine({ storage, fetch: fetchImpl, eventSource: FakeEventSource as unknown as typeof EventSource });
@@ -358,6 +364,8 @@ describe("canonical synchronization", () => {
     expect(await (await engine.readFile("file-1")).text()).toBe("note");
     expect(contentRequests).toBe(1);
     expect(storage.stats.cacheWrites).toBe(1);
+    expect(directInit).toMatchObject({ method: "GET", credentials: "omit", referrerPolicy: "no-referrer", redirect: "error", cache: "no-store" });
+    expect(new Headers(directInit?.headers).get("X-Test-Download")).toBe("yes");
     await engine.stop();
   });
 
@@ -365,13 +373,250 @@ describe("canonical synchronization", () => {
     const storage = remoteStorage();
     const fetchImpl = (async (input: RequestInfo | URL) => {
       if (String(input) === "/api/desktops/desk") return Response.json(remoteDesktopState());
-      if (String(input) === "/api/desktops/desk/entries/file-1/content") return new Response("note", { headers: { "X-Hiraya-Revision": "2" } });
+      if (String(input) === "/api/desktops/desk/entries/file-1/content-access?revision=1") return Response.json({ entryId: "file-1", contentRevision: 2, size: 4, sha256: "edb465624291e4053c6c5ea4b7eb320dec773e10a57d26b95dcf0564f8e310f8", access: { url: "https://downloads.example.test/file-1", method: "GET", headers: {}, expiresAt: 2_000_000_000_000 } });
       throw new Error(`Unexpected request: ${String(input)}`);
     }) as typeof fetch;
     const engine = new SyncEngine({ storage, fetch: fetchImpl, eventSource: FakeEventSource as unknown as typeof EventSource });
     await engine.start("desk", { x: 0, y: 0 });
     await expect(engine.readFile("file-1")).rejects.toThrow("changed while it was loading");
     expect(storage.stats.cacheWrites).toBe(0);
+    await engine.stop();
+  });
+
+  test("hashes staged saves, uploads directly, and commits before reconciliation", async () => {
+    const storage = remoteStorage();
+    let remote = remoteDesktopState();
+    const requests: string[] = [];
+    let prepareBody: unknown;
+    let directInit: RequestInit | undefined;
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push(`${init?.method ?? "GET"} ${String(input)}`);
+      if (String(input) === "/api/desktops/desk" && !init?.method) return Response.json(remote);
+      if (String(input) === "/api/desktops/desk/blob-mutations" && init?.method === "POST") {
+        prepareBody = JSON.parse(String(init.body));
+        return Response.json({ state: "prepared", uploadId: "upload-1", expiresAt: 2_000_000_000_000, items: [{ entryId: "file-1", access: { url: "https://uploads.example.test/file-1?signature=secret", method: "PUT", headers: { "X-Test-Upload": "yes" }, expiresAt: 2_000_000_000_000 } }] });
+      }
+      if (String(input).startsWith("https://uploads.example.test/")) {
+        directInit = init;
+        expect(await new Response(init?.body).text()).toBe("updated note");
+        return new Response(null, { status: 200 });
+      }
+      if (String(input) === "/api/desktops/desk/blob-mutations/upload-1/commit" && init?.method === "POST") {
+        remote = { ...remote, catalogRevision: 2, entries: [{ ...remote.entries[0], size: 12, revision: 2, contentRevision: 2 }] };
+        return Response.json({});
+      }
+      throw new Error(`Unexpected request: ${String(input)}`);
+    }) as typeof fetch;
+    const engine = new SyncEngine({ storage, fetch: fetchImpl, eventSource: FakeEventSource as unknown as typeof EventSource });
+    await engine.start("desk", { x: 0, y: 0 });
+    await engine.saveTextFile("file-1", "updated note");
+
+    expect(prepareBody).toMatchObject({
+      kind: "save-content",
+      items: [{ entry: expect.objectContaining({ id: "file-1", size: 12 }), sha256: "977eefe2ccc906a187bc83d1815feaa068bbc1268f3d38f368a9bb2197f1a807", md5: "e2a4459894e14f0f93cc1c007eae90f8" }],
+    });
+    expect(directInit).toMatchObject({ method: "PUT", credentials: "omit", referrerPolicy: "no-referrer", redirect: "error" });
+    expect(new Headers(directInit?.headers).get("X-Test-Upload")).toBe("yes");
+    expect(requests.indexOf("PUT https://uploads.example.test/file-1?signature=secret")).toBeLessThan(requests.indexOf("POST /api/desktops/desk/blob-mutations/upload-1/commit"));
+    expect((await engine.getOutboxStatus()).pending).toBe(0);
+    await engine.stop();
+  });
+
+  test("prepares a mixed tree in original order and uploads only its file", async () => {
+    const storage = remoteStorage();
+    let remote = remoteDesktopState();
+    let preparedItems: Array<{ entry: ReturnType<typeof remoteDesktopState>["entries"][number]; sha256: string; md5: string }> = [];
+    const requests: string[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push(`${init?.method ?? "GET"} ${String(input)}`);
+      if (String(input) === "/api/desktops/desk" && !init?.method) return Response.json(remote);
+      if (String(input) === "/api/desktops/desk/blob-mutations" && init?.method === "POST") {
+        const body = JSON.parse(String(init.body)) as { kind: string; items: typeof preparedItems };
+        expect(body.kind).toBe("create");
+        preparedItems = body.items;
+        const file = preparedItems.find((item) => item.entry.kind === "file")!;
+        return Response.json({ state: "prepared", uploadId: "tree-upload", expiresAt: 2_000_000_000_000, items: [{ entryId: file.entry.id, access: { url: "https://uploads.example.test/tree-file", method: "PUT", headers: {}, expiresAt: 2_000_000_000_000 } }] });
+      }
+      if (String(input) === "https://uploads.example.test/tree-file") {
+        expect(await new Response(init?.body).text()).toBe("leaf");
+        return new Response(null, { status: 200 });
+      }
+      if (String(input) === "/api/desktops/desk/blob-mutations/tree-upload/commit" && init?.method === "POST") {
+        remote = { ...remote, catalogRevision: 2, entries: [...remote.entries, ...preparedItems.map(({ entry }) => ({ ...entry, revision: 2, contentRevision: entry.kind === "file" ? 2 : 0 }))] };
+        return Response.json({});
+      }
+      throw new Error(`Unexpected request: ${String(input)}`);
+    }) as typeof fetch;
+    const engine = new SyncEngine({ storage, fetch: fetchImpl, eventSource: FakeEventSource as unknown as typeof EventSource });
+    await engine.start("desk", { x: 0, y: 0 });
+    await engine.pasteEntries({
+      selectedRootIds: ["source-folder"],
+      entries: [
+        { kind: "folder", id: "source-folder", name: "Tree", parentId: null, createdAt: 1, modifiedAt: 1, position: { x: 1, y: 2 } },
+        { kind: "file", id: "source-file", name: "leaf.txt", parentId: "source-folder", createdAt: 1, modifiedAt: 1, position: { x: 3, y: 4 }, mimeType: "text/plain", size: 4 },
+      ],
+      contents: new Map([["source-file", new Blob(["leaf"], { type: "text/plain" })]]),
+    }, null, new Map([["source-folder", "Tree"]]), new Map([["source-folder", { x: 10, y: 20 }]]));
+
+    expect(preparedItems.map(({ entry, sha256, md5 }) => ({ kind: entry.kind, id: entry.id, parentId: entry.parentId, sha256, md5 }))).toEqual([
+      { kind: "folder", id: preparedItems[0].entry.id, parentId: null, sha256: "", md5: "" },
+      { kind: "file", id: preparedItems[1].entry.id, parentId: preparedItems[0].entry.id, sha256: "9f91161f43433e49a6de6db680d79f60159f2e4ac9172621a12846428158440b", md5: "bab4ff04cc14af66e4d42c85f888cfe6" },
+    ]);
+    expect(requests.filter((request) => request.startsWith("PUT https://uploads.example.test/"))).toHaveLength(1);
+    expect((await engine.getOutboxStatus()).pending).toBe(0);
+    await engine.stop();
+  });
+
+  test("prepares and commits folder-only creates without upload targets", async () => {
+    const storage = remoteStorage();
+    let remote = remoteDesktopState();
+    let prepareBody: { kind: string; items: Array<{ entry: { id: string; kind: string }; sha256: string; md5: string }> } | undefined;
+    const requests: string[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push(`${init?.method ?? "GET"} ${String(input)}`);
+      if (String(input) === "/api/desktops/desk" && !init?.method) return Response.json(remote);
+      if (String(input) === "/api/desktops/desk/blob-mutations" && init?.method === "POST") {
+        prepareBody = JSON.parse(String(init.body));
+        return Response.json({ state: "prepared", uploadId: "folder-upload", expiresAt: 2_000_000_000_000, items: [] });
+      }
+      if (String(input) === "/api/desktops/desk/blob-mutations/folder-upload/commit" && init?.method === "POST") {
+        const folder = prepareBody!.items[0].entry;
+        remote = { ...remote, catalogRevision: 2, entries: [...remote.entries, { ...folder, name: "Empty", parentId: null, createdAt: 1, modifiedAt: 2, position: { x: 4, y: 5 }, revision: 2, contentRevision: 0 }] };
+        return Response.json({});
+      }
+      throw new Error(`Unexpected request: ${String(input)}`);
+    }) as typeof fetch;
+    const engine = new SyncEngine({ storage, fetch: fetchImpl, eventSource: FakeEventSource as unknown as typeof EventSource });
+    await engine.start("desk", { x: 0, y: 0 });
+    await engine.createFolder("Empty", null, { x: 4, y: 5 });
+
+    expect(prepareBody).toMatchObject({ kind: "create", items: [{ entry: { kind: "folder" }, sha256: "", md5: "" }] });
+    expect(requests.some((request) => request.startsWith("PUT "))).toBe(false);
+    expect(requests).toContain("POST /api/desktops/desk/blob-mutations/folder-upload/commit");
+    expect((await engine.getOutboxStatus()).pending).toBe(0);
+    await engine.stop();
+  });
+
+  test("reconciles an already committed prepare without uploading or committing again", async () => {
+    const storage = remoteStorage();
+    let remote = remoteDesktopState();
+    const requests: string[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push(`${init?.method ?? "GET"} ${String(input)}`);
+      if (String(input) === "/api/desktops/desk" && !init?.method) return Response.json(remote);
+      if (String(input) === "/api/desktops/desk/blob-mutations" && init?.method === "POST") {
+        remote = { ...remote, catalogRevision: 2, entries: [{ ...remote.entries[0], size: 9, revision: 2, contentRevision: 2 }] };
+        return Response.json({ state: "committed" });
+      }
+      throw new Error(`Unexpected request: ${String(input)}`);
+    }) as typeof fetch;
+    const engine = new SyncEngine({ storage, fetch: fetchImpl, eventSource: FakeEventSource as unknown as typeof EventSource });
+    await engine.start("desk", { x: 0, y: 0 });
+    await engine.saveTextFile("file-1", "committed");
+
+    expect(requests.some((request) => request.startsWith("PUT "))).toBe(false);
+    expect(requests.some((request) => request.includes("/commit"))).toBe(false);
+    expect((await engine.getOutboxStatus()).pending).toBe(0);
+    await engine.stop();
+  });
+
+  test("aborts a failed upload and prepares fresh targets on replay", async () => {
+    const storage = remoteStorage();
+    let remote = remoteDesktopState();
+    let prepares = 0;
+    const requests: string[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push(`${init?.method ?? "GET"} ${String(input)}`);
+      if (String(input) === "/api/desktops/desk" && !init?.method) return Response.json(remote);
+      if (String(input) === "/api/desktops/desk/blob-mutations" && init?.method === "POST") {
+        prepares += 1;
+        return Response.json({ state: "prepared", uploadId: `upload-${prepares}`, expiresAt: 2_000_000_000_000, items: [{ entryId: "file-1", access: { url: `https://uploads.example.test/file-1?attempt=${prepares}`, method: "PUT", headers: {}, expiresAt: 2_000_000_000_000 } }] });
+      }
+      if (String(input) === "https://uploads.example.test/file-1?attempt=1") return new Response(null, { status: 503 });
+      if (String(input) === "/api/desktops/desk/blob-mutations/upload-1" && init?.method === "DELETE") return new Response(null, { status: 204 });
+      if (String(input) === "https://uploads.example.test/file-1?attempt=2") return new Response(null, { status: 200 });
+      if (String(input) === "/api/desktops/desk/blob-mutations/upload-2/commit" && init?.method === "POST") {
+        remote = { ...remote, catalogRevision: 2, entries: [{ ...remote.entries[0], size: 5, revision: 2, contentRevision: 2 }] };
+        return Response.json({});
+      }
+      throw new Error(`Unexpected request: ${String(input)}`);
+    }) as typeof fetch;
+
+    const first = new SyncEngine({ storage, fetch: fetchImpl, eventSource: FakeEventSource as unknown as typeof EventSource });
+    await first.start("desk", { x: 0, y: 0 });
+    await first.saveTextFile("file-1", "retry");
+    expect((await first.getOutboxStatus()).pending).toBe(1);
+    await first.stop();
+
+    const second = new SyncEngine({ storage, fetch: fetchImpl, eventSource: FakeEventSource as unknown as typeof EventSource });
+    expect((await second.start("desk", { x: 0, y: 0 })).status).toBe("online");
+    expect(prepares).toBe(2);
+    expect(requests).toContain("DELETE /api/desktops/desk/blob-mutations/upload-1");
+    expect(requests).toContain("PUT https://uploads.example.test/file-1?attempt=2");
+    expect((await second.getOutboxStatus()).pending).toBe(0);
+    await second.stop();
+  });
+
+  test("restarts prepare, upload, and commit after an expired commit reservation", async () => {
+    const storage = remoteStorage();
+    let remote = remoteDesktopState();
+    let prepares = 0;
+    let commits = 0;
+    const requests: string[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push(`${init?.method ?? "GET"} ${String(input)}`);
+      if (String(input) === "/api/desktops/desk" && !init?.method) return Response.json(remote);
+      if (String(input) === "/api/desktops/desk/blob-mutations" && init?.method === "POST") {
+        prepares += 1;
+        return Response.json({ state: "prepared", uploadId: `expired-${prepares}`, expiresAt: 2_000_000_000_000, items: [{ entryId: "file-1", access: { url: `https://uploads.example.test/expired-${prepares}`, method: "PUT", headers: {}, expiresAt: 2_000_000_000_000 } }] });
+      }
+      if (String(input).startsWith("https://uploads.example.test/expired-")) return new Response(null, { status: 200 });
+      if (String(input).includes("/blob-mutations/expired-") && String(input).endsWith("/commit")) {
+        commits += 1;
+        if (commits === 1) return Response.json({ error: "upload reservation expired" }, { status: 410 });
+        remote = { ...remote, catalogRevision: 2, entries: [{ ...remote.entries[0], size: 5, revision: 2, contentRevision: 2 }] };
+        return Response.json({});
+      }
+      throw new Error(`Unexpected request: ${String(input)}`);
+    }) as typeof fetch;
+
+    const first = new SyncEngine({ storage, fetch: fetchImpl, eventSource: FakeEventSource as unknown as typeof EventSource });
+    await first.start("desk", { x: 0, y: 0 });
+    await first.saveTextFile("file-1", "retry");
+    expect(await first.getOutboxStatus()).toMatchObject({ pending: 1, blocked: 0 });
+    await first.stop();
+
+    const second = new SyncEngine({ storage, fetch: fetchImpl, eventSource: FakeEventSource as unknown as typeof EventSource });
+    expect((await second.start("desk", { x: 0, y: 0 })).status).toBe("online");
+    expect(prepares).toBe(2);
+    expect(commits).toBe(2);
+    expect(requests).toContain("PUT https://uploads.example.test/expired-2");
+    expect(requests.some((request) => request.startsWith("DELETE "))).toBe(false);
+    expect((await second.getOutboxStatus()).pending).toBe(0);
+    await second.stop();
+  });
+
+  for (const commitError of [
+    { status: 404, message: "upload reservation not found", blocked: false },
+    { status: 409, message: "a reserved upload is missing", blocked: false },
+    { status: 409, message: "a reserved upload failed size or checksum verification", blocked: false },
+    { status: 409, message: "an entry conflicts with existing metadata", blocked: true },
+  ]) test(`${commitError.blocked ? "blocks" : "retries"} commit ${commitError.status}: ${commitError.message}`, async () => {
+    const storage = remoteStorage();
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/desktops/desk" && !init?.method) return Response.json(remoteDesktopState());
+      if (String(input) === "/api/desktops/desk/blob-mutations" && init?.method === "POST") return Response.json({ state: "prepared", uploadId: "conflict", expiresAt: 2_000_000_000_000, items: [{ entryId: "file-1", access: { url: "https://uploads.example.test/conflict", method: "PUT", headers: {}, expiresAt: 2_000_000_000_000 } }] });
+      if (String(input) === "https://uploads.example.test/conflict") return new Response(null, { status: 200 });
+      if (String(input) === "/api/desktops/desk/blob-mutations/conflict/commit") return Response.json({ error: commitError.message }, { status: commitError.status });
+      throw new Error(`Unexpected request: ${String(input)}`);
+    }) as typeof fetch;
+    const engine = new SyncEngine({ storage, fetch: fetchImpl, eventSource: FakeEventSource as unknown as typeof EventSource });
+    await engine.start("desk", { x: 0, y: 0 });
+    const saving = engine.saveTextFile("file-1", "conflict");
+    if (commitError.blocked) await expect(saving).rejects.toThrow(commitError.message);
+    else await saving;
+    expect(await engine.getOutboxStatus()).toMatchObject(commitError.blocked ? { pending: 0, blocked: 1 } : { pending: 1, blocked: 0 });
+    expect(storage.stats.blockWrites).toBe(commitError.blocked ? 1 : 0);
     await engine.stop();
   });
 

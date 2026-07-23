@@ -3,11 +3,13 @@ import { AuthenticationRequiredError, bootstrapSession, loginUrl, parseAuthSessi
 
 describe("session bootstrap", () => {
   test("validates stable storage identity and display metadata", () => {
-    expect(parseAuthSession({ storageId: "opaque-account-1", user: { displayName: "Ada", email: "ada@example.test" } })).toEqual({
+    expect(parseAuthSession({ storageId: "opaque-account-1", user: { displayName: "Ada", email: "ada@example.test" }, capabilities: { blobTransfer: "direct-b2-v1" } })).toEqual({
       storageId: "opaque-account-1",
       user: { displayName: "Ada", email: "ada@example.test" },
+      capabilities: { blobTransfer: "direct-b2-v1" },
     });
-    expect(() => parseAuthSession({ storageId: "", user: { displayName: "Ada" } })).toThrow("storage ID");
+    expect(() => parseAuthSession({ storageId: "", user: { displayName: "Ada" }, capabilities: { blobTransfer: "direct-b2-v1" } })).toThrow("storage ID");
+    expect(() => parseAuthSession({ storageId: "opaque-account-1", user: { displayName: "Ada" }, capabilities: { blobTransfer: "proxy-v1" } })).toThrow("direct-b2-v1");
   });
 
   test("keeps login returns root-relative", () => {

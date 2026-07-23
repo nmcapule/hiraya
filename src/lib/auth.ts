@@ -9,6 +9,9 @@ export type SessionUser = {
 export type AuthSession = {
   storageId: string;
   user: SessionUser;
+  capabilities: {
+    blobTransfer: "direct-b2-v1";
+  };
 };
 
 export class AuthenticationRequiredError extends Error {
@@ -25,8 +28,11 @@ function requiredString(value: unknown, label: string) {
 
 export function parseAuthSession(value: unknown): AuthSession {
   if (!value || typeof value !== "object") throw new Error("The session bootstrap is invalid.");
-  const session = value as { storageId?: unknown; user?: unknown };
+  const session = value as { storageId?: unknown; user?: unknown; capabilities?: unknown };
   if (!session.user || typeof session.user !== "object") throw new Error("The session bootstrap contains invalid user metadata.");
+  if (!session.capabilities || typeof session.capabilities !== "object" || (session.capabilities as { blobTransfer?: unknown }).blobTransfer !== "direct-b2-v1") {
+    throw new Error("The session bootstrap requires direct-b2-v1 blob transfer support.");
+  }
   const user = session.user as { displayName?: unknown; email?: unknown; avatarUrl?: unknown };
   const optionalString = (candidate: unknown, label: string) => candidate === undefined ? undefined : requiredString(candidate, label);
   return {
@@ -36,6 +42,7 @@ export function parseAuthSession(value: unknown): AuthSession {
       ...(user.email === undefined ? {} : { email: optionalString(user.email, "email address") }),
       ...(user.avatarUrl === undefined ? {} : { avatarUrl: optionalString(user.avatarUrl, "avatar URL") }),
     },
+    capabilities: { blobTransfer: "direct-b2-v1" },
   };
 }
 

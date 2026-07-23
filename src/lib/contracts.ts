@@ -33,6 +33,85 @@ export type RemoteDesktopState = RemoteDesktopIdentity & {
   appearance: RemoteAppearance;
 };
 
+export type DirectBlobAccess = { url: string; method: "GET" | "PUT"; headers: Record<string, string>; expiresAt: number };
+export type DirectBlobTarget = { entryId: string; access: DirectBlobAccess };
+export type BlobMutationPreparation = { state: "prepared"; uploadId: string; expiresAt: number; items: DirectBlobTarget[] } | { state: "committed" };
+export type ContentAccessDescriptor = { entryId: string; contentRevision: number; size: number; sha256: string; access: DirectBlobAccess };
+
+const SHA256_HEX = /^[a-f0-9]{64}$/;
+const HEADER_NAME = /^[!#$%&'*+.^_`|~\w-]+$/;
+const FORBIDDEN_DIRECT_HEADERS = new Set(["connection", "content-length", "cookie", "cookie2", "host", "origin", "referer", "transfer-encoding", "upgrade"]);
+
+function parseDirectUrl(value: unknown) {
+  if (typeof value !== "string" || value.length > 8192) throw new Error("A direct blob target has an invalid URL.");
+  let url: URL;
+  try { url = new URL(value); } catch { throw new Error("A direct blob target has an invalid URL."); }
+  const loopback = (hostname: string) => hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]";
+  const browserLocation = (globalThis as typeof globalThis & { location?: { hostname: string } }).location;
+  const localDevelopment = browserLocation !== undefined && loopback(browserLocation.hostname) && loopback(url.hostname);
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && localDevelopment) || url.username || url.password || url.hash) {
+    throw new Error("A direct blob target must use a safe HTTPS URL.");
+  }
+  return url.href;
+}
+
+function parseDirectHeaders(value: unknown) {
+  if (!isRecord(value)) throw new Error("A direct blob target has invalid headers.");
+  const headers: Record<string, string> = {};
+  const seen = new Set<string>();
+  for (const [name, headerValue] of Object.entries(value)) {
+    const lower = name.toLowerCase();
+    if (!HEADER_NAME.test(name) || seen.has(lower) || FORBIDDEN_DIRECT_HEADERS.has(lower) || lower.startsWith("proxy-") || lower.startsWith("sec-") || typeof headerValue !== "string" || /[\r\n]/.test(headerValue)) {
+      throw new Error("A direct blob target contains an unsafe header.");
+    }
+    seen.add(lower);
+    headers[name] = headerValue;
+  }
+  return headers;
+}
+
+function parseSha256(value: unknown) {
+  if (typeof value !== "string" || !SHA256_HEX.test(value)) throw new Error("A blob has an invalid SHA-256 digest.");
+  return value;
+}
+
+function parseDirectAccess(value: unknown, method: "GET" | "PUT"): DirectBlobAccess {
+  if (!isRecord(value) || value.method !== method) throw new Error(`A direct blob target must use ${method}.`);
+  const expiresAt = readNonNegativeInteger(value.expiresAt, "A direct blob target has an invalid expiration.");
+  return { url: parseDirectUrl(value.url), method, headers: parseDirectHeaders(value.headers), expiresAt };
+}
+
+export function parseBlobMutationPreparation(value: unknown, expectedEntryIds: readonly string[]): BlobMutationPreparation {
+  if (!isRecord(value) || (value.state !== "prepared" && value.state !== "committed")) {
+    throw new Error("The blob mutation preparation response is invalid.");
+  }
+  if (value.state === "committed") return { state: "committed" };
+  if (typeof value.uploadId !== "string" || !value.uploadId || value.uploadId.length > 1024 || [...value.uploadId].some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127) || !Array.isArray(value.items)) {
+    throw new Error("The blob mutation preparation response is invalid.");
+  }
+  const expiresAt = readNonNegativeInteger(value.expiresAt, "The blob mutation preparation response has an invalid expiration.");
+  const expected = new Set(expectedEntryIds);
+  if (expected.size !== expectedEntryIds.length || value.items.length !== expected.size) throw new Error("The blob mutation preparation response has unexpected targets.");
+  const seen = new Set<string>();
+  const items = value.items.map((candidate): DirectBlobTarget => {
+    if (!isRecord(candidate) || !isValidId(candidate.entryId) || !expected.has(candidate.entryId) || seen.has(candidate.entryId)) {
+      throw new Error("The blob mutation preparation response has unexpected targets.");
+    }
+    seen.add(candidate.entryId);
+    return { entryId: candidate.entryId, access: parseDirectAccess(candidate.access, "PUT") };
+  });
+  return { state: "prepared", uploadId: value.uploadId, expiresAt, items };
+}
+
+export function parseContentAccessDescriptor(value: unknown, expectedEntryId: string, expectedRevision: number, expectedSize: number): ContentAccessDescriptor {
+  if (!isRecord(value) || value.entryId !== expectedEntryId) throw new Error("The content access response is for a different entry.");
+  const contentRevision = readRevision(value.contentRevision, "The content access response has an invalid revision.");
+  const size = readNonNegativeInteger(value.size, "The content access response has an invalid size.");
+  if (contentRevision !== expectedRevision) throw new Error("The content access response is for a different revision.");
+  if (size !== expectedSize) throw new Error("The content access response has an unexpected size.");
+  return { entryId: expectedEntryId, contentRevision, size, sha256: parseSha256(value.sha256), access: parseDirectAccess(value.access, "GET") };
+}
+
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }

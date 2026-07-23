@@ -16,6 +16,9 @@ describe("canonical routes", () => {
     expect(API_ROUTES.desktopMoveEntries("d")).toBe("/api/desktops/d/entries/move");
     expect(API_ROUTES.desktopDeleteEntries("d")).toBe("/api/desktops/d/entries/delete");
     expect(API_ROUTES.desktopContent("d", "a/b")).toBe("/api/desktops/d/entries/a%2Fb/content");
+    expect(API_ROUTES.desktopBlobMutations("d")).toBe("/api/desktops/d/blob-mutations");
+    expect(API_ROUTES.desktopBlobMutationCommit("d", "upload/id")).toBe("/api/desktops/d/blob-mutations/upload%2Fid/commit");
+    expect(API_ROUTES.desktopContentAccess("d", "a/b", 7)).toBe("/api/desktops/d/entries/a%2Fb/content-access?revision=7");
     expect(API_ROUTES.desktopRootEntryPositions("d")).toBe("/api/desktops/d/root-entry-positions");
     expect(API_ROUTES.entryTransfers).toBe("/api/entry-transfers");
   });

@@ -2,7 +2,7 @@ import type { SeededManifest } from "./seeded-manifest";
 import * as storage from "./opfs";
 import { assertUniqueName, namesMatch, validateEntryName } from "./entry-validation";
 import { API_ROUTES } from "./api-routes";
-import { parseLayout, parsePosition, parseRemoteDesktopState, parseRootEntryPositionUpdates, type RemoteDesktopState, type RemoteEntry } from "./contracts";
+import { parseBlobMutationPreparation, parseContentAccessDescriptor, parseLayout, parsePosition, parseRemoteDesktopState, parseRootEntryPositionUpdates, type RemoteDesktopState, type RemoteEntry } from "./contracts";
 import type { DesktopEntry, DesktopIdentity, DesktopLayout, RootEntryPositionUpdate, EditorSettings, EntryPosition, FileEntry, FolderEntry } from "../types";
 import type { OutboxOperation, OutboxRecord } from "./outbox";
 import { desktopPendingOperationProtection, outboxDesktopRetentionIds } from "./outbox";
@@ -11,6 +11,7 @@ import type { ClipboardEntrySnapshot } from "./clipboard";
 import { parseActivityPage, parseActivityQuery, type ActivityQuery } from "./activity";
 import { parseDesktopCatalog, type CatalogQuota } from "./desktop-catalog";
 import { AuthenticationRequiredError, redirectToLogin, requireAuthenticatedResponse } from "./auth";
+import { mapWithConcurrency, sha256Blob, uploadBlobDigests } from "./blob-transfer";
 
 type OutboxOperationInput = OutboxOperation extends infer Operation
   ? Operation extends OutboxOperation ? Omit<Operation, "schemaVersion"> : never
@@ -57,6 +58,13 @@ class SyncRequestError extends Error {
   constructor(message: string, readonly status: number | null, readonly permanent: boolean) {
     super(message);
   }
+}
+
+function retryableBlobCommitError(error: unknown): error is SyncRequestError {
+  return error instanceof SyncRequestError && (error.status === 410 || error.status === 404 && error.message === "upload reservation not found" || error.status === 409 && (
+    error.message === "a reserved upload is missing" ||
+    error.message === "a reserved upload failed size or checksum verification"
+  ));
 }
 
 export class VirtualFileUnavailableError extends Error {
@@ -366,6 +374,71 @@ export class SyncEngine {
     return result;
   }
 
+  private async abortBlobMutation(record: OutboxRecord, uploadId: string) {
+    try {
+      const response = await this.fetchImpl(API_ROUTES.desktopBlobMutation(record.desktopId, uploadId), {
+        method: "DELETE",
+        headers: this.idempotencyHeaders(record),
+        credentials: "same-origin",
+        cache: "no-store",
+      });
+      this.requireAuthentication(response);
+    } catch {
+      // A later replay starts with a fresh prepare, so abort cleanup is best effort.
+    }
+  }
+
+  private async sendBlobMutation(record: OutboxRecord & { operation: Extract<OutboxOperation, { kind: "create" | "save-content" }> }) {
+    const operation = record.operation;
+    const files = operation.kind === "create" ? operation.entries.filter((entry): entry is FileEntry => entry.kind === "file") : [operation.entry];
+    const contents = new Map<string, Blob>();
+    const hashes = new Map(await mapWithConcurrency(files, 3, async (entry) => {
+      const content = await this.storage.readPendingContent(record.operationId, entry.id);
+      if (content.size !== entry.size) throw new Error(`The staged contents of “${entry.name}” have an unexpected size.`);
+      contents.set(entry.id, content);
+      return [entry.id, await uploadBlobDigests(content)] as const;
+    }));
+    const entries = operation.kind === "create" ? operation.entries : [operation.entry];
+    const prepared = parseBlobMutationPreparation(await this.requestJson(API_ROUTES.desktopBlobMutations(record.desktopId), {
+      method: "POST",
+      headers: this.idempotencyHeaders(record, { "Content-Type": "application/json" }),
+      body: JSON.stringify({ kind: operation.kind, items: entries.map((entry) => ({ entry: serverEntry(entry), ...(entry.kind === "file" ? hashes.get(entry.id)! : { sha256: "", md5: "" }) })) }),
+    }), files.map((entry) => entry.id));
+    if (prepared.state === "committed") return;
+    let commitStarted = false;
+    try {
+      await mapWithConcurrency(prepared.items, 3, async (target) => {
+        let response: Response;
+        try {
+          response = await this.fetchImpl(target.access.url, {
+            method: target.access.method,
+            headers: target.access.headers,
+            body: contents.get(target.entryId)!,
+            credentials: "omit",
+            referrerPolicy: "no-referrer",
+            redirect: "error",
+          });
+        } catch {
+          throw new SyncRequestError("Direct file upload failed. The change remains queued.", null, false);
+        }
+        if (!response.ok) throw new SyncRequestError(`Direct file upload failed (${response.status}). The change remains queued.`, null, false);
+      });
+      commitStarted = true;
+      try {
+        await this.requestJson(API_ROUTES.desktopBlobMutationCommit(record.desktopId, prepared.uploadId), {
+          method: "POST",
+          headers: this.idempotencyHeaders(record),
+        });
+      } catch (error) {
+        if (retryableBlobCommitError(error)) throw new SyncRequestError(error.message, error.status, false);
+        throw error;
+      }
+    } catch (error) {
+      if (!commitStarted) await this.abortBlobMutation(record, prepared.uploadId);
+      throw error;
+    }
+  }
+
   private async sendOutboxOperation(record: OutboxRecord) {
     const operation = record.operation;
     const desktopId = record.desktopId;
@@ -381,18 +454,7 @@ export class SyncEngine {
         await this.requestJson(API_ROUTES.desktop(operation.desktopId), { method: "DELETE", headers: headers() });
         return;
       case "create": {
-        if (operation.entries.length === 1) {
-          const entry = operation.entries[0];
-          const form = new FormData();
-          form.append("entry", JSON.stringify(serverEntry(entry)));
-          if (entry.kind === "file") form.append("content", await this.storage.readPendingContent(record.operationId, entry.id), entry.name);
-          await this.requestJson(API_ROUTES.desktopEntries(desktopId), { method: "POST", headers: headers(), body: form });
-        } else {
-          const form = new FormData();
-          form.append("entries", JSON.stringify(operation.entries.map(serverEntry)));
-          for (const entry of operation.entries) if (entry.kind === "file") form.append(`file-${entry.id}`, await this.storage.readPendingContent(record.operationId, entry.id), entry.name);
-          await this.requestJson(API_ROUTES.desktopImports(desktopId), { method: "POST", headers: headers(), body: form });
-        }
+        await this.sendBlobMutation(record as OutboxRecord & { operation: Extract<OutboxOperation, { kind: "create" }> });
         return;
       }
       case "update-entry":
@@ -411,7 +473,7 @@ export class SyncEngine {
         await this.requestJson(API_ROUTES.entryTransfers, { method: "POST", headers: headers({ "Content-Type": "application/json" }), body: JSON.stringify({ sourceDesktopId: desktopId, destinationDesktopId: operation.destinationDesktopId, entryIds: operation.entryIds, parentId: operation.parentId }) });
         return;
       case "save-content":
-        await this.requestJson(API_ROUTES.desktopContent(desktopId, operation.entry.id), { method: "PUT", headers: headers({ "Content-Type": operation.entry.mimeType }), body: await this.storage.readPendingContent(record.operationId, operation.entry.id) });
+        await this.sendBlobMutation(record as OutboxRecord & { operation: Extract<OutboxOperation, { kind: "save-content" }> });
         return;
       case "root-entry-positions":
         await this.requestJson(API_ROUTES.desktopRootEntryPositions(desktopId), { method: "PUT", headers: headers({ "Content-Type": "application/json" }), body: JSON.stringify(operation.positions) });
@@ -897,20 +959,39 @@ export class SyncEngine {
     const existing = this.contentLoads.get(key);
     if (existing) return existing;
     const loading = (async () => {
-      let response: Response;
+      let descriptorResponse: Response;
       try {
-        response = await this.fetchImpl(API_ROUTES.desktopContent(desktopId, id), { cache: "no-store", credentials: "same-origin" });
+        descriptorResponse = await this.fetchImpl(API_ROUTES.desktopContentAccess(desktopId, id, contentRevision), { cache: "no-store", credentials: "same-origin" });
       } catch {
         this.setStatus("offline");
         throw new VirtualFileUnavailableError();
       }
-      this.requireAuthentication(response);
-      if (!response.ok) throw new Error(response.status === 404 ? "This file no longer exists on the server." : `The server contents of “${entry.name}” could not be loaded (${response.status}).`);
-      const responseRevisionHeader = response.headers.get("X-Hiraya-Revision");
-      const responseRevision = responseRevisionHeader === null ? Number.NaN : Number(responseRevisionHeader);
-      if (!Number.isSafeInteger(responseRevision) || responseRevision !== contentRevision) throw new VirtualFileChangedError();
+      this.requireAuthentication(descriptorResponse);
+      if (!descriptorResponse.ok) throw new Error(descriptorResponse.status === 404 ? "This file no longer exists on the server." : `Access to the server contents of “${entry.name}” could not be loaded (${descriptorResponse.status}).`);
+      let descriptor;
+      try {
+        descriptor = parseContentAccessDescriptor(await descriptorResponse.json(), id, contentRevision, entry.size);
+      } catch (error) {
+        if (error instanceof Error && error.message.includes("different revision")) throw new VirtualFileChangedError();
+        throw error;
+      }
+      let response: Response;
+      try {
+        response = await this.fetchImpl(descriptor.access.url, {
+          method: descriptor.access.method,
+          headers: descriptor.access.headers,
+          cache: "no-store",
+          credentials: "omit",
+          referrerPolicy: "no-referrer",
+          redirect: "error",
+        });
+      } catch {
+        throw new VirtualFileUnavailableError("This file could not be downloaded. Reconnect and try again.");
+      }
+      if (!response.ok) throw new VirtualFileUnavailableError(`This file could not be downloaded (${response.status}). Reconnect and try again.`);
       const content = await response.blob();
-      if (content.size !== entry.size) throw new Error(`The server contents of “${entry.name}” have an unexpected size.`);
+      if (content.size !== descriptor.size || content.size !== entry.size) throw new Error(`The server contents of “${entry.name}” have an unexpected size.`);
+      if (await sha256Blob(content) !== descriptor.sha256) throw new Error(`The server contents of “${entry.name}” failed integrity verification.`);
       this.assertActive(generation);
       const stored = await this.storage.cacheRemoteFile(desktopId, catalogId, id, contentRevision, content);
       this.assertActive(generation);
