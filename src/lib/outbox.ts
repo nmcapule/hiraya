@@ -1,5 +1,5 @@
 import type { DesktopEntry, DesktopIdentity, DesktopLayout, RootEntryPositionUpdate, EditorSettings, FileEntry } from "../types";
-import { isValidId, parseDesktopIdentity, parseEditorSettings, parseEntries, parseLayout, parseRootEntryPositions, parseRootEntryPositionUpdates } from "./contracts";
+import { isValidId, parseDesktopIdentity, parseEditorSettings, parseEntries, parseLayout, parseLocalEntry, parseRootEntryPositions, parseRootEntryPositionUpdates } from "./contracts";
 import type { PersistedDesktopState } from "./desktop-state";
 import { DEFAULT_THEME_ID, parseCustomTheme, parseThemeState, type CustomTheme } from "./themes";
 
@@ -102,10 +102,13 @@ export function transferEntriesBetweenDesktopStates(
 
 export function normalizeOutboxOperation(operation: OutboxOperation): OutboxOperation {
   if (operation.schemaVersion !== 1) throw new Error("The queued operation uses an unsupported schema version.");
-  if (operation.kind === "create") return { ...operation, entries: parseEntries(operation.entries) as DesktopEntry[] };
-  if (operation.kind === "update-entry") return { ...operation, entry: parseEntries([operation.entry])[0] as DesktopEntry };
+  if (operation.kind === "create") {
+    if (!Array.isArray(operation.entries)) throw new Error("The desktop entries have an unsupported format.");
+    return { ...operation, entries: operation.entries.map(parseLocalEntry) };
+  }
+  if (operation.kind === "update-entry") return { ...operation, entry: parseLocalEntry(operation.entry) };
   if (operation.kind === "save-content") {
-    const entry = parseEntries([operation.entry])[0];
+    const entry = parseLocalEntry(operation.entry);
     if (entry.kind !== "file") throw new Error("Saved content requires a file entry.");
     return { ...operation, entry };
   }
@@ -210,7 +213,7 @@ export function applyOutboxOperation(state: PersistedDesktopState, operation: Ou
     }
     case "save-content":
       if (!entries.some((entry) => entry.id === operation.entry.id && entry.kind === "file")) throw new Error("That file no longer exists.");
-      entries = entries.map((entry) => entry.id === operation.entry.id ? operation.entry : entry);
+      entries = parseEntries(entries.map((entry) => entry.id === operation.entry.id ? operation.entry : entry)) as DesktopEntry[];
       break;
     case "root-entry-positions": {
       const positions = parseRootEntryPositionUpdates(operation.positions, entries);

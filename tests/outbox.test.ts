@@ -51,6 +51,23 @@ describe("strict outbox", () => {
     expect(projected.appearance).toEqual({ selectedThemeId: DEFAULT_THEME_ID, customThemes: [] });
   });
 
+  test("projects operations on entries beneath an existing folder", () => {
+    const folder = { kind: "folder" as const, id: "folder", name: "Folder", parentId: null, createdAt: 1, modifiedAt: 1, position: { x: 0, y: 0 } };
+    const file = { kind: "file" as const, id: "file", name: "note.txt", parentId: folder.id, createdAt: 1, modifiedAt: 1, position: { x: 10, y: 10 }, mimeType: "text/plain", size: 0 };
+    let projected = { ...state(), entries: [folder] };
+
+    projected = applyOutboxOperation(projected, { schemaVersion: 1, kind: "create", entries: [file] });
+    projected = applyOutboxOperation(projected, { schemaVersion: 1, kind: "update-entry", entry: { ...file, name: "renamed.txt", modifiedAt: 2 } });
+    projected = applyOutboxOperation(projected, { schemaVersion: 1, kind: "save-content", entry: { ...file, name: "renamed.txt", size: 4, modifiedAt: 3 } });
+
+    expect(projected.entries.find(({ id }) => id === file.id)).toMatchObject({ parentId: folder.id, name: "renamed.txt", size: 4 });
+  });
+
+  test("rejects operations whose parent is absent from the desktop", () => {
+    const file = { kind: "file" as const, id: "file", name: "note.txt", parentId: "missing", createdAt: 1, modifiedAt: 1, position: { x: 0, y: 0 }, mimeType: "text/plain", size: 0 };
+    expect(() => applyOutboxOperation(state(), { schemaVersion: 1, kind: "create", entries: [file] })).toThrow("missing parent folder");
+  });
+
   test("transfers entry trees and their revisions between desktop states", () => {
     const folder = { kind: "folder" as const, id: "folder", name: "Folder", parentId: null, createdAt: 1, modifiedAt: 1, position: { x: 0, y: 0 } };
     const file = { kind: "file" as const, id: "file", name: "note.txt", parentId: folder.id, createdAt: 1, modifiedAt: 1, position: { x: 0, y: 0 }, mimeType: "text/plain", size: 4 };

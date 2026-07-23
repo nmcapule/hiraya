@@ -201,6 +201,10 @@ function parseEntry(value: unknown, remote: boolean): ParsedEntry {
   return { ...base, kind: "file", mimeType, size: value.size as number, ...revisions };
 }
 
+export function parseLocalEntry(value: unknown): DesktopEntry {
+  return parseEntry(value, false);
+}
+
 export function parseEntries(value: unknown, remote = false): ParsedEntry[] {
   if (!Array.isArray(value)) throw new Error("The desktop entries have an unsupported format.");
   const entries = value.map((candidate) => parseEntry(candidate, remote));
