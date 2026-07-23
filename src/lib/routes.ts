@@ -62,37 +62,19 @@ export function parseDesktopRoute(hash: string): DesktopRoute | null {
   const parts = hash.replace(/^#\/?/, "").split("/").filter(Boolean);
   if (parts.length < 2) return null;
 
-  if (parts[0] === "desktops" && decodeId(parts[1]) && parts[2] === "workspaces" && /^-?\d+$/.test(parts[3] ?? "") && /^-?\d+$/.test(parts[4] ?? "")) {
+  if (parts[0] === "desktops" && decodeId(parts[1]) && parts[2] === "areas" && /^-?\d+$/.test(parts[3] ?? "") && /^-?\d+$/.test(parts[4] ?? "")) {
     const column = Number(parts[3]);
     const row = Number(parts[4]);
     if (!Number.isSafeInteger(column) || !Number.isSafeInteger(row)) return null;
     return parseSuffix(parts, { desktopId: decodeId(parts[1])!, column, row }, 5);
   }
 
-  if (parts[0] === "workspaces" && /^-?\d+$/.test(parts[1]) && /^-?\d+$/.test(parts[2] ?? "")) {
-    const column = Number(parts[1]);
-    const row = Number(parts[2]);
-    if (!Number.isSafeInteger(column) || !Number.isSafeInteger(row)) return null;
-    return parseSuffix(parts, { column, row }, 3);
-  }
-
-  // Version 11 used a dense page index. Preserve old links at the closest
-  // representable surface location without restoring persisted page identity.
-  if (parts[0] === "workspaces" && /^\d+$/.test(parts[1])) {
-    const column = Number(parts[1]);
-    if (!Number.isSafeInteger(column)) return null;
-    return parseSuffix(parts, { column, row: 0 }, 2);
-  }
-
-  // Legacy view links no longer map to persisted pages, but their targets remain useful.
-  if (parts[0] === "views" && decodeId(parts[1])) return parseSuffix(parts, { column: 0, row: 0 }, 2);
   return null;
 }
 
 export function formatDesktopRoute(route: DesktopRoute) {
-  let hash = route.desktopId
-    ? `#/desktops/${encodeURIComponent(route.desktopId)}/workspaces/${route.column}/${route.row}`
-    : `#/workspaces/${route.column}/${route.row}`;
+  if (!route.desktopId) throw new Error("A desktop route requires a desktop ID.");
+  let hash = `#/desktops/${encodeURIComponent(route.desktopId)}/areas/${route.column}/${route.row}`;
   if (route.settings) return `${hash}/settings`;
   if (route.propertiesEntryId) return `${hash}/properties/${encodeURIComponent(route.propertiesEntryId)}`;
   if (route.explorerFolderId === null) hash += "/explorer/root";
@@ -101,10 +83,10 @@ export function formatDesktopRoute(route: DesktopRoute) {
   return hash;
 }
 
-export function normalizeDesktopRoute(route: DesktopRoute | null, entries: DesktopEntry[], desktopId?: string): DesktopRoute {
+export function normalizeDesktopRoute(route: DesktopRoute | null, entries: DesktopEntry[], desktopId: string): DesktopRoute {
   const column = route && Number.isSafeInteger(route.column) ? route.column : 0;
   const row = route && Number.isSafeInteger(route.row) ? route.row : 0;
-  const next: DesktopRoute = { ...(desktopId ? { desktopId } : route?.desktopId ? { desktopId: route.desktopId } : {}), column, row };
+  const next: DesktopRoute = { desktopId, column, row };
   if (route?.settings) return { ...next, settings: true };
   if (route?.propertiesEntryId && entries.some((entry) => entry.id === route.propertiesEntryId)) return { ...next, propertiesEntryId: route.propertiesEntryId };
   if (route?.explorerFolderId === null) next.explorerFolderId = null;

@@ -48,7 +48,7 @@ export function MarkdownRenderer({ content, externalEmbeddedPreviews, onResolveL
       const { file } = await onResolveLink(href);
       onOpenLinkedFile(file);
     } catch {
-      // Broken workspace links remain inert instead of navigating away from the desktop.
+      // Broken desktop links remain inert instead of navigating away from the catalog.
     }
   }
 

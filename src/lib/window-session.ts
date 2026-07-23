@@ -16,7 +16,8 @@ export type WindowSessionApp = WindowSessionBase & (
   | { kind: "settings" }
 );
 
-export type WindowSession = { version: 1 | 2 | 3 | 4; apps: WindowSessionApp[] };
+export type WindowSession = { schemaVersion: 1; apps: WindowSessionApp[] };
+export type BrowserHistoryState = { schemaVersion: 1; apps: WindowTarget[] };
 
 export type WindowTarget =
   | { kind: "file"; fileId: string; editMode?: boolean }
@@ -24,7 +25,7 @@ export type WindowTarget =
   | { kind: "properties"; entryId: string }
   | { kind: "settings" };
 
-export const EMPTY_WINDOW_SESSION: WindowSession = { version: 4, apps: [] };
+export const EMPTY_WINDOW_SESSION: WindowSession = { schemaVersion: 1, apps: [] };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -38,9 +39,9 @@ export function windowTargetId(target: WindowTarget) {
 }
 
 export function parseWindowTargets(value: unknown): WindowTarget[] {
-  if (!Array.isArray(value) || value.length > 100) throw new Error("The route history has an unsupported app list.");
+  if (!isRecord(value) || value.schemaVersion !== 1 || !Array.isArray(value.apps) || value.apps.length > 100) throw new Error("The browser history has an unsupported format.");
   const ids = new Set<string>();
-  return value.map((item): WindowTarget => {
+  return value.apps.map((item): WindowTarget => {
     if (!isRecord(item)) throw new Error("The route history contains an invalid app.");
     let target: WindowTarget;
     if (item.kind === "file" && isValidId(item.fileId) && (item.editMode === undefined || typeof item.editMode === "boolean")) target = { kind: "file", fileId: item.fileId, ...(item.editMode ? { editMode: true } : {}) };
@@ -63,7 +64,7 @@ function parseBounds(value: unknown): WindowBounds {
 }
 
 export function parseWindowSession(value: unknown): WindowSession {
-  if (!isRecord(value) || value.version !== 1 && value.version !== 2 && value.version !== 3 && value.version !== 4 || !Array.isArray(value.apps) || value.apps.length > 100) {
+  if (!isRecord(value) || value.schemaVersion !== 1 || !Array.isArray(value.apps) || value.apps.length > 100) {
     throw new Error("The saved window session has an unsupported format.");
   }
   const ids = new Set<string>();
@@ -93,10 +94,10 @@ export function parseWindowSession(value: unknown): WindowSession {
     ids.add(id);
     return app;
   });
-  return { version: value.version, apps };
+  return { schemaVersion: 1, apps };
 }
 
-export function restoreWindowSession(session: WindowSession, entries: DesktopEntry[], activeSegment: SurfaceSegment, viewport: WindowViewport) {
+export function restoreWindowSession(session: WindowSession, entries: DesktopEntry[], _activeSegment: SurfaceSegment, viewport: WindowViewport) {
   const byId = new Map(entries.map((entry) => [entry.id, entry]));
   return session.apps
     .filter((app) => {
@@ -108,9 +109,7 @@ export function restoreWindowSession(session: WindowSession, entries: DesktopEnt
     .sort((left, right) => left.zIndex - right.zIndex)
     .map((app, index): WindowSessionApp => {
       const minimumSize = app.kind === "file" ? { minWidth: 420, minHeight: 320 } : { minWidth: 360, minHeight: 280 };
-      const projection = session.version === 1
-        ? { segment: activeSegment, local: { x: app.bounds.x, y: app.bounds.y } }
-        : projectLogicalPosition(app.bounds, viewport);
+      const projection = projectLogicalPosition(app.bounds, viewport);
       const localBounds = clampWindowBounds({ ...app.bounds, ...projection.local }, viewport, minimumSize);
       return {
         ...app,

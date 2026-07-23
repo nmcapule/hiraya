@@ -19,7 +19,7 @@ bun run dev
 - `src/App.tsx`: application state and orchestration for files, dialogs, uploads, errors, and windows.
 - `src/lib/sync.ts`: API mutations, durable outbox replay, SSE, health checks, and remote reconciliation.
 - `src/lib/opfs.ts`: browser persistence boundary. Keep storage access behind this module.
-- `src/lib/contracts.ts`: runtime validation for the server's version 5 workspace schema.
+- `src/lib/contracts.ts`: runtime validation for strict catalog/desktop schema version 1.
 - `src/lib/api-routes.ts`: same-origin API route construction.
 - `src/lib/seeded-manifest.ts`: seeded manifest validation shared by the build loader and exporter.
 - `src/lib/seeded.ts`: seeded ZIP export.
@@ -33,11 +33,10 @@ Prefer small changes in existing modules. Do not introduce global state or a com
 
 ## Storage And Sync Invariants
 
-- OPFS is authoritative only in frontend-only mode. In synchronized mode it is a cache and projected offline workspace.
+- OPFS is authoritative only in frontend-only mode. In synchronized mode it is a cache and projected offline desktop.
 - All browser storage operations go through `src/lib/opfs.ts`.
 - Physical browser files use stable UUIDs; user-facing names and folders are metadata.
-- The OPFS SQLite schema and legacy manifest migration are separate from the HTTP workspace schema.
-- `.hiraya-manifest.json` versions 1 through 13 are legacy import sources only.
+- The OPFS SQLite schema is fresh-only version 1, normalized by desktop, and has no schema upgrade path or singleton projection.
 - Offline mutations update the projected SQLite desktop and append an outbox operation atomically.
 - Replay uses stable idempotency headers and preserves blocked operations for user resolution.
 - During reconciliation, publish validated metadata without requiring file bytes. Fetch virtual file content on demand, validate its revision and size, and cache it before use.
@@ -50,17 +49,17 @@ Prefer small changes in existing modules. Do not introduce global state or a com
 
 ## API Compatibility
 
-- The current HTTP workspace schema is version 5 and is validated by `src/lib/contracts.ts`.
+- The current HTTP catalog and desktop schema is version 1 and is validated by `src/lib/contracts.ts`.
 - Keep TypeScript IDs, names, hierarchy, MIME, coordinates, themes, layout, and settings validation equivalent to the server contract.
 - API paths, multipart field names, content types, and `X-Hiraya-Client-ID` / `X-Hiraya-Operation-ID` headers are durable replay contracts.
-- SSE carries workspace revision notifications; health polling remains a fallback for dead streams.
+- SSE carries `catalog` revision notifications; health polling remains a fallback for dead streams.
 - Root-relative `/api` routes preserve same-origin deployment. Do not add cross-origin behavior implicitly.
-- Old service-worker-controlled clients and persisted outbox operations constrain API rollout order.
+- Outbox operations require schema version 1 and `desktopId`. `catalogId` may be null only until first contact; globally bind or block every record before replay.
 
 ## Seeded Desktops
 
 - `HIRAYA_SEEDED_DIR` must point inside this repository and is never exposed to browser code.
-- Seeded manifest version 7 accepts versions 1 through 6 for normalization.
+- Seeded packages accept only schema version 1 and require `createdAt` on every entry.
 - Fetch and validate every seeded asset before publishing complete metadata.
 - Never seed, merge into, or replace an existing desktop, including an intentionally empty one.
 - Export preserves stable IDs, signed finite coordinates, empty folders, layout, appearance, and editor settings.

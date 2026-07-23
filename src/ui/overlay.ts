@@ -5,12 +5,12 @@ export type OverlayState = {
   contextMenu: boolean;
   file: boolean;
   explorer: boolean;
-  viewEditor: boolean;
+  areaEditor: boolean;
 };
 
 export type OverlayOwner = keyof OverlayState;
 
-const OVERLAY_PRIORITY: readonly OverlayOwner[] = ["contextMenu", "moveDialog", "dialog", "file", "settings", "explorer", "viewEditor"];
+const OVERLAY_PRIORITY: readonly OverlayOwner[] = ["contextMenu", "moveDialog", "dialog", "file", "settings", "explorer", "areaEditor"];
 
 export function topOverlay(state: OverlayState): OverlayOwner | null {
   return OVERLAY_PRIORITY.find((overlay) => state[overlay]) ?? null;

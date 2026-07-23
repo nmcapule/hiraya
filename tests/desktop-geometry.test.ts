@@ -7,7 +7,7 @@ function file(id: string, x = 22, y = 22): DesktopEntry {
 }
 
 describe("responsive desktop geometry", () => {
-  test("reorders logical surface segments without persisted workspace identity", () => {
+  test("reorders logical canvas segments without persisted area identity", () => {
     expect(reorderSurfaceSegments([
       { column: -1, row: 0 },
       { column: 0, row: 0 },
@@ -18,7 +18,7 @@ describe("responsive desktop geometry", () => {
       { source: { column: -1, row: 0 }, target: { column: 2, row: 1 } },
     ]);
   });
-  test("derives placement capacity without using it for workspace membership", () => {
+  test("derives placement capacity without using it for area membership", () => {
     expect(desktopSlots({ width: 500, height: 500 })).toHaveLength(16);
     expect(desktopSlots({ width: 220, height: 260 })).toHaveLength(2);
     const entries = [file("one"), file("two"), file("three")];

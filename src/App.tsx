@@ -39,7 +39,7 @@ import {
   saveEditorSettings,
   saveTextFile,
   selectTheme,
-  updateDesktopPositions,
+  updateRootEntryPositions,
   updateEntryPosition,
   subscribeToSync,
   subscribeToActivityChanges,
@@ -47,14 +47,14 @@ import {
   stopDesktopSync,
   type SyncStatus,
 } from "./lib/sync";
-import { DEFAULT_EDITOR_SETTINGS, pruneLocalDesktops, readDesktopEntries, readLocalPreferences, readWindowSession, saveLocalPreferences, saveWindowSession, switchDesktop as switchLocalDesktop, type DesktopSnapshot, type LocalPreferences } from "./lib/opfs";
+import { DEFAULT_EDITOR_SETTINGS, pruneLocalDesktops, readDesktopEntries, readLocalPreferences, readWindowSession, saveLocalPreferences, saveWindowSession, switchDesktop as switchLocalDesktop, type DesktopStateSnapshot, type LocalPreferences } from "./lib/opfs";
 import { createPwaUpdater, type PwaUpdater } from "./lib/pwa-update";
 import { exportSeededDesktop } from "./lib/seeded";
 import { CLIPBOARD_ARCHIVE_WEB_MIME_TYPE, decodeClipboardArchiveItem, encodeClipboardArchive, snapshotFromClipboardItems, type ClipboardEntrySnapshot } from "./lib/clipboard";
 import { formatDesktopRoute, normalizeDesktopRoute, parseDesktopRoute, resolveOpenFilePath, type DesktopRoute } from "./lib/routes";
 import { DEFAULT_THEME_STATE, isBuiltinThemeId, resolveTheme, themeIconMetrics, themeStyle, type CustomTheme, type ThemeDefinition, type ThemeState } from "./lib/themes";
 import { DEFAULT_WALLPAPER, type ContextMenuState, type DesktopEntry, type DesktopIdentity, type DesktopLayout, type DialogState, type EditorSettings, type EntryPosition, type FileEntry } from "./types";
-import { GRID_ORIGIN, nextAvailableDesktopSlot, nextDesktopPosition, projectLogicalPosition, reorderSurfaceSegments, responsiveDesktop, restoreLogicalPosition, segmentKey, snapAxis, type SurfaceSegment } from "./ui/desktop-geometry";
+import { GRID_ORIGIN, nextAvailableDesktopSlot, nextRootEntryPosition, projectLogicalPosition, reorderSurfaceSegments, responsiveDesktop, restoreLogicalPosition, segmentKey, snapAxis, type SurfaceSegment } from "./ui/desktop-geometry";
 import { fileCapabilities } from "./ui/file-capabilities";
 import { topOverlay } from "./ui/overlay";
 import { createEntryIndex } from "./ui/entry-index";
@@ -70,7 +70,7 @@ type ExplorerApp = BaseRunningApp & { kind: "explorer"; folderId: string | null 
 type SettingsApp = BaseRunningApp & { kind: "settings" };
 type PropertiesApp = BaseRunningApp & { kind: "properties"; entryId: string };
 type RunningApp = FileApp | ExplorerApp | PropertiesApp | SettingsApp;
-type RouteHistoryState = { hiraya: true; parentHash?: string; apps?: WindowTarget[] };
+type RouteHistoryState = { hiraya: true; schemaVersion: 1; parentHash?: string; apps: WindowTarget[] };
 type PendingPaste = { snapshot: ClipboardEntrySnapshot; parentId: string | null; position?: EntryPosition };
 const MINIMAP_LONG_PRESS_MS = 500;
 const DESKTOP_LONG_PRESS_MS = 500;
@@ -92,12 +92,11 @@ function App() {
   const [entries, setEntries] = useState<DesktopEntry[]>([]);
   const [desktops, setDesktops] = useState<DesktopIdentity[]>([]);
   const [activeDesktopId, setActiveDesktopId] = useState("");
-  const [defaultDesktopId, setDefaultDesktopId] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const [selectionSurface, setSelectionSurface] = useState("desktop");
+  const [selectionScope, setSelectionScope] = useState("desktop");
   const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null);
   const [dialog, setDialog] = useState<DialogState>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState>(null);
@@ -274,13 +273,13 @@ function App() {
     const unique = [...new Set(ids)];
     selectedIdsRef.current = unique;
     setSelectedIds(unique);
-    setSelectionSurface(surface);
+    setSelectionScope(surface);
     setSelectionAnchorId(anchorId);
   }
 
   function selectEntry(surface: string, entry: DesktopEntry, options: { toggle?: boolean; range?: boolean; orderedIds?: string[] } = {}) {
-    const current = selectionSurface === surface ? selectedIdsRef.current : [];
-    if (options.range && selectionSurface === surface && selectionAnchorId && options.orderedIds) {
+    const current = selectionScope === surface ? selectedIdsRef.current : [];
+    if (options.range && selectionScope === surface && selectionAnchorId && options.orderedIds) {
       const start = options.orderedIds.indexOf(selectionAnchorId);
       const end = options.orderedIds.indexOf(entry.id);
       if (start >= 0 && end >= 0) {
@@ -308,14 +307,14 @@ function App() {
   function historyApps(state: unknown) {
     if (!state || typeof state !== "object" || !(state as Partial<RouteHistoryState>).hiraya || !("apps" in state)) return null;
     try {
-      return parseWindowTargets((state as Partial<RouteHistoryState>).apps);
+      return parseWindowTargets(state);
     } catch {
       return null;
     }
   }
 
   function routeHistoryState(apps: WindowTarget[], parentHash?: string): RouteHistoryState {
-    return { hiraya: true, ...(parentHash ? { parentHash } : {}), apps };
+    return { hiraya: true, schemaVersion: 1, ...(parentHash ? { parentHash } : {}), apps };
   }
 
   function writeRoute(next: DesktopRoute, mode: "push" | "replace" = "push", previousApps?: WindowTarget[]) {
@@ -641,12 +640,11 @@ function App() {
     }, (nextStatus) => { if (active) setSyncStatus(nextStatus); }, (syncing) => { if (active) setIsSyncing(syncing); });
     const unsubscribeCatalog = subscribeToDesktopCatalog((registry) => {
       if (!active) return;
-      setDefaultDesktopId(registry.defaultDesktopId);
       desktopsRef.current = registry.desktops;
       setDesktops(registry.desktops);
       const retainedIds = registry.desktops.map((desktop) => desktop.id);
       if (activeDesktopIdRef.current && !retainedIds.includes(activeDesktopIdRef.current)) {
-        const fallback = registry.desktops.find((desktop) => desktop.id === registry.defaultDesktopId) ?? registry.desktops[0];
+        const fallback = registry.desktops[0];
         if (fallback) void activateDesktopRef.current(fallback.id).then((switched) => { if (switched) return pruneLocalDesktops(retainedIds); });
       } else {
         void pruneLocalDesktops(retainedIds);
@@ -661,7 +659,6 @@ function App() {
           ? registry.activeDesktopId
           : registry.desktops[0].id;
       setDesktops(registry.desktops);
-      setDefaultDesktopId(registry.defaultDesktopId);
       activeDesktopIdRef.current = desktopId;
       setActiveDesktopId(desktopId);
       return switchLocalDesktop(desktopId)
@@ -733,7 +730,7 @@ function App() {
   useEffect(() => {
     if (windowSessionReadyRef.current) {
       const session: WindowSession = {
-        version: 4,
+        schemaVersion: 1,
         apps: runningApps.map((app): WindowSessionApp => {
           const base = { bounds: app.bounds, minimized: app.minimized, zIndex: app.zIndex };
           if (app.kind === "file") return { ...base, kind: "file", fileId: app.fileId, ...(app.editMode ? { editMode: true } : {}) };
@@ -1029,7 +1026,7 @@ function App() {
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("paste", onPaste);
     return () => { window.removeEventListener("keydown", onKeyDown); window.removeEventListener("paste", onPaste); };
-  }, [activeDesktopSegment.entries, canMutate, dialog, entryIndex, moveDialogEntryIds.length, pendingPaste, selectionSurface]);
+  }, [activeDesktopSegment.entries, canMutate, dialog, entryIndex, moveDialogEntryIds.length, pendingPaste, selectionScope]);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -1041,7 +1038,7 @@ function App() {
         contextMenu: Boolean(contextMenu),
         file: false,
         explorer: false,
-        viewEditor: editingAreas,
+        areaEditor: editingAreas,
       });
       if (!owner && !focusedAppIdRef.current) return;
        if (owner === "moveDialog" && moveDialogSubmitting) return;
@@ -1049,7 +1046,7 @@ function App() {
       if (owner === "dialog") setDialog(null);
        else if (owner === "moveDialog") setMoveDialogEntryIds([]);
       else if (owner === "contextMenu") setContextMenu(null);
-      else if (owner === "viewEditor") { setEditingAreas(false); setDraggedSegmentKey(null); }
+      else if (owner === "areaEditor") { setEditingAreas(false); setDraggedSegmentKey(null); }
       else if (focusedAppIdRef.current) closeAppRef.current(focusedAppIdRef.current);
     }
     window.addEventListener("keydown", onKeyDown);
@@ -1073,7 +1070,7 @@ function App() {
       const localPosition = nextAvailableDesktopSlot(desktopSize, occupied, responsive.segments.length > 1, segmentEntryCount, iconMetrics);
       return restoreLogicalPosition(localPosition, activeSegment, desktopSize);
     }
-    const position = nextDesktopPosition(childrenCount(parentId), window.innerHeight, undefined, iconMetrics);
+    const position = nextRootEntryPosition(childrenCount(parentId), window.innerHeight, undefined, iconMetrics);
     return position;
   }
 
@@ -1084,7 +1081,7 @@ function App() {
     };
   }
 
-  function snapDesktopPosition(position: EntryPosition) {
+  function snapRootEntryPosition(position: EntryPosition) {
     const logical = { x: position.x + minColumn * desktopSize.width, y: position.y + minRow * desktopSize.height };
     const projection = projectLogicalPosition(logical, desktopSize);
     const snapped = restoreLogicalPosition(snapPositionInView(projection.local), projection.segment, desktopSize);
@@ -1225,7 +1222,7 @@ function App() {
     }
   }
 
-  async function applyActivatedDesktopState(desktopId: string, desktop: DesktopSnapshot) {
+  async function applyActivatedDesktopState(desktopId: string, desktop: DesktopStateSnapshot) {
     activeDesktopIdRef.current = desktopId;
     setActiveDesktopId(desktopId);
     contentRevisionsRef.current = desktop.sync.contentRevisions;
@@ -1298,7 +1295,7 @@ function App() {
 
   async function deleteDesktop(desktopId: string) {
     const desktop = desktops.find((candidate) => candidate.id === desktopId);
-    if (!desktop || desktops.length === 1 || desktopId === defaultDesktopId) return;
+    if (!desktop || desktops.length === 1) return;
     if (!window.confirm(`Delete “${desktop.name}” and every file and folder in it? This cannot be undone.`)) return;
     if (desktopId === activeDesktopIdRef.current) {
       const replacement = desktops.find((candidate) => candidate.id !== desktopId)!;
@@ -1352,7 +1349,7 @@ function App() {
       const deleted = await deleteEntries(ids);
       const deletedIds = new Set(deleted.map((entry) => entry.id));
       setEntries((current) => current.filter((entry) => !deletedIds.has(entry.id)));
-      replaceSelection(selectionSurface, selectedIdsRef.current.filter((id) => !deletedIds.has(id)));
+      replaceSelection(selectionScope, selectedIdsRef.current.filter((id) => !deletedIds.has(id)));
       setNotice(`${ids.length === 1 ? dialogEntry.name : `${ids.length} items`} deleted`);
     }
     setDialog(null);
@@ -1367,7 +1364,7 @@ function App() {
         ? activeDesktopSegment.entries.map((entry) => responsive.positions.get(entry.id) ?? projectLogicalPosition(entry.position, desktopSize).local)
         : [];
       const positions = sources.map((_, index) => {
-        if (parentId !== null) return nextDesktopPosition(offset + index, window.innerHeight, base, iconMetrics);
+        if (parentId !== null) return nextRootEntryPosition(offset + index, window.innerHeight, base, iconMetrics);
         const localPosition = base && index === 0
           ? layoutRef.current.snapToGrid ? snapPositionInView(base) : base
           : nextAvailableDesktopSlot(desktopSize, occupied, responsive.segments.length > 1, offset + index, iconMetrics);
@@ -1392,7 +1389,7 @@ function App() {
     if (targetParentId) {
       return handleMoveTo(selectedIdSet.has(entry.id) ? selectedEntries : [entry], targetParentId, true);
     }
-    const finalPosition = layoutRef.current.snapToGrid ? snapDesktopPosition(position) : position;
+    const finalPosition = layoutRef.current.snapToGrid ? snapRootEntryPosition(position) : position;
     const logicalCanvasPosition = {
       x: finalPosition.x + minColumn * desktopSize.width,
       y: finalPosition.y + minRow * desktopSize.height,
@@ -1411,7 +1408,7 @@ function App() {
       const previous = new Map(group.map((item) => [item.id, item.position]));
       const nextPositions = new Map(updates.map((item) => [item.entryId, item.position]));
       setEntries((current) => current.map((item) => nextPositions.has(item.id) ? { ...item, position: nextPositions.get(item.id)! } : item));
-      try { await updateDesktopPositions(updates); return true; }
+      try { await updateRootEntryPositions(updates); return true; }
       catch {
         setEntries((current) => current.map((item) => previous.has(item.id) ? { ...item, position: previous.get(item.id)! } : item));
         setError("The selected icon positions could not be saved.");
@@ -1437,7 +1434,7 @@ function App() {
       const moved = await moveEntries(items.map((entry) => entry.id), parentId);
       const movedById = new Map(moved.map((entry) => [entry.id, entry]));
       setEntries((current) => current.map((item) => movedById.get(item.id) ?? item));
-      replaceSelection(selectionSurface, []);
+      replaceSelection(selectionScope, []);
       setContextMenu(null);
       setNotice(items.length === 1 ? `${items[0].name} moved` : `${items.length} items moved`);
       return true;
@@ -1629,7 +1626,7 @@ function App() {
     const roots = snapshot.selectedRootIds.map((id) => snapshot.entries.find((entry) => entry.id === id)!);
     const positions = new Map<string, EntryPosition>();
     if (parentId !== null) {
-      roots.forEach((entry, index) => positions.set(entry.id, nextDesktopPosition(childrenCount(parentId) + index, window.innerHeight, undefined, iconMetrics)));
+      roots.forEach((entry, index) => positions.set(entry.id, nextRootEntryPosition(childrenCount(parentId) + index, window.innerHeight, undefined, iconMetrics)));
       return positions;
     }
     const first = roots[0];
@@ -1734,7 +1731,7 @@ function App() {
     if (event.pointerType !== "touch") {
       event.preventDefault();
       const additive = event.metaKey || event.ctrlKey;
-      const initial = additive && selectionSurface === "desktop" ? [...selectedIdsRef.current] : [];
+      const initial = additive && selectionScope === "desktop" ? [...selectedIdsRef.current] : [];
       if (!additive) replaceSelection("desktop", []);
       marqueeRef.current = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, additive, initial };
       event.currentTarget.setPointerCapture(event.pointerId);
@@ -1985,7 +1982,7 @@ function App() {
     const updates = entriesRef.current
       .filter((entry) => entry.parentId === null)
       .map((entry) => ({ entryId: entry.id, position: entry.position }));
-    const save = updates.length ? updateDesktopPositions(updates) : Promise.resolve();
+    const save = updates.length ? updateRootEntryPositions(updates) : Promise.resolve();
     void save.catch(() => {
       restoreArrangement(initialPositions, initialAppBounds);
       const currentRoute = routeRef.current;
@@ -2081,7 +2078,7 @@ function App() {
   return (
     <main className="desktop-shell" data-theme={isBuiltinThemeId(appearance.selectedThemeId) ? appearance.selectedThemeId : "custom"} style={themeStyle(activeTheme)}>
       <header className="menu-bar">
-        {activeDesktopId && <DesktopSwitcher desktops={desktops} activeDesktopId={activeDesktopId} defaultDesktopId={defaultDesktopId} disabled={loading} onSwitch={(id) => void activateDesktop(id)} onCreate={createDesktop} onRename={renameDesktop} onDelete={deleteDesktop} />}
+        {activeDesktopId && <DesktopSwitcher desktops={desktops} activeDesktopId={activeDesktopId} disabled={loading} onSwitch={(id) => void activateDesktop(id)} onCreate={createDesktop} onRename={renameDesktop} onDelete={deleteDesktop} />}
         <nav className="taskbar" aria-label="Open windows">
           {activeApps.map((app) => {
             const entry = app.kind === "file" ? entryIndex.byId.get(app.fileId) : app.kind === "properties" ? entryIndex.byId.get(app.entryId) : app.kind === "explorer" && app.folderId ? entryIndex.byId.get(app.folderId) : null;
@@ -2179,7 +2176,7 @@ function App() {
               onMove={(position, targetParentId) => handleDesktopMove(entry, position, targetParentId)}
               onDragAtEdge={(clientX, clientY) => handleIconDragAtEdge(entry, clientX, clientY)}
               onDragEnd={finishEdgeNavigation}
-              getSnapPreview={layout.snapToGrid ? snapDesktopPosition : undefined}
+              getSnapPreview={layout.snapToGrid ? snapRootEntryPosition : undefined}
               onExternalDrop={(sources) => void handleImport(sources, entry.id)}
               onContextMenu={(event) => {
                 event.preventDefault();
@@ -2276,16 +2273,16 @@ function App() {
                     rootLabel={activeDesktopName}
                     breadcrumbs={folder ? entryIndex.ancestors(folder.id) : []}
                     children={entryIndex.children.get(folder?.id ?? null) ?? []}
-                    selectedIds={selectionSurface === app.id ? selectedIdSet : new Set()}
+                    selectedIds={selectionScope === app.id ? selectedIdSet : new Set()}
                     onSelect={(entry, options) => selectEntry(app.id, entry, options)}
                     onNavigate={(nextFolder) => navigateExplorerWindow(app.id, nextFolder?.id ?? null)}
                     onOpen={handleOpen}
                     onCreateFolder={(parentId) => setDialog({ type: "create-folder", parentId })}
                     onCreateFile={(parentId) => setDialog({ type: "create-file", parentId })}
                     onUpload={chooseUpload}
-                    onMove={(entry, parentId) => void handleMoveTo(selectionSurface === app.id && selectedIdSet.has(entry.id) ? selectedEntries : [entry], parentId)}
+                    onMove={(entry, parentId) => void handleMoveTo(selectionScope === app.id && selectedIdSet.has(entry.id) ? selectedEntries : [entry], parentId)}
                     onContextMenu={(entry, x, y) => {
-                      if (selectionSurface !== app.id || !selectedIdSet.has(entry.id)) replaceSelection(app.id, [entry.id]);
+                      if (selectionScope !== app.id || !selectedIdSet.has(entry.id)) replaceSelection(app.id, [entry.id]);
                       openEntryContextMenu(entry.id, x, y);
                     }}
                     onBlankContextMenu={(parentId, x, y) => {
@@ -2479,7 +2476,7 @@ function App() {
               const next = await transferEntries(desktopId, moveDialogEntries.map((entry) => entry.id), parentId);
               entriesRef.current = next.entries;
               setEntries(next.entries);
-              replaceSelection(selectionSurface, []);
+              replaceSelection(selectionScope, []);
               setNotice(`${moveDialogEntries.length === 1 ? moveDialogEntries[0].name : `${moveDialogEntries.length} items`} moved to ${desktops.find((desktop) => desktop.id === desktopId)?.name ?? "desktop"}`);
             }
             setMoveDialogSubmitting(false);

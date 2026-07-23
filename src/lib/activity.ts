@@ -5,7 +5,8 @@ export const MAX_ACTIVITY_PAGE_LIMIT = 100;
 export const MAX_ACTIVITY_QUERY_LENGTH = 200;
 
 export type ValidActivityRecord = {
-  revision: number;
+  catalogRevision: number;
+  desktopId?: string;
   action: string;
   source: string;
   timestamp: number;
@@ -14,7 +15,8 @@ export type ValidActivityRecord = {
 };
 
 export type BrokenActivityRecord = {
-  revision: number;
+  catalogRevision: number;
+  desktopId?: string;
   broken: true;
 };
 
@@ -31,7 +33,7 @@ export type ActivityQuery = {
   limit?: number;
 };
 
-export type NewActivityRecord = Omit<ValidActivityRecord, "revision">;
+export type NewActivityRecord = Omit<ValidActivityRecord, "catalogRevision">;
 
 function positiveInteger(value: unknown, message: string) {
   if (!Number.isSafeInteger(value) || (value as number) <= 0) throw new Error(message);
@@ -48,7 +50,8 @@ function parseValidRecord(value: unknown): ValidActivityRecord {
   });
   if (!Number.isSafeInteger(value.timestamp) || (value.timestamp as number) < 0) throw new Error("An activity record has an invalid timestamp.");
   return {
-    revision: positiveInteger(value.revision, "An activity record has an invalid revision."),
+    catalogRevision: positiveInteger(value.catalogRevision, "An activity record has an invalid catalog revision."),
+    ...(typeof value.desktopId === "string" ? { desktopId: value.desktopId } : {}),
     action: value.action,
     source: value.source,
     timestamp: value.timestamp as number,
@@ -59,23 +62,24 @@ function parseValidRecord(value: unknown): ValidActivityRecord {
 
 function parseRecord(value: unknown): ActivityRecord {
   if (!isRecord(value)) throw new Error("An activity record has an unsupported format.");
-  const revision = positiveInteger(value.revision, "An activity record has an invalid revision.");
-  if (value.broken === true) return { revision, broken: true };
+  const catalogRevision = positiveInteger(value.catalogRevision, "An activity record has an invalid catalog revision.");
+  const desktopId = typeof value.desktopId === "string" ? value.desktopId : undefined;
+  if (value.broken === true) return { catalogRevision, ...(desktopId ? { desktopId } : {}), broken: true };
   try {
     return parseValidRecord(value);
   } catch {
-    return { revision, broken: true };
+    return { catalogRevision, ...(desktopId ? { desktopId } : {}), broken: true };
   }
 }
 
 export function parseActivityPage(value: unknown): ActivityPage {
   if (!isRecord(value) || !Array.isArray(value.activities)) throw new Error("The activity response has an unsupported format.");
   const activities = value.activities.map(parseRecord);
-  if (activities.some((record, index) => index > 0 && record.revision >= activities[index - 1].revision)) {
+  if (activities.some((record, index) => index > 0 && record.catalogRevision >= activities[index - 1].catalogRevision)) {
     throw new Error("The activity response is not in newest-first order.");
   }
   const nextBefore = value.nextBefore === null ? null : positiveInteger(value.nextBefore, "The activity response has an invalid cursor.");
-  if (nextBefore !== null && activities.length > 0 && nextBefore > activities.at(-1)!.revision) throw new Error("The activity response has an invalid cursor.");
+  if (nextBefore !== null && activities.length > 0 && nextBefore > activities.at(-1)!.catalogRevision) throw new Error("The activity response has an invalid cursor.");
   return { activities, nextBefore };
 }
 
@@ -107,7 +111,7 @@ function localAction(summary: string) {
 }
 
 export function activityRecord(summary: string, details: string[], timestamp = Date.now(), action = localAction(summary)): NewActivityRecord {
-  const { revision: _revision, ...record } = parseValidRecord({ revision: 1, action, source: "frontend", timestamp, summary, details });
-  void _revision;
+  const { catalogRevision: _catalogRevision, ...record } = parseValidRecord({ catalogRevision: 1, action, source: "frontend", timestamp, summary, details });
+  void _catalogRevision;
   return record;
 }

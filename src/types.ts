@@ -9,7 +9,7 @@ export type DesktopLayout = {
   wallpaper: Wallpaper;
 };
 
-export type DesktopPositionUpdate = {
+export type RootEntryPositionUpdate = {
   entryId: string;
   position: EntryPosition;
 };

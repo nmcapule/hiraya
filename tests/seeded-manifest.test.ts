@@ -1,57 +1,28 @@
 import { describe, expect, test } from "bun:test";
 import { parsePortableSeededManifest, toPortableSeededManifest } from "../src/lib/seeded-manifest";
-import { desktopSnapshot } from "./fixtures";
+import { desktopStateSnapshot } from "./fixtures";
 
-describe("seeded manifests", () => {
-  test("round-trips a portable manifest", () => {
-    const snapshot = desktopSnapshot();
-    snapshot.entries = [{ kind: "file", id: "file-1", name: "read me.txt", parentId: null, createdAt: 123, modifiedAt: 1, position: { x: 0, y: 0 }, mimeType: "text/plain", size: 3 }];
-    const portable = toPortableSeededManifest(snapshot, () => "content/read me.txt");
-    expect(parsePortableSeededManifest(JSON.parse(JSON.stringify(portable)))).toEqual(portable);
-    expect(portable.entries[0].createdAt).toBe(123);
+describe("seeded packages", () => {
+  test("accepts only schema version 1 with complete entries", () => {
+    const snapshot = desktopStateSnapshot();
+    snapshot.entries = [{ kind: "file", id: "file", name: "read me.txt", parentId: null, createdAt: 1, modifiedAt: 1, position: { x: 0, y: 0 }, mimeType: "text/plain", size: 3 }];
+    const value = toPortableSeededManifest(snapshot, () => "content/read%20me.txt");
+    expect(value.schemaVersion).toBe(1);
+    expect(parsePortableSeededManifest(value)).toEqual(value);
+    expect(() => parsePortableSeededManifest({ ...value, schemaVersion: 7 })).toThrow("unsupported format");
+    const incomplete = value.entries.map((entry) => { const copy = { ...entry } as Partial<typeof entry>; delete copy.createdAt; return copy; });
+    expect(() => parsePortableSeededManifest({ ...value, entries: incomplete })).toThrow("creation date");
   });
 
-  test("rejects non-portable content URLs", () => {
-    const snapshot = desktopSnapshot();
-    snapshot.entries = [{ kind: "file", id: "file-1", name: "one.txt", parentId: null, modifiedAt: 1, position: { x: 0, y: 0 }, mimeType: "text/plain", size: 0 }];
-    expect(() => toPortableSeededManifest(snapshot, () => "../one.txt")).toThrow("normalized relative");
-    expect(() => toPortableSeededManifest(snapshot, () => "https://example.com/one.txt")).toThrow("relative contentUrl");
-  });
-
-  test("accepts encoded paths for legal names containing URL delimiters", () => {
-    const snapshot = desktopSnapshot();
-    snapshot.entries = [{ kind: "file", id: "file-1", name: "notes?#.txt", parentId: null, modifiedAt: 1, position: { x: 0, y: 0 }, mimeType: "text/plain", size: 0 }];
-    const portable = toPortableSeededManifest(snapshot, (entry) => `content/${encodeURIComponent(entry.name)}`);
-    expect(portable.entries[0].kind === "file" && portable.entries[0].contentUrl).toBe("content/notes%3F%23.txt");
-  });
-
-  test("migrates version 3 by preserving coordinates and discarding view ordering", () => {
-    const parsed = parsePortableSeededManifest({
-      version: 3,
-      layout: { views: [{ id: "second" }, { id: "first" }], columns: 2, snapToGrid: false, wallpaper: "dusk" },
-      editorSettings: { autoSave: true, fontSize: 13, language: "auto" },
-      entries: [
-        { kind: "folder", id: "a", name: "A", parentId: null, viewId: "first", modifiedAt: 1, position: { x: -40, y: 1 } },
-        { kind: "folder", id: "b", name: "B", parentId: null, viewId: "second", modifiedAt: 1, position: { x: 300, y: 1 } },
-      ],
-    });
-    expect(parsed.version).toBe(7);
-    expect(parsed.appearance).toEqual({ selectedThemeId: "hiraya-dusk", customThemes: [] });
-    expect(parsed.entries.map((entry) => entry.position)).toEqual([{ x: -40, y: 1 }, { x: 300, y: 1 }]);
-    expect(parsed.entries.some((entry) => "viewId" in entry)).toBe(false);
-    expect(parsed.entries.every((entry) => entry.createdAt === null)).toBe(true);
-  });
-
-  test("migrates version 5 without root ordering or workspace breaks", () => {
-    const snapshot = desktopSnapshot();
-    snapshot.entries = [{ kind: "folder", id: "a", name: "A", parentId: null, modifiedAt: 1, position: { x: 0, y: 0 } }];
-    const parsed = parsePortableSeededManifest({
-      version: 5,
-      layout: { rootOrder: ["a"], workspaceBreaks: [], snapToGrid: true, wallpaper: "grove" },
-      editorSettings: snapshot.editorSettings,
-      entries: snapshot.entries,
-    });
-    expect(parsed.version).toBe(7);
-    expect(parsed.layout).toEqual({ snapToGrid: true, wallpaper: "grove" });
+  test("preserves current layout, appearance, empty folders, and normalized content URLs", () => {
+    const snapshot = desktopStateSnapshot();
+    snapshot.layout = { snapToGrid: true, wallpaper: "ember" };
+    snapshot.entries = [
+      { kind: "folder", id: "empty", name: "Empty", parentId: null, createdAt: 1, modifiedAt: 1, position: { x: -40, y: 20 } },
+      { kind: "file", id: "file", name: "notes.txt", parentId: null, createdAt: 2, modifiedAt: 2, position: { x: 60, y: 20 }, mimeType: "text/plain", size: 0 },
+    ];
+    const value = toPortableSeededManifest(snapshot, () => "content/notes.txt");
+    expect(parsePortableSeededManifest(value)).toMatchObject({ schemaVersion: 1, layout: snapshot.layout, appearance: snapshot.appearance, entries: snapshot.entries });
+    expect(() => parsePortableSeededManifest({ ...value, entries: value.entries.map((entry) => entry.kind === "file" ? { ...entry, contentUrl: "../notes.txt" } : entry) })).toThrow("normalized relative");
   });
 });

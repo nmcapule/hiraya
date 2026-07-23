@@ -28,14 +28,14 @@ export type ResponsiveDesktop = {
   positions: ReadonlyMap<string, EntryPosition>;
 };
 
-export type DesktopPositionUpdate = { entryId: string; position: EntryPosition };
+export type RootEntryPositionUpdate = { entryId: string; position: EntryPosition };
 export type SurfaceSegmentMove = { source: SurfaceSegment; target: SurfaceSegment };
 
 export function segmentKey(segment: SurfaceSegment) {
   return `${segment.row}:${segment.column}`;
 }
 
-export function nextDesktopPosition(index: number, viewportHeight: number, base?: EntryPosition, metrics = DEFAULT_ICON_METRICS) {
+export function nextRootEntryPosition(index: number, viewportHeight: number, base?: EntryPosition, metrics = DEFAULT_ICON_METRICS) {
   if (base) return { x: base.x + (index % 4) * 18, y: base.y + (index % 4) * 18 };
   const rows = Math.max(1, Math.floor((viewportHeight - 130) / metrics.stepY));
   return { x: GRID_ORIGIN.x + Math.floor(index / rows) * metrics.stepX, y: GRID_ORIGIN.y + (index % rows) * metrics.stepY };
@@ -139,7 +139,7 @@ export function reorderDesktopSegments(
   sourceKey: string,
   targetIndex: number,
   size: { width: number; height: number },
-): DesktopPositionUpdate[] {
+): RootEntryPositionUpdate[] {
   const sourceIndex = segments.findIndex((segment) => segment.key === sourceKey);
   const boundedTarget = Math.max(0, Math.min(segments.length - 1, targetIndex));
   if (sourceIndex < 0 || sourceIndex === boundedTarget) return [];

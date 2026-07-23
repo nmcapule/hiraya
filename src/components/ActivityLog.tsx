@@ -87,14 +87,14 @@ export function ActivityLog({ onListActivity, onSubscribe }: Props) {
           <span className="sr-only" role="status">{activities.length} activity {activities.length === 1 ? "record" : "records"} shown{deferredSearch ? " for this search" : ""}.</span>
           <ol className="activity-list" aria-label="Desktop activity">
             {activities.map((activity) => (
-              <li className="activity-item" key={activity.revision}>
+              <li className="activity-item" key={activity.catalogRevision}>
                 <div className="activity-item__rail" aria-hidden="true"><span /></div>
                 <div className="activity-item__content">
                   {"broken" in activity ? (
                     <>
                       <div className="activity-item__meta"><span className="activity-item__action">broken</span></div>
                       <strong>This activity record could not be read.</strong>
-                      <small>Revision {activity.revision}</small>
+                      <small>Catalog revision {activity.catalogRevision}</small>
                     </>
                   ) : (
                     <>
@@ -104,7 +104,7 @@ export function ActivityLog({ onListActivity, onSubscribe }: Props) {
                       </div>
                       <strong>{activity.summary}</strong>
                       {activity.details.length > 0 && <p>{activity.details.join(" · ")}</p>}
-                      <small>{formatSource(activity.source)} · Revision {activity.revision}</small>
+                      <small>{formatSource(activity.source)} · Catalog revision {activity.catalogRevision}</small>
                     </>
                   )}
                 </div>

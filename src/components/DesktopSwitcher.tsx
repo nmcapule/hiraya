@@ -6,7 +6,6 @@ import { desktopDeleteProtection } from "../lib/desktop-catalog";
 type Props = {
   desktops: readonly DesktopIdentity[];
   activeDesktopId: string;
-  defaultDesktopId: string;
   disabled?: boolean;
   onSwitch: (id: string) => void;
   onCreate: (name: string) => Promise<void>;
@@ -14,7 +13,7 @@ type Props = {
   onDelete: (id: string) => Promise<void>;
 };
 
-export function DesktopSwitcher({ desktops, activeDesktopId, defaultDesktopId, disabled, onSwitch, onCreate, onRename, onDelete }: Props) {
+export function DesktopSwitcher({ desktops, activeDesktopId, disabled, onSwitch, onCreate, onRename, onDelete }: Props) {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<{ mode: "create" | "rename"; id?: string; value: string } | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -63,7 +62,7 @@ export function DesktopSwitcher({ desktops, activeDesktopId, defaultDesktopId, d
       <header><span id="desktop-switcher-title">Your desktops</span><button type="button" className="icon-button" onClick={() => close()} aria-label="Close desktop switcher"><X size={16} /></button></header>
       <div className="desktop-switcher__list" role="list">
         {desktops.map((desktop) => {
-          const protectedReason = desktopDeleteProtection(desktop.id, defaultDesktopId, desktops.length);
+          const protectedReason = desktopDeleteProtection(desktops.length);
           const descriptionId = `desktop-delete-${desktop.id.replaceAll(/[^a-zA-Z0-9_-]/g, "-")}`;
           return <div className="desktop-switcher__row" role="listitem" key={desktop.id} data-active={desktop.id === activeDesktopId || undefined}>
           <button type="button" aria-pressed={desktop.id === activeDesktopId} onClick={() => { onSwitch(desktop.id); close(); }}>

@@ -3,7 +3,7 @@ import {
   type DesktopEntry,
   type DesktopIdentity,
   type DesktopLayout,
-  type DesktopPositionUpdate,
+  type RootEntryPositionUpdate,
   type EditorLanguage,
   type EditorSettings,
   type EntryPosition,
@@ -18,24 +18,20 @@ const MIME_TYPE = new RegExp(`^${MIME_TOKEN}/${MIME_TOKEN}(?:\\s*;\\s*${MIME_TOK
 export type RemoteEntry = DesktopEntry & { revision: number; contentRevision: number };
 export type RemoteCustomTheme = CustomTheme & { revision: number };
 export type RemoteAppearance = Omit<ThemeState, "customThemes"> & { selectionRevision: number; customThemes: RemoteCustomTheme[] };
-type RemoteWorkspaceIdentity = {
-  schemaVersion: number;
-  workspaceId: string;
-  revision: number;
+type RemoteDesktopIdentity = DesktopIdentity & {
+  schemaVersion: 1;
+  catalogId: string;
+  catalogRevision: number;
 };
 
-export type RemoteWorkspace = RemoteWorkspaceIdentity & ({
-  initialized: false;
-} | {
-  initialized: true;
+export type RemoteDesktopState = RemoteDesktopIdentity & {
   entries: RemoteEntry[];
   layout: DesktopLayout;
   layoutRevision: number;
   editorSettings: EditorSettings;
   settingsRevision: number;
   appearance: RemoteAppearance;
-});
-export type InitializedRemoteWorkspace = Extract<RemoteWorkspace, { initialized: true }>;
+};
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -113,9 +109,9 @@ function readNonNegativeInteger(value: unknown, message: string): number {
   return value as number;
 }
 
-function readNullableNonNegativeInteger(value: unknown, message: string): number | null {
-  if (value === undefined || value === null) return null;
-  return readNonNegativeInteger(value, message);
+function readRequiredNullableNonNegativeInteger(value: unknown, message: string): number | null {
+  if (value === undefined) throw new Error(message);
+  return value === null ? null : readNonNegativeInteger(value, message);
 }
 
 export function readRevision(value: unknown, message = "A revision has an unsupported format.") {
@@ -138,23 +134,23 @@ export function parseLayout(value: unknown): DesktopLayout {
   return { snapToGrid: value.snapToGrid, wallpaper: value.wallpaper as DesktopLayout["wallpaper"] };
 }
 
-export function parseDesktopPositions(value: unknown): DesktopPositionUpdate[] {
-  if (!Array.isArray(value)) throw new Error("Desktop positions have an unsupported format.");
+export function parseRootEntryPositions(value: unknown): RootEntryPositionUpdate[] {
+  if (!Array.isArray(value)) throw new Error("Root entry positions have an unsupported format.");
   const ids = new Set<string>();
   return value.map((candidate) => {
-    if (!isRecord(candidate)) throw new Error("A desktop position has an unsupported format.");
-    assertValidId(candidate.entryId, "A desktop position has an invalid entry ID.");
-    if (ids.has(candidate.entryId)) throw new Error("Desktop positions contain duplicate entry IDs.");
+    if (!isRecord(candidate)) throw new Error("A root entry position has an unsupported format.");
+    assertValidId(candidate.entryId, "A root entry position has an invalid entry ID.");
+    if (ids.has(candidate.entryId)) throw new Error("Root entry positions contain duplicate entry IDs.");
     ids.add(candidate.entryId);
     return { entryId: candidate.entryId, position: parsePosition(candidate.position) };
   });
 }
 
-export function parseRootDesktopPositions(value: unknown, entries: DesktopEntry[]): DesktopPositionUpdate[] {
-  const positions = parseDesktopPositions(value);
-  if (positions.length === 0) throw new Error("At least one desktop position is required.");
+export function parseRootEntryPositionUpdates(value: unknown, entries: DesktopEntry[]): RootEntryPositionUpdate[] {
+  const positions = parseRootEntryPositions(value);
+  if (positions.length === 0) throw new Error("At least one root entry position is required.");
   const roots = new Set(entries.filter((entry) => entry.parentId === null).map((entry) => entry.id));
-  if (positions.some(({ entryId }) => !roots.has(entryId))) throw new Error("Desktop positions require root entries.");
+  if (positions.some(({ entryId }) => !roots.has(entryId))) throw new Error("Root entry positions require root entries.");
   return positions;
 }
 
@@ -186,7 +182,7 @@ function parseEntry(value: unknown, remote: boolean): ParsedEntry {
     id: value.id,
     name: value.name,
     parentId: value.parentId,
-    createdAt: readNullableNonNegativeInteger(value.createdAt, "An entry has an invalid creation date."),
+    createdAt: readRequiredNullableNonNegativeInteger(value.createdAt, "An entry has an invalid creation date."),
     modifiedAt: readNonNegativeInteger(value.modifiedAt, "An entry has an invalid modification date."),
     position: parsePosition(value.position),
   } as const;
@@ -237,17 +233,16 @@ export function parseEntries(value: unknown, remote = false): ParsedEntry[] {
   return entries;
 }
 
-export function parseRemoteWorkspace(value: unknown): RemoteWorkspace {
-  if (!isRecord(value) || typeof value.initialized !== "boolean") throw new Error("The server workspace has an unsupported format.");
-  const schemaVersion = readRevision(value.schemaVersion, "The server workspace has an unsupported schema version.");
-  if (schemaVersion !== 5) throw new Error("The server workspace uses an unsupported schema version.");
-  assertValidId(value.workspaceId, "The server workspace has an invalid identity.");
+export function parseRemoteDesktopState(value: unknown): RemoteDesktopState {
+  if (!isRecord(value)) throw new Error("The server desktop has an unsupported format.");
+  const schemaVersion = readRevision(value.schemaVersion, "The server desktop has an unsupported schema version.");
+  if (schemaVersion !== 1) throw new Error("The server desktop uses an unsupported schema version.");
+  assertValidId(value.catalogId, "The server desktop has an invalid catalog identity.");
   const identity = {
-    schemaVersion,
-    workspaceId: value.workspaceId,
-    revision: readRevision(value.revision),
+    schemaVersion: 1 as const,
+    catalogId: value.catalogId,
+    catalogRevision: readRevision(value.catalogRevision),
   };
-  if (!value.initialized) return { ...identity, initialized: false };
   const layout = parseLayout(value.layout);
   if (!isRecord(value.appearance) || !Array.isArray(value.appearance.customThemes)) throw new Error("The server appearance has an unsupported format.");
   const customThemes = value.appearance.customThemes.map((candidate) => {
@@ -261,7 +256,8 @@ export function parseRemoteWorkspace(value: unknown): RemoteWorkspace {
   }
   return {
     ...identity,
-    initialized: value.initialized,
+    id: parseDesktopIdentity(value).id,
+    name: parseDesktopIdentity(value).name,
     entries: parseEntries(value.entries, true) as RemoteEntry[],
     layout,
     layoutRevision: readRevision(value.layoutRevision),

@@ -1,4 +1,4 @@
-import type { PersistedManifestV13 } from "./manifest-codec";
+import type { PersistedDesktopState } from "./desktop-state";
 import type { OutboxOperation, OutboxRecord } from "./outbox";
 import type { WindowSession } from "./window-session";
 import type { ActivityPage, ActivityQuery, NewActivityRecord } from "./activity";
@@ -10,26 +10,23 @@ export type StorageDbRequests = {
   ping: undefined;
   status: undefined;
   listDesktops: undefined;
-  createDesktop: { desktop: DesktopIdentity; manifest: PersistedManifestV13 };
+  createDesktop: { desktop: DesktopIdentity; state: PersistedDesktopState };
+  createOfflineDesktop: { desktop: DesktopIdentity; state: PersistedDesktopState };
   renameDesktop: { desktopId: string; name: string };
   deleteDesktop: { desktopId: string };
-  switchDesktop: { desktopId: string };
-  adoptFreshDesktop: { desktopId: string; target: DesktopIdentity };
   readDesktop: { desktopId: string };
   transferEntries: { sourceDesktopId: string; destinationDesktopId: string; entryIds: string[]; parentId: string | null };
-  enqueueTransfer: { operationId: string; workspaceId: string | null; sourceDesktopId: string; destinationDesktopId: string; entryIds: string[]; parentId: string | null };
-  bootstrap: { manifest: PersistedManifestV13; preferences: StoredPreferences; adoptablePlaceholder: boolean };
-  readManifest: undefined;
-  replaceManifest: { manifest: PersistedManifestV13; activity?: NewActivityRecord };
+  enqueueTransfer: { operationId: string; catalogId: string | null; sourceDesktopId: string; destinationDesktopId: string; entryIds: string[]; parentId: string | null };
+  replaceDesktopState: { state: PersistedDesktopState; activity?: NewActivityRecord };
   readPreferences: undefined;
   writePreferences: { preferences: StoredPreferences };
   readWindowSession: { desktopId: string };
   writeWindowSession: { desktopId: string; session: WindowSession };
   reserveOperation: undefined;
-  enqueueMutation: { operationId: string; workspaceId: string | null; operation: OutboxOperation };
+  enqueueMutation: { operationId: string; catalogId: string | null; operation: OutboxOperation };
   readOutbox: undefined;
-  bindOutboxWorkspace: { workspaceId: string };
-  applyRemoteWithOutbox: { manifest: PersistedManifestV13; acknowledgedOperationId?: string };
+  bindOutboxCatalog: { catalogId: string };
+  applyRemoteWithOutbox: { state: PersistedDesktopState; acknowledgedOperationId?: string };
   acknowledgeMutation: { operationId: string };
   blockMutation: { operationId: string; error: string };
   listActivity: ActivityQuery;
@@ -38,28 +35,25 @@ export type StorageDbRequests = {
 
 export type StorageDbResponses = {
   ping: undefined;
-  status: { existedBeforeOpen: boolean; needsBootstrap: boolean };
-  listDesktops: { desktops: DesktopIdentity[]; activeDesktopId: string | null };
+  status: { existedBeforeOpen: boolean };
+  listDesktops: { desktops: DesktopIdentity[] };
   createDesktop: DesktopIdentity;
+  createOfflineDesktop: { desktop: DesktopIdentity; record: OutboxRecord };
   renameDesktop: DesktopIdentity;
   deleteDesktop: undefined;
-  switchDesktop: PersistedManifestV13;
-  adoptFreshDesktop: { adopted: boolean };
-  readDesktop: PersistedManifestV13;
-  transferEntries: { source: PersistedManifestV13; destination: PersistedManifestV13 };
-  enqueueTransfer: { manifest: PersistedManifestV13; record: OutboxRecord };
-  bootstrap: { manifest: PersistedManifestV13; preferences: StoredPreferences };
-  readManifest: PersistedManifestV13;
-  replaceManifest: undefined;
+  readDesktop: PersistedDesktopState;
+  transferEntries: { source: PersistedDesktopState; destination: PersistedDesktopState };
+  enqueueTransfer: { state: PersistedDesktopState; record: OutboxRecord };
+  replaceDesktopState: undefined;
   readPreferences: StoredPreferences;
   writePreferences: undefined;
   readWindowSession: WindowSession;
   writeWindowSession: undefined;
   reserveOperation: { clientId: string; operationId: string; sequence: number };
-  enqueueMutation: { manifest: PersistedManifestV13; record: OutboxRecord };
+  enqueueMutation: { state: PersistedDesktopState; record: OutboxRecord };
   readOutbox: OutboxRecord[];
-  bindOutboxWorkspace: undefined;
-  applyRemoteWithOutbox: { manifest: PersistedManifestV13; blocked: OutboxRecord[] };
+  bindOutboxCatalog: undefined;
+  applyRemoteWithOutbox: { state: PersistedDesktopState; blocked: OutboxRecord[] };
   acknowledgeMutation: undefined;
   blockMutation: undefined;
   listActivity: ActivityPage;
@@ -80,3 +74,7 @@ export type StorageDbResponse = {
   result?: unknown;
   error?: string;
 };
+
+export function createStorageDbRequest<M extends StorageDbMethod>(id: number, desktopId: string | null, method: M, params: StorageDbRequests[M]): StorageDbRequest<M> {
+  return { id, desktopId, method, params };
+}

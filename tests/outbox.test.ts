@@ -1,93 +1,73 @@
 import { describe, expect, test } from "bun:test";
-import { applyOutboxOperation, normalizeOutboxOperation, outboxDesktopRetentionIds, type OutboxRecord } from "../src/lib/outbox";
-import { BUILTIN_THEMES } from "../src/lib/themes";
-import { desktopSnapshot } from "./fixtures";
+import { applyOutboxOperation, desktopPendingOperationProtection, normalizeOutboxOperation, outboxDesktopRetentionIds, transferEntriesBetweenDesktopStates, type OutboxRecord } from "../src/lib/outbox";
+import { desktopStateSnapshot } from "./fixtures";
+import { BUILTIN_THEMES, DEFAULT_THEME_ID } from "../src/lib/themes";
 
-function manifest() {
-  const snapshot = desktopSnapshot();
-  return {
-    version: 13 as const,
-    entries: snapshot.entries,
-    snapToGrid: snapshot.layout.snapToGrid,
-    wallpaper: snapshot.layout.wallpaper,
-    editorSettings: snapshot.editorSettings,
-    appearance: snapshot.appearance,
-    sync: snapshot.sync,
-  };
+function state() {
+  const snapshot = desktopStateSnapshot();
+  return { entries: snapshot.entries, snapToGrid: snapshot.layout.snapToGrid, wallpaper: snapshot.layout.wallpaper, editorSettings: snapshot.editorSettings, appearance: snapshot.appearance, sync: snapshot.sync };
 }
 
-describe("theme outbox projection", () => {
-  test("upserts, selects, and deletes with fallback without changing revisions", () => {
-    const theme = { id: "custom", name: "Custom", definition: BUILTIN_THEMES["warm-paper"].definition };
-    const created = applyOutboxOperation(manifest(), { kind: "upsert-theme", theme });
-    const selected = applyOutboxOperation(created, { kind: "select-theme", themeId: theme.id });
-    const deleted = applyOutboxOperation(selected, { kind: "delete-theme", themeId: theme.id });
-
-    expect(selected.appearance).toEqual({ selectedThemeId: "custom", customThemes: [theme] });
-    expect(deleted.appearance).toEqual({ selectedThemeId: "hiraya-dusk", customThemes: [] });
-    expect(deleted.sync).toEqual(manifest().sync);
+describe("strict outbox", () => {
+  test("requires operation schema version 1", () => {
+    const operation = { schemaVersion: 1 as const, kind: "layout" as const, layout: { snapToGrid: true, wallpaper: "dusk" as const } };
+    expect(normalizeOutboxOperation(operation)).toEqual(operation);
+    expect(applyOutboxOperation(state(), operation).snapToGrid).toBe(true);
+    expect(() => normalizeOutboxOperation({ ...operation, schemaVersion: 2 } as never)).toThrow("schema version");
   });
 
-  test("rejects missing selections and treats repeated deletes as satisfied", () => {
-    expect(() => applyOutboxOperation(manifest(), { kind: "select-theme", themeId: "missing" })).toThrow("does not exist");
-    expect(applyOutboxOperation(manifest(), { kind: "delete-theme", themeId: "missing" })).toEqual(manifest());
-  });
-});
-
-describe("entry batch outbox projection", () => {
-  test("normalizes entries from old persisted operations", () => {
-    const entry = { kind: "folder" as const, id: "legacy", name: "Legacy", parentId: null, modifiedAt: 1, position: { x: 0, y: 0 } };
-    const operation = normalizeOutboxOperation({ kind: "create", entries: [entry] });
-    expect(operation.kind === "create" && operation.entries[0].createdAt).toBeNull();
+  test("projects canonical entry transfers and retains both desktops", () => {
+    const folder = { kind: "folder" as const, id: "tree", name: "Tree", parentId: null, createdAt: 1, modifiedAt: 1, position: { x: 0, y: 0 } };
+    const source = { ...state(), entries: [folder] };
+    const operation = { schemaVersion: 1 as const, kind: "entry-transfer" as const, entryIds: [folder.id], destinationDesktopId: "destination", parentId: null };
+    expect(applyOutboxOperation(source, operation).entries).toEqual([]);
+    const record: OutboxRecord = { operationId: "1", sequence: 1, clientId: "client", catalogId: "catalog", desktopId: "source", operation, status: "pending", error: null };
+    expect([...outboxDesktopRetentionIds([record], "catalog")].sort()).toEqual(["destination", "source"]);
+    expect([...outboxDesktopRetentionIds([record], "replacement")]).toEqual([]);
   });
 
-  test("creates mixed trees, moves batches, and recursively deletes batches", () => {
-    const folder = { kind: "folder" as const, id: "11111111-1111-4111-8111-111111111111", name: "Copies", parentId: null, modifiedAt: 1, position: { x: 4, y: 5 } };
-    const file = { kind: "file" as const, id: "22222222-2222-4222-8222-222222222222", name: "note.txt", parentId: folder.id, modifiedAt: 1, position: { x: 4, y: 5 }, mimeType: "text/plain", size: 3 };
-    const created = applyOutboxOperation(manifest(), { kind: "create", entries: [file, folder] });
-    expect(created.entries.find((entry) => entry.id === file.id)?.parentId).toBe(folder.id);
+  test("projects offline CRUD, content, layout, settings, positions, and themes", () => {
+    const folder = { kind: "folder" as const, id: "folder", name: "Folder", parentId: null, createdAt: 1, modifiedAt: 1, position: { x: 0, y: 0 } };
+    const file = { kind: "file" as const, id: "file", name: "note.txt", parentId: null, createdAt: 1, modifiedAt: 1, position: { x: 10, y: 10 }, mimeType: "text/plain", size: 0 };
+    let projected = applyOutboxOperation(state(), { schemaVersion: 1, kind: "create", entries: [folder, file] });
+    projected = applyOutboxOperation(projected, { schemaVersion: 1, kind: "update-entry", entry: { ...folder, name: "Documents" } });
+    projected = applyOutboxOperation(projected, { schemaVersion: 1, kind: "save-content", entry: { ...file, size: 4, modifiedAt: 2 } });
+    projected = applyOutboxOperation(projected, { schemaVersion: 1, kind: "root-entry-positions", positions: [{ entryId: file.id, position: { x: -20, y: 30 } }] });
+    projected = applyOutboxOperation(projected, { schemaVersion: 1, kind: "layout", layout: { snapToGrid: true, wallpaper: "grove" } });
+    const settings = { ...projected.editorSettings, fontSize: 17, autoFormat: true };
+    projected = applyOutboxOperation(projected, { schemaVersion: 1, kind: "editor-settings", settings });
+    const theme = { id: "custom", name: "Custom", definition: BUILTIN_THEMES[DEFAULT_THEME_ID].definition };
+    projected = applyOutboxOperation(projected, { schemaVersion: 1, kind: "upsert-theme", theme });
+    projected = applyOutboxOperation(projected, { schemaVersion: 1, kind: "select-theme", themeId: theme.id });
 
-    const moved = applyOutboxOperation(created, { kind: "batch-move", entryIds: [file.id], parentId: null });
-    expect(moved.entries.find((entry) => entry.id === file.id)?.parentId).toBeNull();
+    expect(projected.entries.find(({ id }) => id === folder.id)?.name).toBe("Documents");
+    expect(projected.entries.find(({ id }) => id === file.id)).toMatchObject({ size: 4, position: { x: -20, y: 30 } });
+    expect(projected).toMatchObject({ snapToGrid: true, wallpaper: "grove", editorSettings: settings });
+    expect(projected.appearance.selectedThemeId).toBe(theme.id);
 
-    const deleted = applyOutboxOperation(created, { kind: "batch-delete", entryIds: [folder.id] });
-    expect(deleted.entries.some((entry) => entry.id === folder.id || entry.id === file.id)).toBe(false);
+    projected = applyOutboxOperation(projected, { schemaVersion: 1, kind: "delete", entryId: folder.id });
+    projected = applyOutboxOperation(projected, { schemaVersion: 1, kind: "delete-theme", themeId: theme.id });
+    expect(projected.entries.map(({ id }) => id)).toEqual([file.id]);
+    expect(projected.appearance).toEqual({ selectedThemeId: DEFAULT_THEME_ID, customThemes: [] });
   });
 
-  test("removes an entire transferred subtree from the source projection", () => {
-    const folder = { kind: "folder" as const, id: "folder", name: "Folder", parentId: null, modifiedAt: 1, position: { x: 0, y: 0 } };
-    const file = { kind: "file" as const, id: "file", name: "note.txt", parentId: folder.id, modifiedAt: 1, position: { x: 0, y: 0 }, mimeType: "text/plain", size: 1 };
-    const source = { ...manifest(), entries: [folder, file] };
-    const transferred = applyOutboxOperation(source, { kind: "transfer", entryIds: [folder.id], destinationDesktopId: "other", parentId: null });
-    expect(transferred.entries).toEqual([]);
-    expect(() => applyOutboxOperation(transferred, { kind: "transfer", entryIds: [folder.id], destinationDesktopId: "other", parentId: null })).toThrow("no longer exists");
+  test("transfers entry trees and their revisions between desktop states", () => {
+    const folder = { kind: "folder" as const, id: "folder", name: "Folder", parentId: null, createdAt: 1, modifiedAt: 1, position: { x: 0, y: 0 } };
+    const file = { kind: "file" as const, id: "file", name: "note.txt", parentId: folder.id, createdAt: 1, modifiedAt: 1, position: { x: 0, y: 0 }, mimeType: "text/plain", size: 4 };
+    const source = { ...state(), entries: [folder, file], sync: { ...state().sync, catalogId: "catalog", catalogRevision: 8, entryRevisions: { folder: 6, file: 7 }, contentRevisions: { file: 5 } } };
+    const destination = { ...state(), sync: { ...state().sync, catalogId: "catalog", catalogRevision: 7, entryRevisions: { existing: 2 }, contentRevisions: {} } };
+    const transferred = transferEntriesBetweenDesktopStates(source, destination, [folder.id], null, 10);
+
+    expect(transferred.source.entries).toEqual([]);
+    expect(transferred.source.sync).toMatchObject({ catalogId: "catalog", catalogRevision: 8, entryRevisions: {}, contentRevisions: {} });
+    expect(transferred.destination.entries).toEqual([{ ...folder, modifiedAt: 10 }, file]);
+    expect(transferred.destination.sync).toMatchObject({ catalogId: "catalog", catalogRevision: 8, entryRevisions: { existing: 2, folder: 6, file: 7 }, contentRevisions: { file: 5 } });
   });
 
-  test("desktop management receipts do not alter workspace projection", () => {
-    const source = manifest();
-    expect(applyOutboxOperation(source, { kind: "create-desktop", desktop: { id: "other", name: "Other" } })).toBe(source);
-    expect(applyOutboxOperation(source, { kind: "rename-desktop", desktop: { id: "other", name: "Renamed" } })).toBe(source);
-    expect(applyOutboxOperation(source, { kind: "delete-desktop", desktopId: "other" })).toBe(source);
-  });
-});
-
-describe("outbox desktop retention", () => {
-  test("retains pending and blocked owners plus transfer destinations", () => {
-    const record = (desktopId: string, operation: OutboxRecord["operation"], status: OutboxRecord["status"]): OutboxRecord => ({
-      operationId: `${desktopId}-${status}`,
-      sequence: 1,
-      clientId: "client",
-      workspaceId: "workspace",
-      desktopId,
-      operation,
-      status,
-      error: status === "blocked" ? "conflict" : null,
-    });
-    const retained = outboxDesktopRetentionIds([
-      record("edited", { kind: "layout", layout: { snapToGrid: true, wallpaper: "dusk" } }, "pending"),
-      record("transfer-source", { kind: "transfer", entryIds: ["tree"], destinationDesktopId: "transfer-destination", parentId: null }, "pending"),
-      record("blocked", { kind: "editor-settings", settings: manifest().editorSettings }, "blocked"),
-    ]);
-    expect([...retained].sort()).toEqual(["blocked", "edited", "transfer-destination", "transfer-source"]);
+  test("protects desktops owning or referenced by pending and blocked operations", () => {
+    const transfer: OutboxRecord = { operationId: "transfer", sequence: 1, clientId: "client", catalogId: "catalog", desktopId: "source", operation: { schemaVersion: 1, kind: "entry-transfer", entryIds: ["file"], destinationDesktopId: "destination", parentId: null }, status: "pending", error: null };
+    expect(desktopPendingOperationProtection([transfer], "source")).toContain("pending or blocked");
+    expect(desktopPendingOperationProtection([transfer], "destination")).toContain("pending or blocked");
+    expect(desktopPendingOperationProtection([transfer], "clean")).toBe("");
   });
 });

@@ -1,6 +1,6 @@
-import { DEFAULT_WALLPAPER, type DesktopEntry, type DesktopLayout, type EditorSettings, type FileEntry, type FolderEntry } from "../types";
+import type { DesktopEntry, DesktopLayout, EditorSettings, FileEntry, FolderEntry } from "../types";
 import { isRecord, parseEditorSettings, parseEntries, parseLayout } from "./contracts";
-import { DEFAULT_THEME_STATE, parseThemeState, type ThemeState } from "./themes";
+import { parseThemeState, type ThemeState } from "./themes";
 
 declare const portableContentUrl: unique symbol;
 declare const bundledContentUrl: unique symbol;
@@ -9,7 +9,7 @@ export type BundledContentUrl = string & { readonly [bundledContentUrl]: true };
 
 export type PortableSeededFileEntry = FileEntry & { contentUrl: PortableContentUrl };
 export type PortableSeededManifest = {
-  version: 7;
+  schemaVersion: 1;
   layout: DesktopLayout;
   editorSettings: EditorSettings;
   appearance: ThemeState;
@@ -27,12 +27,12 @@ export type SeededFileEntry = BundledSeededFileEntry;
 export type SeededManifest = BundledSeededManifest;
 
 function readSeeded(value: unknown, portable: boolean): PortableSeededManifest {
-  if (!isRecord(value) || !Number.isInteger(value.version) || (value.version as number) < 1 || (value.version as number) > 7 || !Array.isArray(value.entries)) {
+  if (!isRecord(value) || value.schemaVersion !== 1 || !Array.isArray(value.entries)) {
     throw new Error("The seeded desktop manifest has an unsupported format.");
   }
   if (!isRecord(value.layout)) throw new Error("The seeded desktop layout has an unsupported format.");
   const editorSettings = parseEditorSettings(value.editorSettings);
-  const appearance = (value.version as number) < 7 ? DEFAULT_THEME_STATE : parseThemeState(value.appearance);
+  const appearance = parseThemeState(value.appearance);
   const contentUrls = new Map<string, PortableContentUrl>();
   const plainEntries = value.entries.map((candidate) => {
     if (!isRecord(candidate)) throw new Error("A seeded entry has an unsupported format.");
@@ -46,14 +46,14 @@ function readSeeded(value: unknown, portable: boolean): PortableSeededManifest {
     return entry;
   });
   const layout: DesktopLayout = parseLayout({
-    snapToGrid: value.version === 1 ? false : value.layout.snapToGrid,
-    wallpaper: (value.version as number) < 3 ? DEFAULT_WALLPAPER : value.layout.wallpaper,
+    snapToGrid: value.layout.snapToGrid,
+    wallpaper: value.layout.wallpaper,
   });
   const parsedEntries = parseEntries(plainEntries);
   const entries = parsedEntries.map((entry) => entry.kind === "file"
     ? { ...entry, contentUrl: contentUrls.get(entry.id) as string }
     : entry) as Array<FolderEntry | PortableSeededFileEntry>;
-  return { version: 7, layout, editorSettings, appearance, entries };
+  return { schemaVersion: 1, layout, editorSettings, appearance, entries };
 }
 
 export function assertPortableContentUrl(contentUrl: string) {
@@ -83,7 +83,7 @@ export function toPortableSeededManifest(
   contentUrlFor: (file: FileEntry) => string,
 ): PortableSeededManifest {
   return parsePortableSeededManifest({
-    version: 7,
+    schemaVersion: 1,
     layout: desktop.layout,
     editorSettings: desktop.editorSettings,
     appearance: desktop.appearance,

@@ -1,5 +1,5 @@
 {
-  "version": 7,
+  "schemaVersion": 1,
   "layout": {
     "snapToGrid": false,
     "wallpaper": "dusk"
@@ -21,6 +21,7 @@
       "id": "example-folder",
       "name": "Welcome",
       "parentId": null,
+      "createdAt": 0,
       "modifiedAt": 0,
       "position": {
         "x": 22,
@@ -32,6 +33,7 @@
       "id": "example-file",
       "name": "hello.txt",
       "parentId": "example-folder",
+      "createdAt": 0,
       "modifiedAt": 0,
       "position": {
         "x": 22,

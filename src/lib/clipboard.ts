@@ -3,7 +3,7 @@ import type { DesktopEntry } from "../types";
 import { isRecord, isValidId, parseEntries } from "./contracts";
 
 export const CLIPBOARD_ARCHIVE_VERSION = 1 as const;
-export const CLIPBOARD_ARCHIVE_MIME_TYPE = "application/x-hiraya-entry-archive+zip";
+export const CLIPBOARD_ARCHIVE_MIME_TYPE = "application/vnd.hiraya.entry-archive-v1+zip";
 export const CLIPBOARD_ARCHIVE_WEB_MIME_TYPE = `web ${CLIPBOARD_ARCHIVE_MIME_TYPE}`;
 
 export type ClipboardEntrySnapshot = {
@@ -13,7 +13,7 @@ export type ClipboardEntrySnapshot = {
 };
 
 type ClipboardManifest = {
-  version: typeof CLIPBOARD_ARCHIVE_VERSION;
+  schemaVersion: typeof CLIPBOARD_ARCHIVE_VERSION;
   selectedRootIds: string[];
   entries: DesktopEntry[];
 };
@@ -32,13 +32,13 @@ function assertExactEntryShape(value: unknown) {
     throw new Error("A clipboard entry has an unsupported format.");
   }
   const keys = value.kind === "file"
-    ? ["kind", "id", "name", "parentId", ...(value.createdAt === undefined ? [] : ["createdAt"]), "modifiedAt", "position", "mimeType", "size"]
-    : ["kind", "id", "name", "parentId", ...(value.createdAt === undefined ? [] : ["createdAt"]), "modifiedAt", "position"];
+    ? ["kind", "id", "name", "parentId", "createdAt", "modifiedAt", "position", "mimeType", "size"]
+    : ["kind", "id", "name", "parentId", "createdAt", "modifiedAt", "position"];
   if (!hasExactKeys(value, keys)) throw new Error("A clipboard entry has an unsupported format.");
 }
 
 function parseManifest(value: unknown): ClipboardManifest {
-  if (!isRecord(value) || !hasExactKeys(value, ["version", "selectedRootIds", "entries"]) || value.version !== CLIPBOARD_ARCHIVE_VERSION || !Array.isArray(value.selectedRootIds) || !Array.isArray(value.entries)) {
+  if (!isRecord(value) || !hasExactKeys(value, ["schemaVersion", "selectedRootIds", "entries"]) || value.schemaVersion !== CLIPBOARD_ARCHIVE_VERSION || !Array.isArray(value.selectedRootIds) || !Array.isArray(value.entries)) {
     throw new Error("The clipboard archive has an unsupported manifest.");
   }
   value.entries.forEach(assertExactEntryShape);
@@ -53,7 +53,7 @@ function parseManifest(value: unknown): ClipboardManifest {
   if (selected.size === 0 || selected.size !== roots.length || roots.some((id) => !selected.has(id))) {
     throw new Error("The clipboard archive does not contain exactly its selected trees.");
   }
-  return { version: CLIPBOARD_ARCHIVE_VERSION, selectedRootIds: [...selectedRootIds], entries };
+  return { schemaVersion: CLIPBOARD_ARCHIVE_VERSION, selectedRootIds: [...selectedRootIds], entries };
 }
 
 function contentPath(id: string) {
@@ -69,7 +69,7 @@ function assertSafeArchivePath(path: string) {
 function validateSnapshot(snapshot: ClipboardEntrySnapshot) {
   if (!isRecord(snapshot) || !(snapshot.contents instanceof Map)) throw new Error("The clipboard snapshot has an unsupported format.");
   const manifest = parseManifest({
-    version: CLIPBOARD_ARCHIVE_VERSION,
+    schemaVersion: CLIPBOARD_ARCHIVE_VERSION,
     selectedRootIds: snapshot.selectedRootIds,
     entries: snapshot.entries,
   });
