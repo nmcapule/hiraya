@@ -10,6 +10,7 @@ import { parseCustomTheme, parseThemeState, type CustomTheme } from "./themes";
 import type { ClipboardEntrySnapshot } from "./clipboard";
 import { parseActivityPage, parseActivityQuery, type ActivityQuery } from "./activity";
 import { parseDesktopCatalog } from "./desktop-catalog";
+import { AuthenticationRequiredError, redirectToLogin, requireAuthenticatedResponse } from "./auth";
 
 type OutboxOperationInput = OutboxOperation extends infer Operation
   ? Operation extends OutboxOperation ? Omit<Operation, "schemaVersion"> : never
@@ -49,6 +50,7 @@ export type SyncEngineOptions = {
   setInterval?: typeof globalThis.setInterval;
   clearInterval?: typeof globalThis.clearInterval;
   storage?: StorageBoundary;
+  onUnauthorized?: () => void;
 };
 
 class SyncRequestError extends Error {
@@ -119,6 +121,7 @@ export class SyncEngine {
   private readonly setIntervalImpl: typeof globalThis.setInterval;
   private readonly clearIntervalImpl: typeof globalThis.clearInterval;
   private readonly storage: StorageBoundary;
+  private readonly onUnauthorized: () => void;
   private desktop: storage.DesktopStateSnapshot | null = null;
   private status: SyncStatus = "connecting";
   private events: EventSource | null = null;
@@ -126,6 +129,7 @@ export class SyncEngine {
   private work: Promise<unknown> = Promise.resolve();
   private startPromise: Promise<{ desktop: storage.DesktopStateSnapshot; status: SyncStatus }> | null = null;
   private running = false;
+  private authenticationPaused = false;
   private generation = 0;
   private desktopId = "";
   private catalogId: string | null = null;
@@ -145,11 +149,13 @@ export class SyncEngine {
     this.setIntervalImpl = options.setInterval ?? globalThis.setInterval.bind(globalThis);
     this.clearIntervalImpl = options.clearInterval ?? globalThis.clearInterval.bind(globalThis);
     this.storage = options.storage ?? storage;
+    this.onUnauthorized = options.onUnauthorized ?? redirectToLogin;
   }
 
   start(desktopId: string, viewport: EntryPosition, seeded: SeededManifest | null = null) {
     if (this.startPromise) return this.startPromise;
     this.running = true;
+    this.authenticationPaused = false;
     const generation = ++this.generation;
     this.desktopId = desktopId;
     this.startPromise = this.startInternal(viewport, seeded, generation).catch((error) => {
@@ -177,9 +183,10 @@ export class SyncEngine {
       });
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") throw error;
-      this.setStatus("offline");
+      if (error instanceof AuthenticationRequiredError) this.setStatus("connecting");
+      else this.setStatus("offline");
     }
-    if (this.running && this.generation === generation) this.startEvents();
+    if (this.running && !this.authenticationPaused && this.generation === generation) this.startEvents();
     return { desktop: this.current(), status: this.status };
   }
 
@@ -272,18 +279,35 @@ export class SyncEngine {
   }
 
   private async requestJson(input: RequestInfo | URL, init?: RequestInit): Promise<unknown> {
+    if (this.authenticationPaused) throw new AuthenticationRequiredError();
     let response: Response;
     try {
-      response = await this.fetchImpl(input, init);
+      response = await this.fetchImpl(input, { credentials: "same-origin", ...init });
     } catch {
       this.setStatus("offline");
       throw new SyncRequestError("The Hiraya server is unavailable. The change remains queued.", null, false);
     }
+    this.requireAuthentication(response);
     if (!response.ok) {
       const body = await response.json().catch(() => null) as { error?: string } | null;
       throw new SyncRequestError(body?.error || `The Hiraya server rejected the request (${response.status}).`, response.status, response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429);
     }
     return response.json();
+  }
+
+  private pauseForAuthentication() {
+    if (this.authenticationPaused) return;
+    this.authenticationPaused = true;
+    this.events?.close();
+    this.events = null;
+    if (this.healthTimer !== null) this.clearIntervalImpl(this.healthTimer);
+    this.healthTimer = null;
+    this.setStatus("connecting");
+  }
+
+  private requireAuthentication(response: Response) {
+    if (response.status === 401) this.pauseForAuthentication();
+    return requireAuthenticatedResponse(response, this.onUnauthorized);
   }
 
   private async requestDesktop(input: RequestInfo | URL, init?: RequestInit) {
@@ -300,7 +324,7 @@ export class SyncEngine {
   }
 
   private healthRoute() {
-    return API_ROUTES.health;
+    return API_ROUTES.syncHealth;
   }
 
   private async applyRemoteState(remote: RemoteDesktopState, generation = this.generation, acknowledgedOperationId?: string, desktopId = this.desktopId) {
@@ -491,7 +515,11 @@ export class SyncEngine {
         if (this.running) this.setStatus(error instanceof SyncRequestError && error.permanent ? "blocked" : "offline");
       });
     };
-    events.onerror = () => { if (this.running && this.status !== "blocked") this.setStatus("offline"); };
+    events.onerror = () => {
+      if (!this.running || this.status === "blocked" || this.authenticationPaused) return;
+      this.setStatus("offline");
+      void this.checkHealth();
+    };
     events.addEventListener("catalog", (event) => {
       if (!this.running) return;
       if (this.status === "blocked") return;
@@ -524,7 +552,7 @@ export class SyncEngine {
   private async checkHealth() {
     if (!this.running) return;
     try {
-      const response = await this.fetchImpl(this.healthRoute(), { cache: "no-store" });
+      const response = this.requireAuthentication(await this.fetchImpl(this.healthRoute(), { cache: "no-store", credentials: "same-origin" }));
       if (!response.ok) throw new Error("unhealthy");
       const health = await response.json() as unknown;
       const revision = typeof health === "object" && health !== null && "catalogRevision" in health ? Number((health as { catalogRevision: unknown }).catalogRevision) : Number.NaN;
@@ -542,7 +570,7 @@ export class SyncEngine {
       });
       if (this.running) this.setStatus("online");
     } catch (error) {
-      if (this.running) this.setStatus(error instanceof SyncRequestError && error.permanent ? "blocked" : "offline");
+      if (this.running && !(error instanceof AuthenticationRequiredError)) this.setStatus(error instanceof SyncRequestError && error.permanent ? "blocked" : "offline");
     }
   }
 
@@ -716,7 +744,8 @@ export class SyncEngine {
           : catalog.desktops[0]?.id ?? null,
         desktops: [...remoteDesktops, ...local.desktops.filter((desktop) => !remoteIds.has(desktop.id) && retainedLocalIds.has(desktop.id))],
       };
-    } catch {
+    } catch (error) {
+      if (error instanceof AuthenticationRequiredError) throw error;
       if (local.desktops.length === 0) {
         const created = await this.storage.createOfflineDesktop("Offline desktop");
         local = { desktops: [created.desktop], activeDesktopId: created.desktop.id };
@@ -865,11 +894,12 @@ export class SyncEngine {
     const loading = (async () => {
       let response: Response;
       try {
-        response = await this.fetchImpl(API_ROUTES.desktopContent(desktopId, id), { cache: "no-store" });
+        response = await this.fetchImpl(API_ROUTES.desktopContent(desktopId, id), { cache: "no-store", credentials: "same-origin" });
       } catch {
         this.setStatus("offline");
         throw new VirtualFileUnavailableError();
       }
+      this.requireAuthentication(response);
       if (!response.ok) throw new Error(response.status === 404 ? "This file no longer exists on the server." : `The server contents of “${entry.name}” could not be loaded (${response.status}).`);
       const responseRevisionHeader = response.headers.get("X-Hiraya-Revision");
       const responseRevision = responseRevisionHeader === null ? Number.NaN : Number(responseRevisionHeader);
@@ -908,11 +938,12 @@ export class SyncEngine {
     if (this.frontendOnly) return parseActivityPage(await this.storage.listActivity(parsed));
     let response: Response;
     try {
-      response = await this.fetchImpl(API_ROUTES.activity(parsed), { cache: "no-store" });
+      response = await this.fetchImpl(API_ROUTES.activity(parsed), { cache: "no-store", credentials: "same-origin" });
     } catch {
       this.setStatus("offline");
       throw new Error("Activity is unavailable while the Hiraya server is offline.");
     }
+    this.requireAuthentication(response);
     if (!response.ok) {
       const body = await response.json().catch(() => null) as { error?: string } | null;
       throw new Error(body?.error || `Activity could not be loaded (${response.status}).`);

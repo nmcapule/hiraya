@@ -20,6 +20,47 @@ import { resolveDesktopContext } from "./desktop-catalog";
 const FILES_DIRECTORY = "files";
 const PENDING_DIRECTORY = "pending";
 const CONTENT_CACHE_DIRECTORY = ".hiraya-content-cache";
+const LEGACY_STORAGE_ENTRIES = [FILES_DIRECTORY, PENDING_DIRECTORY, CONTENT_CACHE_DIRECTORY, ".hiraya-sqlite-v1"];
+export const LOCAL_STORAGE_ID = "hiraya-local";
+const FRONTEND_ONLY = import.meta.env.HIRAYA_FRONTEND_ONLY === "true";
+
+let storageNamespace: { storageId: string; key: string } | null = null;
+
+function namespaceKey() {
+  if (!storageNamespace) throw new Error("Hiraya storage was used before its namespace was selected.");
+  return storageNamespace.key;
+}
+
+async function storageKey(storageId: string) {
+  if (!storageId || storageId.length > 1024 || [...storageId].some((character) => character.charCodeAt(0) < 32)) throw new Error("The Hiraya storage ID is invalid.");
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(storageId));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function removeLegacyUnscopedStorage(root: FileSystemDirectoryHandle) {
+  if (localStorage.getItem("hiraya-scoped-storage-v1") === "complete") return;
+  for (const name of LEGACY_STORAGE_ENTRIES) {
+    try {
+      await root.removeEntry(name, { recursive: true });
+    } catch (error) {
+      if (!isNotFound(error)) throw error;
+    }
+  }
+  localStorage.setItem("hiraya-scoped-storage-v1", "complete");
+}
+
+export async function configureStorageNamespace(storageId: string) {
+  const key = await storageKey(storageId);
+  if (storageNamespace) {
+    if (storageNamespace.storageId !== storageId) throw new Error("The Hiraya storage namespace cannot change after startup.");
+    return;
+  }
+  if (!navigator.storage?.getDirectory) throw new StorageUnavailableError();
+  const root = await navigator.storage.getDirectory();
+  if (!FRONTEND_ONLY) await removeLegacyUnscopedStorage(root);
+  storageNamespace = { storageId, key };
+  activeDesktopContext = sessionStorage.getItem(FRONTEND_ONLY ? "hiraya-active-desktop" : `hiraya-active-desktop-${key}`);
+}
 
 type DesktopState = PersistedDesktopState;
 export type { DesktopSyncState } from "./desktop-state";
@@ -53,7 +94,8 @@ async function getRoot() {
     throw new StorageUnavailableError();
   }
 
-  return navigator.storage.getDirectory();
+  const root = await navigator.storage.getDirectory();
+  return FRONTEND_ONLY ? root : root.getDirectoryHandle(`.hiraya-storage-${namespaceKey()}`, { create: true });
 }
 
 async function getFilesDirectory() {
@@ -261,12 +303,11 @@ function getFileEntry(entries: DesktopEntry[], id: string): FileEntry {
 let desktopLoad: Promise<DesktopState> | null = null;
 let databaseInitialization: Promise<void> | null = null;
 let storageWork: Promise<void> = Promise.resolve();
-const DESKTOP_SESSION_KEY = "hiraya-active-desktop";
-let activeDesktopContext = typeof sessionStorage === "undefined" ? null : sessionStorage.getItem(DESKTOP_SESSION_KEY);
+let activeDesktopContext: string | null = null;
 
 function setDesktopContext(desktopId: string) {
   activeDesktopContext = desktopId;
-  if (typeof sessionStorage !== "undefined") sessionStorage.setItem(DESKTOP_SESSION_KEY, desktopId);
+  if (typeof sessionStorage !== "undefined") sessionStorage.setItem(FRONTEND_ONLY ? "hiraya-active-desktop" : `hiraya-active-desktop-${namespaceKey()}`, desktopId);
 }
 
 type RpcPort = {
@@ -290,16 +331,17 @@ class LocalDatabaseOwnerChangedError extends Error {}
 class LocalDatabaseTimeoutError extends Error {}
 
 function openDatabasePort(): RpcPort {
+  const key = namespaceKey();
   let port: RpcPort;
   if (typeof SharedWorker !== "undefined") {
-    const shared = new SharedWorker(new URL("./opfs-shared.worker.ts", import.meta.url), { type: "module", name: "hiraya-storage" });
+    const shared = new SharedWorker(new URL("./opfs-shared.worker.ts", import.meta.url), { type: "module", name: FRONTEND_ONLY ? "hiraya-storage" : `hiraya-storage-${key}` });
     shared.port.addEventListener("message", (event) => {
       const message = event.data as { type?: string; requestId?: number };
       if (message.type !== "need-engine" || message.requestId === undefined) return;
       if (hostedDatabaseWorker && hostedDatabaseRequestId === message.requestId) return;
       hostedDatabaseWorker?.terminate();
       const candidateRequestId = message.requestId;
-      const worker = new Worker(new URL("./opfs-db.worker.ts", import.meta.url), { type: "module", name: "hiraya-sqlite-engine" });
+      const worker = new Worker(new URL("./opfs-db.worker.ts", import.meta.url), { type: "module", name: FRONTEND_ONLY ? "hiraya-sqlite-engine" : `hiraya-sqlite-engine-${key}` });
       hostedDatabaseRequestId = candidateRequestId;
       hostedDatabaseWorker = worker;
       const channel = new MessageChannel();
@@ -321,8 +363,9 @@ function openDatabasePort(): RpcPort {
         shared.port.postMessage({ type: "attach-engine", requestId: candidateRequestId, port: channel.port2 }, [channel.port2]);
       };
       channel.port2.start();
-      worker.postMessage({ type: "attach", port: channel.port1 }, [channel.port1]);
+      worker.postMessage({ type: "attach", storage: key, port: channel.port1 }, [channel.port1]);
     });
+    shared.port.postMessage({ type: "configure-storage", storage: key });
     window.addEventListener("pagehide", () => {
       if (!hostedDatabaseWorker || hostedDatabaseRequestId === null) return;
       const releasedRequestId = hostedDatabaseRequestId;
@@ -344,7 +387,8 @@ function openDatabasePort(): RpcPort {
       },
     };
   } else {
-    const worker = new Worker(new URL("./opfs-db.worker.ts", import.meta.url), { type: "module", name: "hiraya-storage-fallback" });
+    const worker = new Worker(new URL("./opfs-db.worker.ts", import.meta.url), { type: "module", name: FRONTEND_ONLY ? "hiraya-storage-fallback" : `hiraya-storage-fallback-${key}` });
+    worker.postMessage({ type: "configure-storage", storage: key });
     port = {
       postMessage: (message, transfer) => worker.postMessage(message, transfer ?? []),
       addEventListener: (type, listener) => worker.addEventListener(type, listener),
@@ -408,7 +452,7 @@ async function withCrossContextLock<T>(operation: () => Promise<T>) {
     if (!acquired) controller.abort();
   }, STORAGE_LOCK_TIMEOUT_MS);
   try {
-    return await navigator.locks.request("hiraya-opfs", { mode: "exclusive", signal: controller.signal }, async () => {
+    return await navigator.locks.request(FRONTEND_ONLY ? "hiraya-opfs" : `hiraya-opfs-${namespaceKey()}`, { mode: "exclusive", signal: controller.signal }, async () => {
       acquired = true;
       window.clearTimeout(timeout);
       return operation();

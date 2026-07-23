@@ -39,7 +39,7 @@ export default defineConfig(({ mode }) => {
         workbox: {
           cleanupOutdatedCaches: true,
           globPatterns: ["**/*.{js,css,html,ico,png,svg,wasm,webmanifest}"],
-          navigateFallbackDenylist: [/^\/api\//],
+          navigateFallbackDenylist: [/^\/api\//, /^\/(?:login|register|profile|logout|admin)(?:[/?]|$)/],
         },
       }),
     ],

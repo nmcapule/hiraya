@@ -74,7 +74,14 @@ const scope = self as typeof self & {
 scope.onconnect = (event) => {
   const port = event.ports[0];
   clients.add(port);
-  port.onmessage = (message: MessageEvent<StorageDbRequest | { type: "attach-engine"; requestId: number; port: MessagePort } | { type: "release-engine"; requestId: number } | { type: "reset-engine" }>) => {
+  let storageNamespace = "";
+  port.onmessage = (message: MessageEvent<StorageDbRequest | { type: "configure-storage"; storage: string } | { type: "attach-engine"; requestId: number; port: MessagePort } | { type: "release-engine"; requestId: number } | { type: "reset-engine" }>) => {
+    if ("type" in message.data && message.data.type === "configure-storage") {
+      if (!/^[a-f\d]{64}$/.test(message.data.storage)) throw new Error("The shared storage worker has no valid storage namespace.");
+      if (storageNamespace && storageNamespace !== message.data.storage) throw new Error("The shared storage worker storage namespace cannot change.");
+      storageNamespace = message.data.storage;
+      return;
+    }
     if ("type" in message.data && message.data.type === "attach-engine") {
       if (engine || message.data.requestId !== hostRequestId) {
         message.data.port.close();

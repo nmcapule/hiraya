@@ -11,12 +11,20 @@ class FakeEventSource {
   close() {}
 }
 
+class CapturingEventSource extends FakeEventSource {
+  static latest: CapturingEventSource | null = null;
+  constructor(readonly url: string) {
+    super();
+    CapturingEventSource.latest = this;
+  }
+}
+
 function remoteStorage() {
   let current = desktopStateSnapshot();
   let outbox: OutboxRecord[] = [];
   let sequence = 0;
   const cached = new Map<string, File>();
-  const stats = { cacheWrites: 0 };
+  const stats = { cacheWrites: 0, blockWrites: 0 };
   const storage = {
     loadDesktop: async () => current,
     readDesktopState: async () => current,
@@ -48,7 +56,10 @@ function remoteStorage() {
       return { desktop: current, record };
     },
     acknowledgeMutation: async (operationId: string) => { outbox = outbox.filter((record) => record.operationId !== operationId); },
-    blockMutation: async () => undefined,
+    blockMutation: async (operationId: string, error: string) => {
+      stats.blockWrites += 1;
+      outbox = outbox.map((record) => record.operationId === operationId ? { ...record, status: "blocked" as const, error } : record);
+    },
   } as unknown as NonNullable<SyncEngineOptions["storage"]>;
   return Object.assign(storage, { stats });
 }
@@ -252,6 +263,40 @@ describe("canonical synchronization", () => {
     await engine.updateRootEntryPositions([{ entryId: "file-1", position: { x: 20, y: 30 } }]);
     expect(requests).toContain("GET /api/desktops/desk");
     expect(requests).toContain("PUT /api/desktops/desk/root-entry-positions");
+    await engine.stop();
+  });
+
+  test("pauses replay on 401 without blocking its outbox record", async () => {
+    const remote = remoteDesktopState();
+    const storage = remoteStorage();
+    let unauthorized = 0;
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/desktops/desk" && !init?.method) return Response.json(remote);
+      if (String(input) === "/api/desktops/desk/root-entry-positions") return new Response(null, { status: 401 });
+      throw new Error(`Unexpected request: ${String(input)}`);
+    }) as typeof fetch;
+    const engine = new SyncEngine({ storage, fetch: fetchImpl, eventSource: FakeEventSource as unknown as typeof EventSource, onUnauthorized: () => { unauthorized += 1; } });
+    await engine.start("desk", { x: 0, y: 0 });
+    await expect(engine.updateRootEntryPositions([{ entryId: "file-1", position: { x: 5, y: 6 } }])).rejects.toThrow("session has expired");
+    expect(await engine.getOutboxStatus()).toMatchObject({ pending: 1, blocked: 0 });
+    expect(storage.stats.blockWrites).toBe(0);
+    expect(unauthorized).toBe(1);
+    await engine.stop();
+  });
+
+  test("probes authenticated sync health after an EventSource error", async () => {
+    const requests: string[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      requests.push(String(input));
+      if (String(input) === "/api/desktops/desk") return Response.json(remoteDesktopState());
+      if (String(input) === "/api/sync/health") return Response.json({ catalogId: "catalog", catalogRevision: 1 });
+      throw new Error(`Unexpected request: ${String(input)}`);
+    }) as typeof fetch;
+    const engine = new SyncEngine({ storage: remoteStorage(), fetch: fetchImpl, eventSource: CapturingEventSource as unknown as typeof EventSource, setInterval: (() => 1) as never, clearInterval: (() => undefined) as never });
+    await engine.start("desk", { x: 0, y: 0 });
+    CapturingEventSource.latest?.onerror?.();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(requests).toContain("/api/sync/health");
     await engine.stop();
   });
 

@@ -46,6 +46,7 @@ Prefer small changes in existing modules. Do not introduce global state or a com
 - Preserve unsaved editor text when remote content changes.
 - Keep API responses and SSE outside service-worker precaching.
 - OPFS is origin-scoped and is removed when browser site data is cleared.
+- Select the session `storageId` namespace before importing desktop code or starting storage workers. Scope OPFS directories, SQLite, workers, locks, cache markers, and active desktop session state; logout must not delete account storage.
 
 ## API Compatibility
 
@@ -53,6 +54,7 @@ Prefer small changes in existing modules. Do not introduce global state or a com
 - Keep TypeScript IDs, names, hierarchy, MIME, coordinates, themes, layout, and settings validation equivalent to the server contract.
 - API paths, multipart field names, content types, and `X-Hiraya-Client-ID` / `X-Hiraya-Operation-ID` headers are durable replay contracts.
 - SSE carries `catalog` revision notifications; health polling remains a fallback for dead streams.
+- Synchronized startup requires `/api/auth/session`; all authenticated 401 responses pause replay and redirect to server-owned login without blocking outbox records. Sync polling uses `/api/sync/health`, not public `/api/health`.
 - Root-relative `/api` routes preserve same-origin deployment. Do not add cross-origin behavior implicitly.
 - Outbox operations require schema version 1 and `desktopId`. `catalogId` may be null only until first contact; globally bind or block every record before replay.
 

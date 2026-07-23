@@ -1,6 +1,7 @@
 const desktopBase = (desktopId: string) => `/api/desktops/${encodeURIComponent(desktopId)}`;
 
 export const API_ROUTES = {
+  authSession: "/api/auth/session",
   catalog: "/api/catalog",
   desktops: "/api/desktops",
   desktop: (desktopId: string) => desktopBase(desktopId),
@@ -18,6 +19,7 @@ export const API_ROUTES = {
   entryTransfers: "/api/entry-transfers",
   events: "/api/events",
   health: "/api/health",
+  syncHealth: "/api/sync/health",
   activity: (query: { q?: string; before?: number; limit: number }) => {
     const params = new URLSearchParams();
     if (query.q) params.set("q", query.q);
@@ -25,4 +27,10 @@ export const API_ROUTES = {
     params.set("limit", String(query.limit));
     return `/api/activity?${params}`;
   },
+} as const;
+
+export const SERVER_ROUTES = {
+  login: "/login",
+  profile: "/profile",
+  logout: "/logout",
 } as const;

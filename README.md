@@ -25,13 +25,13 @@ bun run build
 
 ## Server Contract
 
-The frontend accepts only remote schema version 1. `GET /api/catalog` returns `schemaVersion`, `catalogId`, `catalogRevision`, and `desktops`. Desktop state is read and mutated only through `/api/desktops/{desktopId}` and its canonical scoped resources. Events use the `catalog` SSE event; health polling remains a fallback.
+The frontend accepts only remote schema version 1. In synchronized mode it first fetches `GET /api/auth/session`, which returns a stable opaque `storageId` and `user` display metadata. A 401 redirects to the server-owned `/login` page with a root-relative return path. `GET /api/catalog` returns `schemaVersion`, `catalogId`, `catalogRevision`, and `desktops`. Desktop state is read and mutated only through `/api/desktops/{desktopId}` and its canonical scoped resources. Events use the `catalog` SSE event; authenticated `/api/sync/health` polling remains a fallback, while `/api/health` remains the public build-health route.
 
 A fresh synchronized browser discovers the server-created first empty desktop through the catalog and projects that desktop into its local cache. If the first catalog request is unavailable, it atomically creates a usable offline desktop and an unbound `create-desktop` record; the first successful catalog fetch binds and replays that record. The active desktop ID is tab-local `sessionStorage` state.
 
 ## Offline Storage
 
-The browser uses the fresh-only `hiraya-catalog-v1.sqlite3` database in OPFS. Its normalized schema keys entries, layout, editor settings, appearance, themes, windows, and sync state by desktop. There is no singleton desktop projection, JSON desktop column, schema upgrade path, pre-SQLite import, or old content-cache conversion.
+The browser hashes the session `storageId` into a safe account namespace before loading the desktop or starting workers. The OPFS directory tree, fresh-only SQLite pool and database, file and pending directories, content markers, workers, locks, and active desktop session key are all scoped by that namespace. Frontend-only mode makes no auth request and preserves its existing unscoped local storage contract. Logout preserves every account namespace. Synchronized builds remove the old unscoped server-cache layout once rather than migrating it.
 
 Offline mutations update desktop rows and append a strict schema version 1 outbox record atomically. Every record has a `desktopId`; `catalogId` is nullable only before the first successful catalog fetch. Before every replay, the browser globally binds unbound records and blocks all records belonging to another catalog. File bytes are staged before metadata is exposed; downloaded bytes are accepted only for the matching catalog, desktop, entry revision, and size. The browser cache and outbox are not a backup.
 

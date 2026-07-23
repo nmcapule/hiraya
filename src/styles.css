@@ -443,6 +443,56 @@ textarea:focus-visible {
   background: var(--theme-border);
 }
 
+.account-menu__identity {
+  display: grid;
+  gap: 2px;
+  min-width: 210px;
+  padding: 8px 10px 10px;
+  border-bottom: var(--theme-border-width) solid var(--theme-border);
+}
+
+.account-menu__identity strong,
+.account-menu__identity span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-menu__identity span {
+  color: var(--theme-text-muted);
+  font-size: 10px;
+}
+
+.account-menu__action {
+  display: flex;
+  width: 100%;
+  min-height: 40px;
+  align-items: center;
+  gap: 9px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--theme-radius-small);
+  color: var(--theme-text);
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.account-menu__action:hover {
+  background: var(--theme-selected);
+}
+
+.startup-error {
+  max-width: 560px;
+  margin: 15vh auto;
+  padding: 24px;
+  color: #e9eee9;
+  font-family: "Space Grotesk", system-ui, sans-serif;
+}
+
 .mobile-folder-path {
   display: grid;
   gap: 3px;
@@ -2614,6 +2664,12 @@ textarea:focus-visible {
     width: 32px;
     justify-content: center;
     padding: 0;
+  }
+
+  .menu-bar__actions .mobile-header-menu__panel .account-menu__action {
+    width: 100%;
+    justify-content: flex-start;
+    padding: 9px 10px;
   }
 
   .menu-bar__actions button span,
