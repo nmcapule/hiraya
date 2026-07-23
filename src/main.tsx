@@ -5,6 +5,9 @@ import "./styles.css";
 
 const frontendOnly = import.meta.env.HIRAYA_FRONTEND_ONLY === "true";
 
+const root = document.getElementById("root")!;
+root.innerHTML = `<main class="startup-state" role="status"><span class="brand-mark__shape"><span></span></span><div><strong>Hiraya</strong><span>Opening your desktop...</span></div></main>`;
+
 async function retireUnscopedServiceWorker() {
   if (!import.meta.env.PROD || frontendOnly || localStorage.getItem("hiraya-auth-pwa-rollout-v1") === "complete") return;
   if (localStorage.getItem("hiraya-auth-pwa-rollout-v1") === "reloading") {
@@ -38,7 +41,7 @@ async function start() {
   const { configureStorageNamespace, LOCAL_STORAGE_ID } = await import("./lib/opfs");
   await configureStorageNamespace(session?.storageId ?? LOCAL_STORAGE_ID);
   const { default: App } = await import("./App");
-  createRoot(document.getElementById("root")!).render(
+  createRoot(root).render(
     <StrictMode>
       <App session={session} />
     </StrictMode>,
@@ -47,6 +50,6 @@ async function start() {
 
 void start().catch((error: unknown) => {
   if (error instanceof Error && error.name === "AuthenticationRequiredError") return;
-  const root = document.getElementById("root");
-  if (root) root.innerHTML = `<main class="startup-error"><h1>Hiraya could not start</h1><p>${String(error instanceof Error ? error.message : error).replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" })[character]!)}</p></main>`;
+  root.innerHTML = `<main class="startup-error"><h1>Hiraya could not start</h1><p>${String(error instanceof Error ? error.message : error).replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" })[character]!)}</p><button class="button button--primary" type="button">Reload Hiraya</button></main>`;
+  root.querySelector("button")?.addEventListener("click", () => window.location.reload());
 });

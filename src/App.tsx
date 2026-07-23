@@ -66,6 +66,7 @@ import { parseInternetShortcut } from "./lib/internet-shortcut";
 import { createSerialTaskQueue } from "./lib/serial-task";
 import { validateWallpaperImage } from "./lib/wallpaper-image";
 import { AccountMenu } from "./components/AccountMenu";
+import { MobileHeaderMenu } from "./components/MobileHeaderMenu";
 import type { AuthSession } from "./lib/auth";
 
 type BaseRunningApp = { id: string; bounds: WindowBounds; minimized: boolean; zIndex: number };
@@ -101,6 +102,7 @@ function App({ session }: { session: AuthSession | null }) {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [dirtyAppIds, setDirtyAppIds] = useState<Set<string>>(() => new Set());
   const [selectionScope, setSelectionScope] = useState("desktop");
   const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null);
   const [dialog, setDialog] = useState<DialogState>(null);
@@ -108,6 +110,7 @@ function App({ session }: { session: AuthSession | null }) {
   const [moveDialogEntryIds, setMoveDialogEntryIds] = useState<string[]>([]);
   const [moveDialogSubmitting, setMoveDialogSubmitting] = useState(false);
   const [desktopMoveFolders, setDesktopMoveFolders] = useState<Record<string, DesktopEntry[]>>({});
+  const [moveDestinationsLoading, setMoveDestinationsLoading] = useState(false);
   const [runningApps, setRunningApps] = useState<RunningApp[]>([]);
   const [focusedAppId, setFocusedAppId] = useState<string | null>(null);
   const [windowSessionRestored, setWindowSessionRestored] = useState(false);
@@ -406,6 +409,12 @@ function App({ session }: { session: AuthSession | null }) {
   function closeApp(id: string) {
     if (id === "settings") setSettingsPage("main");
     delete fileDirtyRef.current[id];
+    setDirtyAppIds((current) => {
+      if (!current.has(id)) return current;
+      const next = new Set(current);
+      next.delete(id);
+      return next;
+    });
     delete fileLoadGenerationsRef.current[id];
     const remaining = runningAppsRef.current.filter((app) => app.id !== id);
     updateRunningApps(remaining);
@@ -415,6 +424,12 @@ function App({ session }: { session: AuthSession | null }) {
       const currentRoute = routeRef.current;
       if (currentRoute) navigateRoute(routeForApp(next, currentRoute), "replace");
     }
+  }
+
+  function requestCloseApp(id: string) {
+    if (fileDirtyRef.current[id] && !window.confirm("Close this file and discard its unsaved changes?")) return false;
+    closeApp(id);
+    return true;
   }
 
   function minimizeApp(id: string) {
@@ -591,7 +606,7 @@ function App({ session }: { session: AuthSession | null }) {
     if (next.settings) openSettingsWindow(false);
     if (next.explorerFolderId === undefined && !next.fileId && !next.propertiesEntryId && !next.settings) setFocusedApp(null);
   };
-  closeAppRef.current = closeApp;
+  closeAppRef.current = requestCloseApp;
 
   useEffect(() => {
     let active = true;
@@ -722,11 +737,24 @@ function App({ session }: { session: AuthSession | null }) {
   useEffect(() => {
     if (!moveDialogEntryIds.length || !activeDesktopId) return;
     let active = true;
+    setDesktopMoveFolders({});
+    setMoveDestinationsLoading(true);
     void Promise.all(desktops.map(async (desktop) => [desktop.id, desktop.id === activeDesktopId ? entriesRef.current : await readDesktopEntries(desktop.id)] as const))
       .then((values) => { if (active) setDesktopMoveFolders(Object.fromEntries(values)); })
-      .catch(() => { if (active) setError("Desktop destinations could not be loaded."); });
+      .catch(() => { if (active) setError("Desktop destinations could not be loaded. Close and reopen Move to retry."); })
+      .finally(() => { if (active) setMoveDestinationsLoading(false); });
     return () => { active = false; };
   }, [activeDesktopId, desktops, moveDialogEntryIds.length]);
+
+  useEffect(() => {
+    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (!Object.values(fileDirtyRef.current).some(Boolean)) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warnBeforeUnload);
+    return () => window.removeEventListener("beforeunload", warnBeforeUnload);
+  }, []);
 
   useEffect(() => {
     if (syncStatus !== "online" || serverBuildTimestamp) return;
@@ -2175,6 +2203,7 @@ function App({ session }: { session: AuthSession | null }) {
                 className="taskbar__entry"
                 data-active={focusedAppId === app.id && !app.minimized || undefined}
                 data-minimized={app.minimized || undefined}
+                data-dirty={dirtyAppIds.has(app.id) || undefined}
                 type="button"
                 key={app.id}
                 title={label}
@@ -2189,9 +2218,19 @@ function App({ session }: { session: AuthSession | null }) {
           })}
         </nav>
         <div className="menu-bar__actions">
-          <button type="button" aria-label="New text file" disabled={!canMutate} onClick={() => setDialog({ type: "create-file", parentId: null })}><Plus size={15} weight="bold" /> <span>New text file</span></button>
-          <button type="button" aria-label="New folder" disabled={!canMutate} onClick={() => setDialog({ type: "create-folder", parentId: null })}><FolderPlus size={16} /> <span>New folder</span></button>
-          <button type="button" aria-label="Upload files" disabled={!canMutate} onClick={() => chooseUpload(null)}><UploadSimple size={16} /> <span>Upload files</span></button>
+          {isMobile ? (
+            <MobileHeaderMenu label="Create or upload" icon={<Plus size={18} weight="bold" />}>
+              {(dismiss) => <>
+                <button type="button" disabled={!canMutate} onClick={() => { dismiss(); setDialog({ type: "create-file", parentId: null }); }}><FileGlyph size={17} /> New text file</button>
+                <button type="button" disabled={!canMutate} onClick={() => { dismiss(); setDialog({ type: "create-folder", parentId: null }); }}><FolderPlus size={17} /> New folder</button>
+                <button type="button" disabled={!canMutate} onClick={() => { dismiss(); chooseUpload(null); }}><UploadSimple size={17} /> Upload files</button>
+              </>}
+            </MobileHeaderMenu>
+          ) : <>
+            <button type="button" aria-label="New text file" disabled={!canMutate} onClick={() => setDialog({ type: "create-file", parentId: null })}><Plus size={15} weight="bold" /> <span>New text file</span></button>
+            <button type="button" aria-label="New folder" disabled={!canMutate} onClick={() => setDialog({ type: "create-folder", parentId: null })}><FolderPlus size={16} /> <span>New folder</span></button>
+            <button type="button" aria-label="Upload files" disabled={!canMutate} onClick={() => chooseUpload(null)}><UploadSimple size={16} /> <span>Upload files</span></button>
+          </>}
           <button type="button" aria-label="Open settings" title="Settings" onClick={() => openSettingsWindow()}><GearSix size={16} /> <span>Settings</span></button>
           {session && <AccountMenu session={session} />}
           <span className="menu-bar__sync" data-status={syncIndicatorStatus} role="status" title={syncIndicatorStatus === "local" ? "Changes are saved only in this browser" : syncIndicatorStatus === "syncing" ? "Synchronizing saved changes" : syncIndicatorStatus === "online" ? "Changes are saved and synchronized" : syncIndicatorStatus === "connecting" ? "Connecting to the Hiraya server" : syncIndicatorStatus === "blocked" ? "A queued change needs attention before synchronization can continue" : "Offline changes are saved and will synchronize after reconnecting"}>
@@ -2290,8 +2329,8 @@ function App({ session }: { session: AuthSession | null }) {
         </div>
         {marquee && <div className="desktop-marquee" aria-hidden="true" style={{ left: marquee.left, top: marquee.top, width: marquee.width, height: marquee.height }} />}
 
-        {loading && <div className="desktop-state desktop-state--loading" aria-live="polite"><span className="loading-line" /><span className="loading-line loading-line--short" /></div>}
-        {!loading && !error && rootEntries.length === 0 && (
+        {loading && <div className="desktop-state desktop-state--loading" role="status"><span className="loading-line" /><span className="loading-line loading-line--short" /><span className="visually-hidden">Loading desktop...</span></div>}
+        {!loading && rootEntries.length === 0 && (
           <div className="desktop-state empty-state">
             <span className="empty-state__icon"><HardDrive size={28} weight="duotone" /></span>
             <h1>Your space is ready.</h1>
@@ -2336,7 +2375,7 @@ function App({ session }: { session: AuthSession | null }) {
                 onDragAtEdge={handleWindowDragAtEdge}
                 onDragEnd={finishWindowEdgeNavigation}
                 onMinimize={minimizeApp}
-                onClose={closeApp}
+                onClose={requestCloseApp}
                  titleArea={<div><span className="window-kicker">{app.kind === "file" ? app.editMode || file && ["text", "url"].includes(fileCapabilities(file).preview) ? "Text editor" : file && fileCapabilities(file).preview === "markdown" ? "Markdown" : "Preview" : app.kind === "explorer" ? "Folder" : app.kind === "properties" ? "Properties" : "Hiraya desktop"}</span><h2 id={titleId}>{title}</h2></div>}
               >
                 {(headerElements) => <>
@@ -2354,17 +2393,26 @@ function App({ session }: { session: AuthSession | null }) {
                     theme={activeTheme}
                     onSave={(content) => save(app.id, file.id, content)}
                     onDownload={() => void download(file)}
+                    onEdit={() => updateRunningApps((current) => current.map((candidate) => candidate.id === app.id && candidate.kind === "file" ? { ...candidate, editMode: true } : candidate))}
                     onEditorSettingsChange={applyEditorSettings}
                     onResolveLink={(path) => readFileByRelativePath(file.id, path)}
                     onOpenLinkedFile={handleOpen}
-                    onDirtyChange={(dirty) => { fileDirtyRef.current[app.id] = dirty; }}
+                    onDirtyChange={(dirty) => {
+                      fileDirtyRef.current[app.id] = dirty;
+                      setDirtyAppIds((current) => {
+                        if (current.has(app.id) === dirty) return current;
+                        const next = new Set(current);
+                        if (dirty) next.add(app.id); else next.delete(app.id);
+                        return next;
+                      });
+                    }}
                   />
                 ) : app.kind === "file" && file && app.loadError ? (
                   <div className="app-window__loading" role="alert">
                     <span>{app.loadError}</span>
                     <button className="button button--primary" type="button" onClick={() => loadFileApp(app.id, file, app.contentRevision)}>Retry</button>
                   </div>
-                ) : app.kind === "file" ? <div className="app-window__loading"><SpinnerGap size={22} /> Opening file</div> : null}
+                ) : app.kind === "file" ? <div className="app-window__loading" role="status"><SpinnerGap size={22} /> Opening {file?.name ?? "file"}...</div> : null}
                 {app.kind === "explorer" && (
                   <FolderExplorer
                     folder={folder}
@@ -2456,7 +2504,7 @@ function App({ session }: { session: AuthSession | null }) {
             </div>
           )}
           <div className="desktop-minimap__grid" style={{ "--minimap-columns": segmentColumns, "--minimap-rows": segmentRows } as React.CSSProperties}>
-            {visibleSegments.map((desktopSegment) => {
+            {visibleSegments.map((desktopSegment, visibleIndex) => {
               const column = desktopSegment.segment.column - minColumn;
               const row = desktopSegment.segment.row - minRow;
               const currentSegmentKey = desktopSegment.key;
@@ -2468,7 +2516,7 @@ function App({ session }: { session: AuthSession | null }) {
                     className="desktop-minimap__area"
                     data-active={currentSegmentKey === activeSegmentKey || undefined}
                     type="button"
-                    aria-label={`${activeDesktopName} desktop area ${desktopSegment.segment.column}, ${desktopSegment.segment.row}${editingAreas && isOccupiedSegment ? ", use arrow keys to move" : isOccupiedSegment ? ", long press to arrange" : ""}`}
+                    aria-label={`${activeDesktopName}, area ${visibleIndex + 1} of ${visibleSegments.length}${currentSegmentKey === activeSegmentKey ? ", current area" : ""}${editingAreas && isOccupiedSegment ? ", use arrow keys to move" : isOccupiedSegment ? ", long press to arrange" : ""}`}
                     aria-current={currentSegmentKey === activeSegmentKey ? "true" : undefined}
                     onClick={(event) => { if (event.detail === 0 && !editingAreas) goToSegment(desktopSegment.segment); }}
                     onContextMenu={isOccupiedSegment ? (event) => { event.preventDefault(); setEditingAreas(true); } : undefined}
@@ -2504,7 +2552,7 @@ function App({ session }: { session: AuthSession | null }) {
               );
             })}
           </div>
-          <span className="visually-hidden" aria-live="polite">{activeDesktopName} desktop area column {activeSegment.column}, row {activeSegment.row}</span>
+          <span className="visually-hidden" aria-live="polite">{activeDesktopName}, area {Math.max(1, visibleSegments.findIndex((candidate) => candidate.key === activeSegmentKey) + 1)} of {visibleSegments.length}</span>
         </nav>
       )}
 
@@ -2515,8 +2563,10 @@ function App({ session }: { session: AuthSession | null }) {
         event.target.value = "";
       }} />
 
-      {error && <div className="error-banner" role="alert"><WarningCircle size={19} weight="fill" /><span>{error}</span><button type="button" onClick={() => setError("")} aria-label="Dismiss error">Dismiss</button></div>}
-      {notice && <div className="notice" role="status">{notice}</div>}
+      {(error || notice) && <div className="notification-stack">
+        {error && <div className="error-banner" role="alert"><WarningCircle size={19} weight="fill" /><span>{error}</span><button type="button" onClick={() => setError("")} aria-label="Dismiss error">Dismiss</button></div>}
+        {notice && <div className="notice" role="status">{notice}</div>}
+      </div>}
       {showUpdateToast && (
         <UpdateToast
           applying={updateApplying}
@@ -2573,6 +2623,7 @@ function App({ session }: { session: AuthSession | null }) {
           activeDesktopId={activeDesktopId}
           entries={moveDialogEntries}
           invalidIds={invalidMoveIds(moveDialogEntries)}
+          loading={moveDestinationsLoading}
           onClose={() => { setMoveDialogSubmitting(false); setMoveDialogEntryIds([]); }}
           onMove={async (desktopId, parentId) => {
             if (desktopId === activeDesktopId) await handleMoveTo(moveDialogEntries, parentId, true);

@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { X } from "@phosphor-icons/react";
 import type { DesktopEntry, DialogState } from "../types";
+import { useModalDialog } from "../ui/modal-dialog";
 
 type Props = {
   dialog: Exclude<DialogState, null>;
@@ -16,6 +17,9 @@ export function FileDialog({ dialog, entry, entryCount = 1, onClose, onSubmit }:
   const [name, setName] = useState(creatingFile ? "untitled.txt" : creatingFolder ? "New folder" : entry?.name ?? "");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const backdropRef = useRef<HTMLDivElement>(null);
+  const dialogRef = useRef<HTMLElement>(null);
+  useModalDialog(backdropRef, dialogRef, onClose, submitting);
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
@@ -33,14 +37,14 @@ export function FileDialog({ dialog, entry, entryCount = 1, onClose, onSubmit }:
   const title = creatingFile ? "New text file" : creatingFolder ? "New folder" : dialog.type === "rename" ? `Rename ${noun}` : entryCount > 1 ? `Delete ${entryCount} items` : `Delete ${noun}`;
 
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <section className="file-dialog" role="dialog" aria-modal="true" aria-labelledby="file-dialog-title">
+    <div ref={backdropRef} className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && !submitting && onClose()}>
+      <section ref={dialogRef} className="file-dialog" role="dialog" aria-modal="true" aria-labelledby="file-dialog-title" tabIndex={-1}>
         <header className="window-header">
           <div>
             <span className="window-kicker">Hiraya</span>
             <h2 id="file-dialog-title">{title}</h2>
           </div>
-          <button className="icon-button" type="button" onClick={onClose} aria-label="Close dialog">
+          <button className="icon-button" type="button" onClick={onClose} disabled={submitting} aria-label="Close dialog">
             <X size={18} />
           </button>
         </header>
@@ -67,9 +71,9 @@ export function FileDialog({ dialog, entry, entryCount = 1, onClose, onSubmit }:
               />
             </>
           )}
-          {error && <p className="form-error" id="file-name-error">{error}</p>}
+          {error && <p className="form-error" id="file-name-error" role="alert">{error}</p>}
           <div className="dialog-actions">
-            <button className="button button--quiet" type="button" onClick={onClose}>Cancel</button>
+            <button className="button button--quiet" type="button" onClick={onClose} disabled={submitting}>Cancel</button>
             <button className={`button ${dialog.type === "delete" ? "button--danger" : "button--primary"}`} type="submit" disabled={submitting} autoFocus={dialog.type === "delete"}>
               {submitting ? (dialog.type === "delete" ? "Deleting..." : "Saving...") : creatingFile ? "Create file" : creatingFolder ? "Create folder" : dialog.type === "rename" ? "Rename" : "Delete"}
             </button>

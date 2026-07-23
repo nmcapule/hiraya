@@ -79,7 +79,7 @@ export function ActivityLog({ onListActivity, onSubscribe }: Props) {
       {loading ? (
         <div className="activity-state" role="status"><SpinnerGap size={19} className="activity-spinner" /> Loading activity...</div>
       ) : error && activities.length === 0 ? (
-        <div className="activity-state activity-state--error" role="alert">{error}</div>
+        <div className="activity-state activity-state--error" role="alert"><span>{error}</span><button className="button button--quiet" type="button" onClick={() => setRefreshToken((value) => value + 1)}>Retry</button></div>
       ) : activities.length === 0 ? (
         <div className="activity-state" role="status">{deferredSearch ? "No activity matches this search." : "No desktop activity has been recorded yet."}</div>
       ) : (
@@ -111,7 +111,7 @@ export function ActivityLog({ onListActivity, onSubscribe }: Props) {
               </li>
             ))}
           </ol>
-          {error && <div className="activity-state activity-state--error" role="alert">{error}</div>}
+          {error && <div className="activity-state activity-state--error" role="alert"><span>{error}</span><button className="button button--quiet" type="button" onClick={() => void loadOlder()}>Retry</button></div>}
           {nextBefore !== null && <button className="button button--quiet activity-load-more" type="button" disabled={loadingOlder} onClick={() => void loadOlder()}>{loadingOlder ? "Loading" : "Load older"}</button>}
         </>
       )}

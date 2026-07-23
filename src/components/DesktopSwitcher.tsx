@@ -44,13 +44,16 @@ export function DesktopSwitcher({ desktops, activeDesktopId, disabled, quota, qu
   useEffect(() => {
     if (!open) return;
     const onPointerDown = (event: PointerEvent) => { if (!rootRef.current?.contains(event.target as Node)) close(false); };
-    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") { event.preventDefault(); close(); } };
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") { event.preventDefault(); event.stopImmediatePropagation(); close(); } };
     window.addEventListener("pointerdown", onPointerDown);
     window.addEventListener("keydown", onKeyDown);
     return () => { window.removeEventListener("pointerdown", onPointerDown); window.removeEventListener("keydown", onKeyDown); };
   }, [open]);
 
-  useEffect(() => { if (editing) inputRef.current?.focus(); }, [editing]);
+  useEffect(() => {
+    if (editing) inputRef.current?.focus();
+    else if (open) requestAnimationFrame(() => rootRef.current?.querySelector<HTMLElement>(".desktop-switcher__list button")?.focus());
+  }, [editing, open]);
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -87,9 +90,9 @@ export function DesktopSwitcher({ desktops, activeDesktopId, disabled, quota, qu
       </div>
       {quota && <section className="desktop-switcher__quota" aria-label="Account limits">
         <div className="desktop-switcher__quota-heading"><strong>Account limits</strong>{quotaStale && <span>Last synced</span>}</div>
-        <div className="desktop-switcher__quota-row" data-limit={quota.storageBytes.used >= quota.storageBytes.limit || undefined}><span>Storage</span><strong>{formatBytes(quota.storageBytes.used)} / {formatBytes(quota.storageBytes.limit)}</strong><progress max="100" value={quotaPercent(quota.storageBytes.used, quota.storageBytes.limit)} /></div>
-        <div className="desktop-switcher__quota-row" data-limit={desktops.length >= quota.desktops.limit || undefined}><span>Desktops</span><strong>{desktops.length.toLocaleString()} / {quota.desktops.limit.toLocaleString()}</strong><progress max="100" value={quotaPercent(desktops.length, quota.desktops.limit)} /></div>
-        <div className="desktop-switcher__quota-row" data-limit={quota.entries.used >= quota.entries.limit || undefined}><span>Entries</span><strong>{quota.entries.used.toLocaleString()} / {quota.entries.limit.toLocaleString()}</strong><progress max="100" value={quotaPercent(quota.entries.used, quota.entries.limit)} /></div>
+        <div className="desktop-switcher__quota-row" data-limit={quota.storageBytes.used >= quota.storageBytes.limit || undefined}><span>Storage</span><strong>{formatBytes(quota.storageBytes.used)} / {formatBytes(quota.storageBytes.limit)}</strong><progress aria-label="Storage used" max="100" value={quotaPercent(quota.storageBytes.used, quota.storageBytes.limit)} /></div>
+        <div className="desktop-switcher__quota-row" data-limit={desktops.length >= quota.desktops.limit || undefined}><span>Desktops</span><strong>{desktops.length.toLocaleString()} / {quota.desktops.limit.toLocaleString()}</strong><progress aria-label="Desktops used" max="100" value={quotaPercent(desktops.length, quota.desktops.limit)} /></div>
+        <div className="desktop-switcher__quota-row" data-limit={quota.entries.used >= quota.entries.limit || undefined}><span>Entries</span><strong>{quota.entries.used.toLocaleString()} / {quota.entries.limit.toLocaleString()}</strong><progress aria-label="Entries used" max="100" value={quotaPercent(quota.entries.used, quota.entries.limit)} /></div>
       </section>}
       {editing ? <form className="desktop-switcher__form" onSubmit={submit}>
         <label>{editing.mode === "create" ? "New desktop name" : "Rename desktop"}<input ref={inputRef} value={editing.value} maxLength={180} onChange={(event) => setEditing({ ...editing, value: event.target.value })} /></label>

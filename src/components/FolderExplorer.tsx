@@ -39,6 +39,8 @@ type DragState = {
   startX: number;
   startY: number;
   moved: boolean;
+  pointerType: string;
+  longPressed: boolean;
   longPressTimer?: number;
 };
 
@@ -102,12 +104,15 @@ export function FolderExplorer({
       startX: event.clientX,
       startY: event.clientY,
       moved: false,
+      pointerType: event.pointerType,
+      longPressed: false,
     };
     if (event.pointerType === "touch") {
       drag.current.longPressTimer = window.setTimeout(() => {
         const current = drag.current;
         if (!current || current.pointerId !== event.pointerId || current.moved) return;
         current.longPressTimer = undefined;
+        current.longPressed = true;
         if (!selectedIds.has(entry.id)) onSelect(entry, { toggle: false, range: false, orderedIds: orderedChildren.map((item) => item.id) });
         onContextMenu(entry, event.clientX, event.clientY);
       }, 500);
@@ -143,6 +148,10 @@ export function FolderExplorer({
       if (targetId !== undefined && targetId !== current.entry.id) {
         onMove(current.entry, targetId === "" ? null : targetId);
       }
+    } else if (!cancelled && current.pointerType === "touch" && !current.longPressed) {
+      suppressClick.current = true;
+      window.setTimeout(() => { suppressClick.current = false; }, 0);
+      open(current.entry);
     }
     setDropTarget(null);
     drag.current = null;
@@ -183,16 +192,20 @@ export function FolderExplorer({
             <div className="folder-explorer__empty">
               <Folder size={38} weight="duotone" aria-hidden="true" />
               <p>This folder is empty.</p>
+              {!readOnly && <div className="folder-explorer__empty-actions">
+                <button className="button button--primary" type="button" onClick={() => onCreateFile(parentId)}><FilePlus size={17} /> New text file</button>
+                <button className="button button--quiet" type="button" onClick={() => onCreateFolder(parentId)}><FolderPlus size={17} /> New folder</button>
+                <button className="button button--quiet" type="button" onClick={() => onUpload(parentId)}><UploadSimple size={17} /> Upload</button>
+              </div>}
             </div>
           ) : (
-            <div className="folder-explorer__list" role="listbox" aria-multiselectable="true" aria-label={`Contents of ${folder?.name ?? rootLabel}`}>
+            <div className="folder-explorer__list" aria-label={`Contents of ${folder?.name ?? rootLabel}`}>
               {orderedChildren.map((entry) => (
                 <button
                   className="folder-explorer__row"
                   key={entry.id}
                   type="button"
-                  role="option"
-                  aria-selected={selectedIds.has(entry.id)}
+                  aria-pressed={selectedIds.has(entry.id)}
                   data-selected={selectedIds.has(entry.id) || undefined}
                   data-folder-target={entry.kind === "folder" ? entry.id : undefined}
                   onClick={(event) => {
@@ -205,6 +218,12 @@ export function FolderExplorer({
                   onDoubleClick={() => open(entry)}
                   onKeyDown={(event) => {
                     if (event.key === "Enter") open(entry);
+                    else if (["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) {
+                      const rows = Array.from(event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>(".folder-explorer__row") ?? []);
+                      const index = rows.indexOf(event.currentTarget);
+                      const target = event.key === "Home" ? rows[0] : event.key === "End" ? rows.at(-1) : rows[index + (event.key === "ArrowUp" ? -1 : 1)];
+                      if (target) { event.preventDefault(); target.focus(); }
+                    }
                     else if (event.key === "ContextMenu" || event.shiftKey && event.key === "F10") {
                       event.preventDefault();
                       if (!selectedIds.has(entry.id)) onSelect(entry, { toggle: false, range: false, orderedIds: orderedChildren.map((item) => item.id) });

@@ -1,6 +1,7 @@
-import { useState } from "react";
-import { Desktop, Folder, X } from "@phosphor-icons/react";
+import { useRef, useState } from "react";
+import { Desktop, Folder, SpinnerGap, X } from "@phosphor-icons/react";
 import type { DesktopEntry, FolderEntry } from "../types";
+import { useModalDialog } from "../ui/modal-dialog";
 
 export interface MoveDialogProps {
   desktops: readonly { id: string; name: string; folders: readonly FolderEntry[] }[];
@@ -10,6 +11,7 @@ export interface MoveDialogProps {
   onClose: () => void;
   onMove: (desktopId: string, parentId: string | null) => Promise<void> | void;
   onSubmittingChange?: (submitting: boolean) => void;
+  loading?: boolean;
 }
 
 function flattenFolders(folders: readonly FolderEntry[], invalidIds: Set<string>) {
@@ -37,13 +39,16 @@ function flattenFolders(folders: readonly FolderEntry[], invalidIds: Set<string>
   return flattened;
 }
 
-export function MoveDialog({ desktops, activeDesktopId, entries, invalidIds, onClose, onMove, onSubmittingChange }: MoveDialogProps) {
+export function MoveDialog({ desktops, activeDesktopId, entries, invalidIds, onClose, onMove, onSubmittingChange, loading = false }: MoveDialogProps) {
   const first = entries[0];
   const initialParent = first?.parentId && !invalidIds.has(first.parentId) ? first.parentId : null;
   const [selectedId, setSelectedId] = useState<string | null>(initialParent);
   const [selectedDesktopId, setSelectedDesktopId] = useState(activeDesktopId);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const backdropRef = useRef<HTMLDivElement>(null);
+  const dialogRef = useRef<HTMLElement>(null);
+  useModalDialog(backdropRef, dialogRef, onClose, submitting);
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
@@ -60,8 +65,8 @@ export function MoveDialog({ desktops, activeDesktopId, entries, invalidIds, onC
   }
 
   return (
-    <div className="modal-backdrop" role="presentation" onPointerDown={(event) => event.target === event.currentTarget && !submitting && onClose()}>
-      <section className="file-window move-dialog" role="dialog" aria-modal="true" aria-labelledby="move-dialog-title">
+    <div ref={backdropRef} className="modal-backdrop" role="presentation" onPointerDown={(event) => event.target === event.currentTarget && !submitting && onClose()}>
+      <section ref={dialogRef} className="file-window move-dialog" role="dialog" aria-modal="true" aria-labelledby="move-dialog-title" tabIndex={-1}>
         <header className="window-header move-dialog__header">
           <div>
              <span className="window-kicker">Move {entries.length === 1 ? "item" : "items"}</span>
@@ -71,8 +76,9 @@ export function MoveDialog({ desktops, activeDesktopId, entries, invalidIds, onC
         </header>
 
         <form className="move-dialog__form" onSubmit={handleSubmit}>
-          <fieldset className="move-dialog__destinations">
+          <fieldset className="move-dialog__destinations" disabled={loading || submitting} aria-busy={loading || undefined}>
             <legend>Choose a destination</legend>
+            {loading && <div className="move-dialog__loading" role="status"><SpinnerGap size={18} /> Loading destinations...</div>}
             {desktops.map((desktop) => <div className="move-dialog__desktop-group" key={desktop.id}>
               <label className="move-dialog__destination move-dialog__desktop" data-selected={selectedDesktopId === desktop.id && selectedId === null || undefined}>
                 <input type="radio" name="destination" checked={selectedDesktopId === desktop.id && selectedId === null} onChange={() => { setSelectedDesktopId(desktop.id); setSelectedId(null); }} />
@@ -89,7 +95,7 @@ export function MoveDialog({ desktops, activeDesktopId, entries, invalidIds, onC
           {error && <p className="form-error" role="alert">{error}</p>}
           <div className="dialog-actions">
             <button className="button button--quiet" type="button" onClick={onClose} disabled={submitting}>Cancel</button>
-            <button className="button button--primary" type="submit" disabled={submitting}>{submitting ? "Moving..." : "Move"}</button>
+            <button className="button button--primary" type="submit" disabled={submitting || loading}>{submitting ? "Moving..." : "Move"}</button>
           </div>
         </form>
       </section>

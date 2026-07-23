@@ -38,7 +38,8 @@ button {
 
 button:focus-visible,
 input:focus-visible,
-textarea:focus-visible {
+textarea:focus-visible,
+a:focus-visible {
   outline: 2px solid #e7b964;
   outline-offset: 2px;
 }
@@ -126,6 +127,15 @@ textarea:focus-visible {
 
 .taskbar__entry[data-minimized] {
   opacity: 0.58;
+}
+
+.taskbar__entry[data-dirty]::after {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--accent);
+  content: "";
 }
 
 .brand-mark {
@@ -545,6 +555,39 @@ textarea:focus-visible {
   padding: 24px;
   color: #e9eee9;
   font-family: "Space Grotesk", system-ui, sans-serif;
+}
+
+.startup-state {
+  display: flex;
+  min-height: 100dvh;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  color: #f4f6f1;
+  background: radial-gradient(circle at 70% 25%, #50645f, #172329 70%);
+}
+
+.startup-state > div {
+  display: grid;
+  gap: 3px;
+}
+
+.startup-state strong {
+  font-size: 18px;
+}
+
+.startup-state div span {
+  color: rgb(244 246 241 / 68%);
+  font-size: 13px;
+}
+
+.startup-state .brand-mark__shape {
+  width: 28px;
+  height: 28px;
+}
+
+.startup-error .button {
+  margin-top: 18px;
 }
 
 .mobile-folder-path {
@@ -1023,8 +1066,7 @@ textarea:focus-visible {
 }
 
 .desktop-minimap[data-obscured] {
-  opacity: 0.18;
-  pointer-events: none;
+  opacity: 0.78;
 }
 
 .desktop-minimap__grid {
@@ -1062,7 +1104,7 @@ textarea:focus-visible {
 
 .desktop-minimap__toolbar button {
   display: inline-flex;
-  height: 22px;
+  min-height: 32px;
   align-items: center;
   gap: 3px;
   padding: 0 7px;
@@ -1112,8 +1154,8 @@ textarea:focus-visible {
   top: -5px;
   right: -5px;
   display: grid;
-  width: 16px;
-  height: 16px;
+  width: 26px;
+  height: 26px;
   padding: 0;
   place-items: center;
   border: 1px solid rgba(255, 223, 218, 0.52);
@@ -1821,7 +1863,7 @@ textarea:focus-visible {
   gap: 7px;
   padding: 20px;
   color: var(--theme-text-muted);
-  font-size: calc(10px * var(--theme-type-scale));
+  font-size: max(11px, calc(10px * var(--theme-type-scale)));
   text-align: center;
 }
 
@@ -2128,6 +2170,14 @@ textarea:focus-visible {
   font-size: 12px;
 }
 
+.folder-explorer__empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
 .move-dialog {
   width: min(460px, calc(100vw - 40px));
   height: min(580px, calc(100dvh - 84px));
@@ -2156,6 +2206,20 @@ textarea:focus-visible {
   color: #606965;
   font-size: 10px;
   font-weight: 700;
+}
+
+.move-dialog__loading {
+  display: flex;
+  min-height: 96px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--theme-text-muted, #606965);
+  font-size: 12px;
+}
+
+.move-dialog__loading svg {
+  animation: sync-spin 900ms linear infinite;
 }
 
 .move-dialog__destination {
@@ -2610,14 +2674,21 @@ textarea:focus-visible {
   font-size: 9px;
 }
 
-.error-banner,
-.notice {
+.notification-stack {
   position: fixed;
   z-index: 50;
   left: 50%;
+  bottom: max(20px, env(safe-area-inset-bottom));
+  display: grid;
+  width: min(560px, calc(100% - 28px));
+  gap: 8px;
+  transform: translateX(-50%);
+}
+
+.error-banner,
+.notice {
   display: flex;
   align-items: center;
-  transform: translateX(-50%);
   border: 1px solid rgba(255, 255, 255, 0.22);
   border-radius: 12px;
   box-shadow: 0 14px 50px rgba(7, 17, 19, 0.3);
@@ -2709,8 +2780,7 @@ textarea:focus-visible {
 }
 
 .error-banner {
-  bottom: 20px;
-  width: min(560px, calc(100% - 28px));
+  width: 100%;
   gap: 9px;
   padding: 11px 12px 11px 14px;
   background: rgba(98, 37, 31, 0.92);
@@ -2731,7 +2801,7 @@ textarea:focus-visible {
 }
 
 .notice {
-  bottom: 22px;
+  justify-self: center;
   padding: 9px 14px;
   color: #263029;
   background: rgba(240, 239, 231, 0.92);
@@ -2801,16 +2871,28 @@ textarea:focus-visible {
   }
 
   .taskbar__entry {
-    min-width: 34px;
+    min-width: 44px;
     max-width: 112px;
     height: 30px;
     padding: 0 8px;
   }
 
   .menu-bar__actions button {
-    width: 32px;
+    width: 44px;
+    height: 44px;
     justify-content: center;
     padding: 0;
+  }
+
+  .desktop-switcher__trigger {
+    min-height: 44px;
+  }
+
+  .menu-bar__actions .mobile-header-menu__panel > button {
+    width: 100%;
+    min-height: 44px;
+    justify-content: flex-start;
+    padding: 0 10px;
   }
 
   .menu-bar__actions .mobile-header-menu__panel .account-menu__action {
@@ -2858,8 +2940,8 @@ textarea:focus-visible {
 
   .desktop-minimap__grid {
     display: grid;
-    width: clamp(42px, calc(var(--minimap-columns) * 24px), 112px);
-    height: clamp(30px, calc(var(--minimap-rows) * 20px), 84px);
+    width: clamp(44px, calc(var(--minimap-columns) * 44px), 220px);
+    height: clamp(44px, calc(var(--minimap-rows) * 44px), 176px);
     grid-template-columns: repeat(var(--minimap-columns), minmax(0, 1fr));
     grid-template-rows: repeat(var(--minimap-rows), minmax(0, 1fr));
     gap: 3px;
@@ -3052,6 +3134,10 @@ textarea:focus-visible {
     animation-name: toast-in;
   }
 
+  .notification-stack + .update-toast {
+    bottom: 92px;
+  }
+
   .folder-explorer,
   .move-dialog {
     width: calc(100vw - 18px);
@@ -3068,6 +3154,19 @@ textarea:focus-visible {
     grid-template-columns: 34px minmax(0, 1fr);
   }
 
+  .folder-explorer__empty {
+    min-height: min(360px, 70dvh);
+    padding: 24px 14px;
+  }
+
+  .folder-explorer__empty-actions {
+    max-width: 270px;
+  }
+
+  .folder-explorer__empty-actions .button {
+    min-height: 44px;
+  }
+
   .folder-explorer__kind {
     display: none;
   }
@@ -3078,6 +3177,12 @@ textarea:focus-visible {
 
   .modal-backdrop {
     padding: 9px;
+  }
+
+  .file-dialog input,
+  .desktop-switcher__form input,
+  .mobile-header-menu__panel select {
+    font-size: 16px;
   }
 
   .window-header {
@@ -3158,7 +3263,8 @@ textarea:focus-visible {
 .desktop-shell input:focus-visible,
 .desktop-shell select:focus-visible,
 .desktop-shell textarea:focus-visible,
-.desktop-shell [tabindex]:focus-visible {
+.desktop-shell [tabindex]:focus-visible,
+.desktop-shell a:focus-visible {
   outline: max(2px, var(--theme-border-width)) solid var(--theme-selection);
   outline-offset: 2px;
 }
@@ -3196,7 +3302,7 @@ textarea:focus-visible {
   border-radius: var(--theme-radius-small);
   color: color-mix(in srgb, var(--theme-chrome-text) 74%, transparent);
   background: color-mix(in srgb, var(--theme-chrome-text) 7%, transparent);
-  font-size: calc(10px * var(--theme-type-scale));
+  font-size: max(11px, calc(10px * var(--theme-type-scale)));
   transition: background calc(150ms * var(--theme-motion)) ease;
 }
 .taskbar__entry:hover { background: color-mix(in srgb, var(--theme-chrome-text) 13%, transparent); }
@@ -3212,14 +3318,14 @@ textarea:focus-visible {
   padding-inline: calc(10px * var(--theme-density));
   border-radius: var(--theme-radius-small);
   color: var(--theme-chrome-text);
-  font-size: calc(11px * var(--theme-type-scale));
+  font-size: max(12px, calc(11px * var(--theme-type-scale)));
   font-weight: var(--theme-weight);
   transition: background calc(160ms * var(--theme-motion)) ease, transform calc(160ms * var(--theme-motion)) ease;
 }
 .menu-bar__actions button:hover { background: color-mix(in srgb, var(--theme-chrome-text) 12%, transparent); }
 .menu-bar__actions button[aria-pressed="true"] { color: var(--theme-accent); background: color-mix(in srgb, var(--theme-accent) 21%, transparent); }
 .menu-bar__clock,
-.menu-bar__sync { color: color-mix(in srgb, var(--theme-chrome-text) 76%, transparent); font-size: calc(10px * var(--theme-type-scale)); }
+.menu-bar__sync { color: color-mix(in srgb, var(--theme-chrome-text) 76%, transparent); font-size: max(11px, calc(10px * var(--theme-type-scale))); }
 .menu-bar__sync[data-status="online"],
 .menu-bar__sync[data-status="local"] { color: color-mix(in srgb, #8fd19e 55%, var(--theme-chrome-text)); }
 .menu-bar__sync[data-status="offline"],
@@ -3363,7 +3469,7 @@ textarea:focus-visible {
 .settings-section { padding-block: calc(20px * var(--theme-density)); border-bottom: var(--theme-border-width) solid var(--theme-border); }
 .settings-section__heading { gap: calc(11px * var(--theme-density)); margin-bottom: calc(15px * var(--theme-density)); color: var(--theme-accent); }
 .settings-section h3 { color: var(--theme-text); font-size: calc(12px * var(--theme-type-scale)); font-weight: var(--theme-weight); }
-.settings-section p { color: var(--theme-text-muted); font-size: calc(10px * var(--theme-type-scale)); }
+.settings-section p { color: var(--theme-text-muted); font-size: max(11px, calc(10px * var(--theme-type-scale))); }
 .settings-section h4 { margin: 0; color: var(--theme-text); font-size: calc(11px * var(--theme-type-scale)); }
 
 .theme-list {
@@ -3466,7 +3572,7 @@ textarea:focus-visible {
 .settings-row__icon { border-radius: var(--theme-radius-small); color: var(--theme-accent); background: color-mix(in srgb, var(--theme-accent) 14%, transparent); }
 .settings-row__copy strong { font-size: calc(11px * var(--theme-type-scale)); font-weight: var(--theme-weight); }
 .settings-row__copy small,
-.settings-export > span { color: var(--theme-text-muted); font-size: calc(9px * var(--theme-type-scale)); }
+.settings-export > span { color: var(--theme-text-muted); font-size: max(11px, calc(9px * var(--theme-type-scale))); }
 .settings-row input[type="checkbox"] { accent-color: var(--theme-accent); }
 .settings-export { padding: calc(11px * var(--theme-density)); }
 .settings-window__offline { border-radius: var(--theme-radius-small); color: color-mix(in srgb, var(--theme-accent) 65%, var(--theme-text)); background: color-mix(in srgb, var(--theme-accent) 24%, var(--theme-window)); }
@@ -3598,6 +3704,18 @@ textarea:focus-visible {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+}
+
+@media (max-width: 350px) {
+  .taskbar__entry {
+    width: 44px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  .taskbar__entry span {
+    display: none;
   }
 }
 

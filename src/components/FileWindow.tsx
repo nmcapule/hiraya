@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Check, DownloadSimple, FloppyDisk, SlidersHorizontal } from "@phosphor-icons/react";
+import { Check, DownloadSimple, FloppyDisk, PencilSimple, SlidersHorizontal } from "@phosphor-icons/react";
 import { createPortal } from "react-dom";
 import type { EditorLanguage, EditorSettings, FileEntry } from "../types";
 import { editorLanguageFor, fileCapabilities } from "../ui/file-capabilities";
@@ -66,13 +66,14 @@ type Props = {
   theme: ThemeDefinition;
   onSave: (content: string) => Promise<void>;
   onDownload: () => void;
+  onEdit: () => void;
   onEditorSettingsChange: (settings: EditorSettings) => void;
   onResolveLink: (path: string) => Promise<{ file: FileEntry; blob: Blob }>;
   onOpenLinkedFile: (file: FileEntry) => void;
   onDirtyChange?: (dirty: boolean) => void;
 };
 
-export function FileWindow({ file, blob, editable, editMode = false, readOnly = false, remoteChanged = false, headerActionsTarget, editorSettings, externalEmbeddedPreviews, theme, onSave, onDownload, onEditorSettingsChange, onResolveLink, onOpenLinkedFile, onDirtyChange }: Props) {
+export function FileWindow({ file, blob, editable, editMode = false, readOnly = false, remoteChanged = false, headerActionsTarget, editorSettings, externalEmbeddedPreviews, theme, onSave, onDownload, onEdit, onEditorSettingsChange, onResolveLink, onOpenLinkedFile, onDirtyChange }: Props) {
   const [content, setContent] = useState("");
   const [savedContent, setSavedContent] = useState("");
   const [contentLoaded, setContentLoaded] = useState(false);
@@ -82,9 +83,11 @@ export function FileWindow({ file, blob, editable, editMode = false, readOnly = 
   const [imageZoom, setImageZoom] = useState<ImageZoom>("fit");
   const savingRef = useRef(false);
   const onSaveRef = useRef(onSave);
+  const onDirtyChangeRef = useRef(onDirtyChange);
   const editorSettingsRef = useRef(editorSettings);
   const lastAutoSaveAttemptRef = useRef<string | null>(null);
   onSaveRef.current = onSave;
+  onDirtyChangeRef.current = onDirtyChange;
   editorSettingsRef.current = editorSettings;
 
   useEffect(() => {
@@ -131,9 +134,10 @@ export function FileWindow({ file, blob, editable, editMode = false, readOnly = 
   const textEditor = editable && (editMode || preview === "text" || preview === "url");
 
   useEffect(() => {
-    onDirtyChange?.(dirty);
-    return () => onDirtyChange?.(false);
-  }, [dirty, onDirtyChange]);
+    onDirtyChangeRef.current?.(dirty);
+  }, [dirty]);
+
+  useEffect(() => () => onDirtyChangeRef.current?.(false), []);
 
   useEffect(() => {
     setImageZoom("fit");
@@ -153,6 +157,9 @@ export function FileWindow({ file, blob, editable, editMode = false, readOnly = 
       {headerActionsTarget && createPortal(
         <div className="file-header-actions" aria-label="File actions">
           {preview === "image" && <ImageZoomControl value={imageZoom} onChange={setImageZoom} />}
+          {preview === "markdown" && !editMode && !readOnly && (
+            <button className="button button--quiet file-header-actions__edit" type="button" onClick={onEdit}><PencilSimple size={16} /> Edit</button>
+          )}
           {textEditor && !readOnly && (
             <MobileHeaderMenu label="Editor settings" icon={<SlidersHorizontal size={18} />}>
               {(dismiss) => <>
@@ -201,8 +208,8 @@ export function FileWindow({ file, blob, editable, editMode = false, readOnly = 
         </div>,
         headerActionsTarget,
       )}
-        {saveError && <div className="window-error">{saveError}</div>}
-        {remoteChanged && <div className="window-error">This file changed on the server. Your unsaved text is preserved; saving it will become the latest version.</div>}
+        {saveError && <div className="window-error" role="alert">{saveError}</div>}
+        {remoteChanged && <div className="window-error" role="alert">This file changed on the server. Your unsaved text is preserved; saving it will become the latest version.</div>}
         <div className="file-window__content">
           {textEditor && contentLoaded && (
             <TextEditor
@@ -224,8 +231,8 @@ export function FileWindow({ file, blob, editable, editMode = false, readOnly = 
           )}
           {!editable && preview === "image" && objectUrl && <ImagePreview src={objectUrl} alt={file.name} zoom={imageZoom} onZoomChange={setImageZoom} />}
           {!editable && preview === "pdf" && objectUrl && <iframe className="preview-frame" src={objectUrl} title={file.name} />}
-          {!editable && preview === "video" && objectUrl && <video className="preview-media" src={objectUrl} controls />}
-          {!editable && preview === "audio" && objectUrl && <audio className="preview-audio" src={objectUrl} controls />}
+          {!editable && preview === "video" && objectUrl && <video className="preview-media" src={objectUrl} controls aria-label={`Video: ${file.name}`} />}
+          {!editable && preview === "audio" && objectUrl && <audio className="preview-audio" src={objectUrl} controls aria-label={`Audio: ${file.name}`} />}
           {!editable && preview === "none" && (
             <div className="no-preview">
               <p>No preview is available for this file type.</p>

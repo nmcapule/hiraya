@@ -151,6 +151,11 @@ export function AppWindow({
     interactionRef.current = null;
   }, []);
 
+  useEffect(() => {
+    if (!focused || minimized || !segmentActive || windowRef.current?.contains(document.activeElement)) return;
+    windowRef.current?.focus();
+  }, [focused, minimized, segmentActive]);
+
   const style: CSSProperties = mobile
     ? { position: "absolute", inset: 0, width: "100%", height: "100%", zIndex }
     : { position: "absolute", left: bounds.x, top: bounds.y, width: bounds.width, height: bounds.height, zIndex };
@@ -170,6 +175,7 @@ export function AppWindow({
       aria-labelledby={titleId}
       aria-hidden={minimized || !segmentActive || mobile && !focused || undefined}
       inert={!segmentActive}
+      tabIndex={-1}
       style={style}
       onPointerDown={() => { if (!focused) onFocus(id); }}
     >

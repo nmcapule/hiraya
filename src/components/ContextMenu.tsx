@@ -22,7 +22,7 @@ export function ContextMenu({ menu, entry, onOpen, onEditFile, onRename, onDownl
   const top = Math.min(menu.y, window.innerHeight - 352);
 
   return (
-    <div className="context-menu" role="menu" style={{ left: Math.max(8, left), top: Math.max(48, top) }}>
+    <div className="context-menu" role="menu" style={{ left: Math.max(8, left), top: Math.max(48, top) }} onKeyDown={handleMenuKeyDown}>
       {selectionCount === 1 && <button type="button" role="menuitem" autoFocus onClick={onOpen}>
         <FolderOpen size={17} /> Open
       </button>}
@@ -38,7 +38,7 @@ export function ContextMenu({ menu, entry, onOpen, onEditFile, onRename, onDownl
           <DownloadSimple size={17} /> Download
         </button>
       )}
-      <button type="button" role="menuitem" onClick={onCopy}><Copy size={17} /> Copy {selectionCount > 1 ? `${selectionCount} items` : ""}<kbd>⌘C</kbd></button>
+      <button type="button" role="menuitem" onClick={onCopy}><Copy size={17} /> Copy {selectionCount > 1 ? `${selectionCount} items` : ""}<kbd>Ctrl/⌘ C</kbd></button>
       {onPasteInto && <button type="button" role="menuitem" disabled={readOnly} onClick={onPasteInto}><ClipboardText size={17} /> Paste into</button>}
       <button type="button" role="menuitem" disabled={readOnly} onClick={onMove}>
         <FolderSimplePlus size={17} /> Move to...
@@ -68,7 +68,7 @@ export function DesktopContextMenu({ menu, onCreateFile, onCreateFolder, onUploa
   const top = Math.min(menu.y, window.innerHeight - 220);
 
   return (
-    <div className="context-menu" role="menu" style={{ left: Math.max(8, left), top: Math.max(48, top) }}>
+    <div className="context-menu" role="menu" style={{ left: Math.max(8, left), top: Math.max(48, top) }} onKeyDown={handleMenuKeyDown}>
       <button type="button" role="menuitem" autoFocus={!readOnly} disabled={readOnly} onClick={onCreateFile}>
         <FilePlus size={17} /> New text file
       </button>
@@ -78,10 +78,20 @@ export function DesktopContextMenu({ menu, onCreateFile, onCreateFolder, onUploa
       <button type="button" role="menuitem" disabled={readOnly} onClick={onUpload}>
         <UploadSimple size={17} /> Upload files
       </button>
-      {onPaste && <button type="button" role="menuitem" disabled={readOnly} onClick={onPaste}><ClipboardText size={17} /> Paste<kbd>⌘V</kbd></button>}
+      {onPaste && <button type="button" role="menuitem" disabled={readOnly} onClick={onPaste}><ClipboardText size={17} /> Paste<kbd>Ctrl/⌘ V</kbd></button>}
       <button className="context-menu__separated" type="button" role="menuitem" autoFocus={readOnly} onClick={onSettings}>
         <GearSix size={17} /> Settings
       </button>
     </div>
   );
+}
+
+function handleMenuKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
+  if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+  const items = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>("[role='menuitem']:not(:disabled)"));
+  const current = items.indexOf(document.activeElement as HTMLButtonElement);
+  const target = event.key === "Home" ? items[0]
+    : event.key === "End" ? items.at(-1)
+      : items[(current + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length];
+  if (target) { event.preventDefault(); target.focus(); }
 }

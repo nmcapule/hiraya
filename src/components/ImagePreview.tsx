@@ -93,6 +93,19 @@ export function ImagePreview({ src, alt, zoom, onZoomChange }: Props) {
       ref={viewportRef}
       className="image-preview"
       data-fitted={fitted || undefined}
+      tabIndex={0}
+      aria-label={`Image preview: ${alt}. Use arrow keys to pan.`}
+      onKeyDown={(event) => {
+        const viewport = viewportRef.current;
+        if (!viewport || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "PageUp", "PageDown"].includes(event.key)) return;
+        event.preventDefault();
+        const amount = event.key === "PageUp" || event.key === "PageDown" ? viewport.clientHeight * 0.8 : 48;
+        viewport.scrollBy({
+          left: event.key === "ArrowLeft" ? -amount : event.key === "ArrowRight" ? amount : 0,
+          top: event.key === "ArrowUp" || event.key === "PageUp" ? -amount : event.key === "ArrowDown" || event.key === "PageDown" ? amount : 0,
+          behavior: "auto",
+        });
+      }}
       onPointerDown={(event) => {
         if (event.pointerType === "mouse" && event.button !== 0) return;
         const viewport = viewportRef.current;

@@ -9,9 +9,13 @@ type Props = {
 export function MobileHeaderMenu({ label, icon, children }: Props) {
   const menuRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
   const [panelStyle, setPanelStyle] = useState<CSSProperties>({});
-  const dismiss = () => setOpen(false);
+  const dismiss = () => {
+    setOpen(false);
+    requestAnimationFrame(() => triggerRef.current?.focus());
+  };
 
   const positionPanel = useCallback(() => {
     const trigger = triggerRef.current;
@@ -37,8 +41,15 @@ export function MobileHeaderMenu({ label, icon, children }: Props) {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape" && open) {
         event.preventDefault();
+        event.stopPropagation();
         dismiss();
         triggerRef.current?.focus();
+      } else if (event.key === "Tab" && open && panelRef.current) {
+        const focusable = Array.from(panelRef.current.querySelectorAll<HTMLElement>("button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), [tabindex]:not([tabindex='-1'])"));
+        const first = focusable[0];
+        const last = focusable.at(-1);
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
       }
     };
     document.addEventListener("pointerdown", handlePointerDown);
@@ -60,6 +71,10 @@ export function MobileHeaderMenu({ label, icon, children }: Props) {
     };
   }, [open, positionPanel]);
 
+  useEffect(() => {
+    if (open) requestAnimationFrame(() => panelRef.current?.querySelector<HTMLElement>("button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled)")?.focus());
+  }, [open]);
+
   return (
     <div className="mobile-header-menu" ref={menuRef}>
       <button ref={triggerRef} className="mobile-header-menu__trigger" type="button" aria-label={label} title={label} aria-haspopup="dialog" aria-expanded={open} onClick={() => {
@@ -69,7 +84,7 @@ export function MobileHeaderMenu({ label, icon, children }: Props) {
           setOpen(true);
         }
       }}>{icon}</button>
-      {open && <div className="mobile-header-menu__panel" role="dialog" aria-label={label} style={panelStyle}>
+      {open && <div ref={panelRef} className="mobile-header-menu__panel" role="dialog" aria-label={label} style={panelStyle}>
         {children(dismiss)}
       </div>}
     </div>

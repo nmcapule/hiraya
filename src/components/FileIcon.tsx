@@ -68,6 +68,8 @@ export function FileIcon({ entry, selected, onSelect, onOpen, onMove, onDragAtEd
     targetFolderId: string | null;
     canvas: HTMLElement;
     finishing: boolean;
+    pointerType: string;
+    longPressed: boolean;
     longPressTimer?: number;
   } | null>(null);
   const onMoveRef = useRef(onMove);
@@ -145,12 +147,15 @@ export function FileIcon({ entry, selected, onSelect, onOpen, onMove, onDragAtEd
       targetFolderId: null,
       canvas,
       finishing: false,
+      pointerType: event.pointerType,
+      longPressed: false,
     };
     if (event.pointerType === "touch") {
       drag.current.longPressTimer = window.setTimeout(() => {
         const current = drag.current;
         if (!current || current.pointerId !== event.pointerId || current.moved) return;
         current.longPressTimer = undefined;
+        current.longPressed = true;
         onContextMenuAt(event.clientX, event.clientY);
       }, 500);
     }
@@ -235,6 +240,7 @@ export function FileIcon({ entry, selected, onSelect, onOpen, onMove, onDragAtEd
       }
     }
     onDragEndRef.current(cancelled || !succeeded);
+    if (!cancelled && !completed.moved && !completed.longPressed && completed.pointerType === "touch") onOpen();
   }
 
   return (
@@ -252,6 +258,7 @@ export function FileIcon({ entry, selected, onSelect, onOpen, onMove, onDragAtEd
         data-folder-id={entry.kind === "folder" ? entry.id : undefined}
         type="button"
         aria-label={`${entry.name}, ${entry.kind === "folder" ? "folder" : entry.mimeType || "file"}`}
+        aria-pressed={selected}
         onClick={(event) => { if (event.detail === 0) onSelect(event); }}
         onDoubleClick={onOpen}
         onContextMenu={onContextMenu}
@@ -271,6 +278,33 @@ export function FileIcon({ entry, selected, onSelect, onOpen, onMove, onDragAtEd
         } : undefined}
         onKeyDown={(event) => {
           if (event.key === "Enter") onOpen();
+          else if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) {
+            const desktopBounds = event.currentTarget.closest(".desktop")?.getBoundingClientRect();
+            const icons = Array.from(document.querySelectorAll<HTMLButtonElement>(".file-icon")).filter((icon) => {
+              if (!desktopBounds) return true;
+              const bounds = icon.getBoundingClientRect();
+              return bounds.right > desktopBounds.left && bounds.left < desktopBounds.right && bounds.bottom > desktopBounds.top && bounds.top < desktopBounds.bottom;
+            });
+            const currentIndex = icons.indexOf(event.currentTarget);
+            let target: HTMLButtonElement | undefined;
+            if (event.key === "Home") target = icons[0];
+            else if (event.key === "End") target = icons.at(-1);
+            else {
+              const currentBounds = event.currentTarget.getBoundingClientRect();
+              const currentCenter = { x: currentBounds.left + currentBounds.width / 2, y: currentBounds.top + currentBounds.height / 2 };
+              target = icons
+                .filter((_, index) => index !== currentIndex)
+                .map((icon) => {
+                  const bounds = icon.getBoundingClientRect();
+                  const dx = bounds.left + bounds.width / 2 - currentCenter.x;
+                  const dy = bounds.top + bounds.height / 2 - currentCenter.y;
+                  return { icon, dx, dy, distance: Math.hypot(dx, dy) };
+                })
+                .filter(({ dx, dy }) => event.key === "ArrowLeft" ? dx < 0 : event.key === "ArrowRight" ? dx > 0 : event.key === "ArrowUp" ? dy < 0 : dy > 0)
+                .sort((a, b) => a.distance - b.distance)[0]?.icon;
+            }
+            if (target) { event.preventDefault(); target.focus(); target.click(); }
+          }
           else if (event.key === "ContextMenu" || event.shiftKey && event.key === "F10") {
             event.preventDefault();
             const bounds = event.currentTarget.getBoundingClientRect();
