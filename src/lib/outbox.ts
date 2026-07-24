@@ -131,7 +131,7 @@ export function normalizeOutboxOperation(operation: OutboxOperation): OutboxOper
   switch (operation.kind) {
     case "create-desktop":
     case "rename-desktop":
-      return { ...operation, desktop: parseDesktopIdentity(operation.desktop) };
+      return { ...operation, desktop: parseDesktopIdentity(operation.desktop, true) };
     case "delete-desktop":
       if (!isValidId(operation.desktopId)) throw new Error("A queued desktop operation has an invalid desktop ID.");
       return operation;

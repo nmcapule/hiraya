@@ -362,12 +362,14 @@ export function TextEditor({ file, value, settings, theme, externalEmbeddedPrevi
   const previewConfig = useRef(new Compartment());
   const onChangeRef = useRef(onChange);
   const onSaveRef = useRef(onSave);
+  const readOnlyRef = useRef(readOnly);
   const resolveLinkRef = useRef(onResolveLink);
   const openLinkedFileRef = useRef(onOpenLinkedFile);
   const linkErrorRef = useRef(onLinkError);
   const initialConfig = useRef({ value, fileName: file.name, language: editorLanguageFor(file.name, settings.language), fontSize: settings.fontSize, lineWrap: settings.lineWrap, theme, externalEmbeddedPreviews, readOnly });
   onChangeRef.current = onChange;
   onSaveRef.current = onSave;
+  readOnlyRef.current = readOnly;
   resolveLinkRef.current = onResolveLink;
   openLinkedFileRef.current = onOpenLinkedFile;
   linkErrorRef.current = onLinkError;
@@ -386,7 +388,7 @@ export function TextEditor({ file, value, settings, theme, externalEmbeddedPrevi
         fontConfig.current.of(EditorView.theme({ "&": { fontSize: `${initialConfig.current.fontSize}px` } })),
         editableConfig.current.of(EditorView.editable.of(!initialConfig.current.readOnly)),
         themeConfig.current.of(editorTheme(initialConfig.current.theme)),
-        keymap.of([{ key: "Mod-s", preventDefault: true, run: (target) => { onSaveRef.current(target.state.doc.toString()); return true; } }]),
+        keymap.of([{ key: "Mod-s", preventDefault: true, run: (target) => { if (!readOnlyRef.current) onSaveRef.current(target.state.doc.toString()); return true; } }]),
         EditorView.updateListener.of((update) => {
           if (update.docChanged) onChangeRef.current(update.state.doc.toString());
         }),

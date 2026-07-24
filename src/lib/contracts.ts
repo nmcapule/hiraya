@@ -9,6 +9,7 @@ import {
   type EntryPosition,
   type Wallpaper,
 } from "../types";
+import { localDesktopIdentity, READ_ONLY_CAPABILITIES } from "./permissions";
 import { isBuiltinThemeId, parseCustomTheme, parseThemeState, type CustomTheme, type ThemeState } from "./themes";
 
 const EDITOR_LANGUAGES = new Set<EditorLanguage>(["auto", "plain", "markdown", "json", "javascript", "typescript", "jsx", "tsx", "css", "html", "xml", "yaml"]);
@@ -171,15 +172,42 @@ export function normalizeDesktopName(value: string) {
   return name;
 }
 
-export function parseDesktopIdentity(value: unknown): DesktopIdentity {
+export function parseDesktopIdentity(value: unknown, localDefaults = false): DesktopIdentity {
   if (!isRecord(value)) throw new Error("A desktop has an unsupported format.");
   assertValidId(value.id, "A desktop has an invalid ID.");
-  return { id: value.id, name: normalizeDesktopName(typeof value.name === "string" ? value.name : "") };
+  const name = normalizeDesktopName(typeof value.name === "string" ? value.name : "");
+  if (value.ownership === undefined && localDefaults) return localDesktopIdentity(value.id, name);
+  if (value.ownership !== "owned" && value.ownership !== "shared") throw new Error("A desktop has invalid ownership.");
+  if (value.role !== "owner" && value.role !== "manager" && value.role !== "writer" && value.role !== "reader") throw new Error("A desktop has an invalid role.");
+  if (!isRecord(value.owner) || !isValidId(value.owner.id) || typeof value.owner.displayName !== "string" || !value.owner.displayName.trim() || value.owner.avatar !== null && typeof value.owner.avatar !== "string") {
+    throw new Error("A desktop has invalid owner metadata.");
+  }
+  const capabilities = value.capabilities;
+  if (!isRecord(capabilities) || ["read", "write", "manage", "delete", "settings", "activity"].some((key) => typeof capabilities[key] !== "boolean")) {
+    throw new Error("A desktop has invalid capabilities.");
+  }
+  if (value.authorityCatalogId !== null && !isValidId(value.authorityCatalogId)) throw new Error("A desktop has an invalid authority catalog.");
+  return {
+    id: value.id,
+    name,
+    ownership: value.ownership,
+    role: value.role,
+    owner: { id: value.owner.id, displayName: value.owner.displayName.trim(), avatar: value.owner.avatar },
+    capabilities: {
+      read: capabilities.read as boolean,
+      write: capabilities.write as boolean,
+      manage: capabilities.manage as boolean,
+      delete: capabilities.delete as boolean,
+      settings: capabilities.settings as boolean,
+      activity: capabilities.activity as boolean,
+    },
+    authorityCatalogId: value.authorityCatalogId,
+  };
 }
 
 export function parseDesktopList(value: unknown): DesktopIdentity[] {
   if (!Array.isArray(value) || value.length === 0) throw new Error("At least one desktop is required.");
-  const desktops = value.map(parseDesktopIdentity);
+  const desktops = value.map((desktop) => parseDesktopIdentity(desktop, true));
   if (new Set(desktops.map((desktop) => desktop.id)).size !== desktops.length) throw new Error("The desktop list contains duplicate IDs.");
   return desktops;
 }
@@ -456,10 +484,10 @@ export function parseRemoteDesktopState(value: unknown): RemoteDesktopState {
   if (!isBuiltinThemeId(appearance.selectedThemeId) && !customThemes.some((theme) => theme.id === appearance.selectedThemeId)) {
     throw new Error("The selected custom theme does not exist.");
   }
+  const desktop = parseDesktopIdentity(value);
   return {
     ...identity,
-    id: parseDesktopIdentity(value).id,
-    name: parseDesktopIdentity(value).name,
+    ...desktop,
     entries,
     layout,
     layoutRevision: readRevision(value.layoutRevision),
@@ -467,4 +495,21 @@ export function parseRemoteDesktopState(value: unknown): RemoteDesktopState {
     settingsRevision: readRevision(value.settingsRevision),
     appearance: { ...appearance, customThemes, selectionRevision: readRevision(value.appearance.selectionRevision, "The theme selection has an invalid revision.") },
   };
+}
+
+export function parsePublicDesktopState(value: unknown): RemoteDesktopState {
+  if (!isRecord(value)) throw new Error("The public desktop has an unsupported format.");
+  const owner = isRecord(value.owner) ? value.owner : null;
+  assertValidId(value.id, "The public desktop has an invalid identity.");
+  const normalized = {
+    ...value,
+    catalogId: value.id,
+    catalogRevision: 0,
+    ownership: "shared",
+    role: "reader",
+    owner,
+    capabilities: { ...READ_ONLY_CAPABILITIES },
+    authorityCatalogId: value.id,
+  };
+  return parseRemoteDesktopState(normalized);
 }

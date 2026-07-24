@@ -59,6 +59,7 @@ type Props = {
   editable: boolean;
   editMode?: boolean;
   readOnly?: boolean;
+  canChangeSettings?: boolean;
   remoteChanged?: boolean;
   headerActionsTarget?: HTMLDivElement | null;
   editorSettings: EditorSettings;
@@ -73,7 +74,7 @@ type Props = {
   onDirtyChange?: (dirty: boolean) => void;
 };
 
-export function FileWindow({ file, blob, editable, editMode = false, readOnly = false, remoteChanged = false, headerActionsTarget, editorSettings, externalEmbeddedPreviews, theme, onSave, onDownload, onEdit, onEditorSettingsChange, onResolveLink, onOpenLinkedFile, onDirtyChange }: Props) {
+export function FileWindow({ file, blob, editable, editMode = false, readOnly = false, canChangeSettings = !readOnly, remoteChanged = false, headerActionsTarget, editorSettings, externalEmbeddedPreviews, theme, onSave, onDownload, onEdit, onEditorSettingsChange, onResolveLink, onOpenLinkedFile, onDirtyChange }: Props) {
   const [content, setContent] = useState("");
   const [savedContent, setSavedContent] = useState("");
   const [contentState, setContentState] = useState<"loading" | "ready" | "error">("loading");
@@ -170,7 +171,7 @@ export function FileWindow({ file, blob, editable, editMode = false, readOnly = 
           {preview === "markdown" && !editMode && !readOnly && (
             <button className="button button--quiet file-header-actions__edit" type="button" onClick={onEdit}><PencilSimple size={16} /> Edit</button>
           )}
-          {textEditor && !readOnly && (
+          {textEditor && !readOnly && canChangeSettings && (
             <MobileHeaderMenu label="Editor settings" icon={<SlidersHorizontal size={18} />}>
               {(dismiss) => <>
                 <label>
@@ -204,7 +205,7 @@ export function FileWindow({ file, blob, editable, editMode = false, readOnly = 
               </>}
             </MobileHeaderMenu>
           )}
-          {(!textEditor || readOnly) && preview !== "none" && (
+          {(!textEditor || readOnly || !canChangeSettings) && preview !== "none" && (
             <button className="icon-button file-header-actions__download" type="button" onClick={onDownload} aria-label="Download file">
               <DownloadSimple size={17} />
             </button>

@@ -13,6 +13,7 @@ export type StorageDbRequests = {
   createDesktop: { desktop: DesktopIdentity; state: PersistedDesktopState };
   createOfflineDesktop: { desktop: DesktopIdentity; state: PersistedDesktopState };
   renameDesktop: { desktopId: string; name: string };
+  updateDesktopIdentity: { desktop: DesktopIdentity };
   deleteDesktop: { desktopId: string };
   readDesktop: { desktopId: string };
   transferEntries: { sourceDesktopId: string; destinationDesktopId: string; entryIds: string[]; parentId: string | null };
@@ -40,6 +41,7 @@ export type StorageDbResponses = {
   createDesktop: DesktopIdentity;
   createOfflineDesktop: { desktop: DesktopIdentity; record: OutboxRecord };
   renameDesktop: DesktopIdentity;
+  updateDesktopIdentity: DesktopIdentity;
   deleteDesktop: undefined;
   readDesktop: PersistedDesktopState;
   transferEntries: { source: PersistedDesktopState; destination: PersistedDesktopState };

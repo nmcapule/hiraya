@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { desktopCreateProtection, desktopDeleteProtection, parseDesktopCatalog, resolveDesktopContext } from "../src/lib/desktop-catalog";
+import { remoteDesktopIdentity } from "./fixtures";
 
 describe("desktop catalog", () => {
   test("parses strict schema version 1", () => {
-    const value = { schemaVersion: 1, catalogId: "catalog-1", catalogRevision: 7, desktops: [{ id: "desk", name: "Desktop" }], quota: { storageBytes: { used: 12, limit: 100 }, desktops: { used: 1, limit: 10 }, entries: { used: 2, limit: 5000 } } };
+    const value = { schemaVersion: 1, catalogId: "catalog-1", catalogRevision: 7, desktops: [remoteDesktopIdentity()], quota: { storageBytes: { used: 12, limit: 100 }, desktops: { used: 1, limit: 10 }, entries: { used: 2, limit: 5000 } } };
     expect(parseDesktopCatalog(value)).toEqual(value);
     expect(() => parseDesktopCatalog({ ...value, schemaVersion: 2 })).toThrow("schema version");
     expect(() => parseDesktopCatalog({ ...value, catalogRevision: -1 })).toThrow("revision");

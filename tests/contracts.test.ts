@@ -17,6 +17,8 @@ describe("contracts", () => {
     expect(parseRemoteDesktopState(remote)).toEqual(remote);
     expect(() => parseRemoteDesktopState({ ...remote, schemaVersion: 5 })).toThrow("schema version");
     expect(() => parseRemoteDesktopState({ ...remote, catalogId: undefined })).toThrow("catalog identity");
+    expect(() => parseRemoteDesktopState({ ...remote, capabilities: undefined })).toThrow("capabilities");
+    expect(() => parseRemoteDesktopState({ ...remote, role: "editor" })).toThrow("role");
   });
 
   test("validates structured wallpaper and legacy persisted presets", () => {

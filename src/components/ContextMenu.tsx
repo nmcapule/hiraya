@@ -103,7 +103,7 @@ type DesktopProps = {
   onCreateFile: () => void;
   onCreateFolder: () => void;
   onUpload: () => void;
-  onSettings: () => void;
+  onSettings?: () => void;
   onPaste?: () => void;
   readOnly?: boolean;
 };
@@ -123,9 +123,9 @@ export function DesktopContextMenu({ menu, onCreateFile, onCreateFolder, onUploa
         <UploadSimple size={17} /> Upload files
       </button>
       {onPaste && <button type="button" role="menuitem" disabled={readOnly} onClick={onPaste}><ClipboardText size={17} /> Paste<kbd>Ctrl/⌘ V</kbd></button>}
-      <button className="context-menu__separated" type="button" role="menuitem" autoFocus={readOnly} onClick={onSettings}>
+      {onSettings && <button className="context-menu__separated" type="button" role="menuitem" autoFocus={readOnly} onClick={onSettings}>
         <GearSix size={17} /> Settings
-      </button>
+      </button>}
     </div>
   );
 }

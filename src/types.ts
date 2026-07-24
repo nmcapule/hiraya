@@ -36,6 +36,20 @@ export type RootEntryPositionUpdate = {
 export type DesktopIdentity = {
   id: string;
   name: string;
+  ownership: "owned" | "shared";
+  role: "owner" | "manager" | "writer" | "reader";
+  owner: { id: string; displayName: string; avatar: string | null };
+  capabilities: DesktopCapabilities;
+  authorityCatalogId: string | null;
+};
+
+export type DesktopCapabilities = {
+  read: boolean;
+  write: boolean;
+  manage: boolean;
+  delete: boolean;
+  settings: boolean;
+  activity: boolean;
 };
 
 export type EditorLanguage = "auto" | "plain" | "markdown" | "json" | "javascript" | "typescript" | "jsx" | "tsx" | "css" | "html" | "xml" | "yaml";

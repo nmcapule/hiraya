@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { SyncEngine, type SyncEngineOptions } from "../src/lib/sync";
 import type { OutboxOperation, OutboxRecord } from "../src/lib/outbox";
 import { applyOutboxOperation, transferEntriesBetweenDesktopStates } from "../src/lib/outbox";
-import { desktopStateSnapshot, remoteDesktopState } from "./fixtures";
+import { desktopStateSnapshot, remoteDesktopIdentity, remoteDesktopState } from "./fixtures";
 
 const catalogQuota = { storageBytes: { used: 12, limit: 100 }, desktops: { used: 1, limit: 10 }, entries: { used: 2, limit: 5000 } };
 
@@ -85,10 +85,10 @@ describe("canonical synchronization", () => {
     } as unknown as NonNullable<SyncEngineOptions["storage"]>;
     const engine = new SyncEngine({ storage, fetch: (async (input) => {
       expect(String(input)).toBe("/api/catalog");
-      return Response.json({ schemaVersion: 1, catalogId: "catalog", catalogRevision: 1, desktops: [{ id: "desk", name: "Desktop" }], quota: catalogQuota });
+      return Response.json({ schemaVersion: 1, catalogId: "catalog", catalogRevision: 1, desktops: [remoteDesktopIdentity()], quota: catalogQuota });
     }) as typeof fetch });
 
-    expect(await engine.listDesktops()).toEqual({ schemaVersion: 1, catalogId: "catalog", catalogRevision: 1, activeDesktopId: "desk", desktops: [{ id: "desk", name: "Desktop" }], quota: catalogQuota });
+    expect(await engine.listDesktops()).toEqual({ schemaVersion: 1, catalogId: "catalog", catalogRevision: 1, activeDesktopId: "desk", desktops: [remoteDesktopIdentity()], quota: catalogQuota });
   });
 
   test("updates the catalog and falls back when the active desktop is deleted remotely", async () => {
@@ -102,7 +102,7 @@ describe("canonical synchronization", () => {
     } as unknown as NonNullable<SyncEngineOptions["storage"]>;
     const engine = new SyncEngine({ storage, fetch: (async () => {
       catalogRead += 1;
-      const desktops = catalogRead === 1 ? local : [local[1]];
+      const desktops = (catalogRead === 1 ? local : [local[1]]).map((desktop) => remoteDesktopIdentity(desktop.id, desktop.name));
       return Response.json({ schemaVersion: 1, catalogId: "catalog", catalogRevision: catalogRead, desktops, quota: { ...catalogQuota, desktops: { used: desktops.length, limit: 10 } } });
     }) as typeof fetch });
 
@@ -121,7 +121,7 @@ describe("canonical synchronization", () => {
     } as unknown as NonNullable<SyncEngineOptions["storage"]>;
     const engine = new SyncEngine({ storage, fetch: (async () => {
       if (!online) throw new TypeError("offline");
-      return Response.json({ schemaVersion: 1, catalogId: "catalog", catalogRevision: 1, desktops: local, quota: catalogQuota });
+      return Response.json({ schemaVersion: 1, catalogId: "catalog", catalogRevision: 1, desktops: local.map((desktop) => remoteDesktopIdentity(desktop.id, desktop.name)), quota: catalogQuota });
     }) as typeof fetch });
 
     expect((await engine.listDesktops()).quota).toEqual(catalogQuota);
@@ -138,7 +138,7 @@ describe("canonical synchronization", () => {
       bindOutboxCatalog: async () => undefined,
       readOutbox: async () => [],
     } as unknown as NonNullable<SyncEngineOptions["storage"]>;
-    const engine = new SyncEngine({ storage, fetch: (async () => Response.json({ schemaVersion: 1, catalogId, catalogRevision: 1, desktops: local, quota: catalogQuota })) as typeof fetch });
+    const engine = new SyncEngine({ storage, fetch: (async () => Response.json({ schemaVersion: 1, catalogId, catalogRevision: 1, desktops: local.map((desktop) => remoteDesktopIdentity(desktop.id, desktop.name)), quota: catalogQuota })) as typeof fetch });
 
     expect((await engine.listDesktops()).quota).toEqual(catalogQuota);
     catalogId = "new-catalog";
@@ -223,17 +223,17 @@ describe("canonical synchronization", () => {
     const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const request = `${init?.method ?? "GET"} ${String(input)}`;
       requests.push(request);
-      if (String(input) === "/api/catalog") return Response.json({ schemaVersion: 1, catalogId: "new-catalog", catalogRevision: 2, desktops: [{ id: "desk", name: "Desktop" }], quota: catalogQuota });
+      if (String(input) === "/api/catalog") return Response.json({ schemaVersion: 1, catalogId: "new-catalog", catalogRevision: 2, desktops: [remoteDesktopIdentity()], quota: catalogQuota });
       if (String(input) === "/api/desktops/desk") return Response.json(remote);
       throw new Error(`A stale operation was sent: ${request}`);
     }) as typeof fetch;
     const engine = new SyncEngine({ storage, fetch: fetchImpl, eventSource: FakeEventSource as unknown as typeof EventSource });
 
     const catalog = await engine.listDesktops();
-    expect(catalog.desktops).toEqual([{ id: "desk", name: "Desktop" }]);
+    expect(catalog.desktops).toEqual([remoteDesktopIdentity()]);
     expect(records[0]).toMatchObject({ status: "blocked", catalogId: "old-catalog" });
     const started = await engine.start("desk", { x: 0, y: 0 });
-    expect(started.status).toBe("blocked");
+    expect(started.status).toBe("online");
     expect(requests.every((request) => request.startsWith("GET "))).toBe(true);
     await engine.stop();
   });
@@ -269,7 +269,7 @@ describe("canonical synchronization", () => {
       const request = `${init?.method ?? "GET"} ${String(input)}`;
       requests.push(request);
       if (!online) throw new TypeError("offline");
-      if (String(input) === "/api/catalog") return Response.json({ schemaVersion: 1, catalogId: "catalog", catalogRevision: 1, desktops: [{ id: "server-desk", name: "Desktop" }], quota: catalogQuota });
+      if (String(input) === "/api/catalog") return Response.json({ schemaVersion: 1, catalogId: "catalog", catalogRevision: 1, desktops: [remoteDesktopIdentity("server-desk", "Desktop")], quota: catalogQuota });
       if (String(input) === "/api/desktops/offline-desk" && !remoteExists) return Response.json({ error: "desktop not found" }, { status: 404 });
       if (String(input) === "/api/desktops" && init?.method === "POST") { remoteExists = true; return Response.json({ ...remoteDesktopState(), catalogId: "catalog", id: "offline-desk", name: "Offline desktop" }, { status: 201 }); }
       if (String(input) === "/api/desktops/offline-desk") return Response.json({ ...remoteDesktopState(), catalogId: "catalog", id: "offline-desk", name: "Offline desktop", catalogRevision: 2 });

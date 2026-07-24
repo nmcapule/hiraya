@@ -1,7 +1,7 @@
 /// <reference lib="webworker" />
 
 import sqlite3InitModule, { type Database, type SqlValue } from "@sqlite.org/sqlite-wasm";
-import type { DesktopEntry, EditorSettings, Wallpaper } from "../types";
+import type { DesktopEntry, DesktopIdentity, EditorSettings, Wallpaper } from "../types";
 import { parseDesktopState, type DesktopSyncState, type PersistedDesktopState } from "./desktop-state";
 import { applyOutboxOperation, desktopPendingOperationProtection, normalizeOutboxOperation, transferEntriesBetweenDesktopStates, type OutboxOperation, type OutboxRecord } from "./outbox";
 import { parseCustomTheme, parseThemeState, type CustomTheme } from "./themes";
@@ -9,7 +9,7 @@ import { EMPTY_WINDOW_SESSION, parseWindowSession } from "./window-session";
 import { activityRecord, parseActivityPage, parseActivityQuery, type ActivityPage, type NewActivityRecord } from "./activity";
 import type { StorageDbMethod, StorageDbRequest, StorageDbRequests, StorageDbResponses, StoredPreferences } from "./opfs-db-protocol";
 
-const DATABASE_SCHEMA_VERSION = 1;
+const DATABASE_SCHEMA_VERSION = 2;
 const FRONTEND_ONLY = import.meta.env.HIRAYA_FRONTEND_ONLY === "true";
 const HISTORY_LIMIT = Number(import.meta.env.HIRAYA_HISTORY_LIMIT);
 const DEFAULT_PREFERENCES: StoredPreferences = { autoUpdate: true, externalEmbeddedPreviews: true };
@@ -54,6 +54,10 @@ function nullableString(value: SqlValue | undefined) {
 
 function createSchema(db: Database) {
   const version = numberValue(scalar(db, "PRAGMA user_version"));
+  if (version === 1) {
+    db.exec("BEGIN IMMEDIATE; ALTER TABLE desktops ADD COLUMN access_json TEXT; PRAGMA user_version=2; COMMIT;");
+    return;
+  }
   if (version !== 0 && version !== DATABASE_SCHEMA_VERSION) throw new Error(`The desktop database uses unsupported schema version ${version}.`);
   if (version === DATABASE_SCHEMA_VERSION) return;
   db.exec(`
@@ -67,6 +71,7 @@ function createSchema(db: Database) {
       layout_revision INTEGER NOT NULL CHECK (layout_revision >= 0),
       settings_revision INTEGER NOT NULL CHECK (settings_revision >= 0),
       theme_selection_revision INTEGER NOT NULL CHECK (theme_selection_revision >= 0)
+      ,access_json TEXT
     );
     CREATE TABLE desktop_layouts (
       desktop_id TEXT PRIMARY KEY REFERENCES desktops(id) ON DELETE CASCADE,
@@ -185,8 +190,8 @@ function replaceDesktopStateRows(db: Database, desktopId: string, value: Persist
   } finally { statement.finalize(); }
 }
 
-function createDesktopRows(db: Database, desktop: { id: string; name: string }, state: PersistedDesktopState) {
-  db.exec({ sql: "INSERT INTO desktops VALUES (?, ?, (SELECT COUNT(*) FROM desktops), NULL, 0, 0, 0, 0)", bind: [desktop.id, desktop.name] });
+function createDesktopRows(db: Database, desktop: DesktopIdentity, state: PersistedDesktopState) {
+  db.exec({ sql: "INSERT INTO desktops(id,name,ordinal,catalog_id,catalog_revision,layout_revision,settings_revision,theme_selection_revision,access_json) VALUES (?, ?, (SELECT COUNT(*) FROM desktops), NULL, 0, 0, 0, 0, ?)", bind: [desktop.id, desktop.name, JSON.stringify(desktop)] });
   replaceDesktopStateRows(db, desktop.id, state);
 }
 
@@ -252,7 +257,10 @@ async function dispatch<M extends StorageDbMethod>(method: M, params: StorageDbR
   switch (method) {
     case "ping": return undefined as StorageDbResponses[M];
     case "status": return { existedBeforeOpen } as StorageDbResponses[M];
-    case "listDesktops": return { desktops: rows(db, "SELECT id, name FROM desktops ORDER BY ordinal").map((row) => ({ id: stringValue(row.id), name: stringValue(row.name) })) } as StorageDbResponses[M];
+    case "listDesktops": return { desktops: rows(db, "SELECT id,name,access_json FROM desktops ORDER BY ordinal").map((row) => {
+      const identity = row.access_json === null ? { id: stringValue(row.id), name: stringValue(row.name) } : JSON.parse(stringValue(row.access_json)) as DesktopIdentity;
+      return { ...identity, id: stringValue(row.id), name: stringValue(row.name) };
+    }) } as StorageDbResponses[M];
     case "createDesktop": { const input = params as StorageDbRequests["createDesktop"]; db.transaction("IMMEDIATE", () => createDesktopRows(db, input.desktop, input.state)); return input.desktop as StorageDbResponses[M]; }
     case "createOfflineDesktop": {
       const input = params as StorageDbRequests["createOfflineDesktop"];
@@ -264,7 +272,20 @@ async function dispatch<M extends StorageDbMethod>(method: M, params: StorageDbR
         return { desktop: input.desktop, record: readOutbox(db).find((record) => record.operationId === reservation.operationId)! };
       }) as StorageDbResponses[M];
     }
-    case "renameDesktop": { const input = params as StorageDbRequests["renameDesktop"]; db.exec({ sql: "UPDATE desktops SET name=? WHERE id=?", bind: [input.name, input.desktopId] }); if (db.changes() !== 1) throw new Error("That desktop no longer exists."); return { id: input.desktopId, name: input.name } as StorageDbResponses[M]; }
+    case "renameDesktop": {
+      const input = params as StorageDbRequests["renameDesktop"];
+      const row = rows(db, "SELECT access_json FROM desktops WHERE id=?", [input.desktopId])[0];
+      if (!row) throw new Error("That desktop no longer exists.");
+      const identity = row.access_json === null ? { id: input.desktopId, name: input.name } : { ...(JSON.parse(stringValue(row.access_json)) as DesktopIdentity), name: input.name };
+      db.exec({ sql: "UPDATE desktops SET name=?,access_json=? WHERE id=?", bind: [input.name, JSON.stringify(identity), input.desktopId] });
+      return identity as StorageDbResponses[M];
+    }
+    case "updateDesktopIdentity": {
+      const desktop = (params as StorageDbRequests["updateDesktopIdentity"]).desktop;
+      db.exec({ sql: "UPDATE desktops SET access_json=? WHERE id=?", bind: [JSON.stringify(desktop), desktop.id] });
+      if (db.changes() !== 1) throw new Error("That desktop no longer exists.");
+      return desktop as StorageDbResponses[M];
+    }
     case "deleteDesktop": {
       const id = (params as StorageDbRequests["deleteDesktop"]).desktopId;
       const protection = desktopPendingOperationProtection(readOutbox(db), id);
@@ -313,7 +334,6 @@ async function dispatch<M extends StorageDbMethod>(method: M, params: StorageDbR
     case "bindOutboxCatalog": {
       const id = (params as StorageDbRequests["bindOutboxCatalog"]).catalogId;
       db.transaction("IMMEDIATE", () => {
-        db.exec({ sql: "UPDATE outbox SET status='blocked', error='Pending changes belong to a different catalog.' WHERE catalog_id IS NOT NULL AND catalog_id<>?", bind: [id] });
         db.exec({ sql: "UPDATE outbox SET catalog_id=? WHERE catalog_id IS NULL", bind: [id] });
       });
       return undefined as StorageDbResponses[M];

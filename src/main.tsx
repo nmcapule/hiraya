@@ -1,6 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { bootstrapSession } from "./lib/auth";
+import { publicTokenFromPath } from "./lib/public-desktop";
 import "./styles.css";
 
 const frontendOnly = import.meta.env.HIRAYA_FRONTEND_ONLY === "true";
@@ -35,6 +36,12 @@ async function start() {
   if (import.meta.env.DEV) {
     if ("serviceWorker" in navigator) void navigator.serviceWorker.getRegistrations().then((registrations) => Promise.all(registrations.map((registration) => registration.unregister())));
     if ("caches" in window) void caches.keys().then((keys) => Promise.all(keys.map((key) => caches.delete(key))));
+  }
+  const publicToken = publicTokenFromPath(window.location.pathname);
+  if (publicToken) {
+    const { default: PublicDesktop } = await import("./PublicDesktop");
+    createRoot(root).render(<StrictMode><PublicDesktop token={publicToken} /></StrictMode>);
+    return;
   }
   await retireUnscopedServiceWorker();
   const session = await bootstrapSession(frontendOnly);

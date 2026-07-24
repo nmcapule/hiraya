@@ -592,7 +592,7 @@ export class SyncEngine {
     } else {
       await this.bindOutboxCatalog(this.catalogId);
     }
-    for (const record of await this.storage.readOutbox()) {
+    for (const record of (await this.storage.readOutbox()).filter((candidate) => candidate.catalogId === this.catalogId)) {
       await this.replayRecord(record, generation);
     }
   }

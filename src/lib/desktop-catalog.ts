@@ -1,5 +1,5 @@
 import type { DesktopIdentity } from "../types";
-import { assertValidId, isRecord, normalizeDesktopName, readRevision } from "./contracts";
+import { assertValidId, isRecord, parseDesktopIdentity, readRevision } from "./contracts";
 
 export type RemoteDesktopIdentity = DesktopIdentity;
 export type QuotaMeasure = { used: number; limit: number };
@@ -29,22 +29,17 @@ export function parseDesktopCatalog(value: unknown): RemoteDesktopCatalog {
   if (value.schemaVersion !== 1) throw new Error("The server catalog uses an unsupported schema version.");
   assertValidId(value.catalogId, "The server catalog has an invalid ID.");
   const desktops = value.desktops.map((candidate): RemoteDesktopIdentity => {
-    if (!isRecord(candidate)) throw new Error("A server desktop has an unsupported format.");
-    assertValidId(candidate.id, "A server desktop has an invalid ID.");
-    return {
-      id: candidate.id,
-      name: normalizeDesktopName(typeof candidate.name === "string" ? candidate.name : ""),
-    };
+    return parseDesktopIdentity(candidate);
   });
   if (new Set(desktops.map((desktop) => desktop.id)).size !== desktops.length) throw new Error("The server desktop catalog contains duplicate IDs.");
-  if (new Set(desktops.map((desktop) => desktop.name.toLocaleLowerCase())).size !== desktops.length) throw new Error("The server desktop catalog contains duplicate names.");
+  if (new Set(desktops.map((desktop) => `${desktop.ownership}:${desktop.owner.id}:${desktop.name.toLocaleLowerCase()}`)).size !== desktops.length) throw new Error("The server desktop catalog contains duplicate names.");
   if (!isRecord(value.quota)) throw new Error("The server catalog has invalid quota data.");
   const quota = {
     storageBytes: parseQuotaMeasure(value.quota.storageBytes, "storage"),
     desktops: parseQuotaMeasure(value.quota.desktops, "desktop"),
     entries: parseQuotaMeasure(value.quota.entries, "entry"),
   };
-  if (quota.desktops.used !== desktops.length) throw new Error("The server catalog has inconsistent desktop quota usage.");
+  if (quota.desktops.used !== desktops.filter((desktop) => desktop.ownership === "owned").length) throw new Error("The server catalog has inconsistent desktop quota usage.");
   return { schemaVersion: 1, catalogId: value.catalogId, catalogRevision: readRevision(value.catalogRevision), desktops, quota };
 }
 

@@ -17,6 +17,7 @@ import { DEFAULT_THEME_STATE, parseCustomTheme, parseThemeState, type CustomThem
 import { parseWindowSession, type WindowSession } from "./window-session";
 import { activityRecord, type ActivityQuery, type NewActivityRecord } from "./activity";
 import { resolveDesktopContext } from "./desktop-catalog";
+import { localDesktopIdentity } from "./permissions";
 
 const FILES_DIRECTORY = "files";
 const PENDING_DIRECTORY = "pending";
@@ -217,7 +218,7 @@ async function readActiveDesktopState(seeded: SeededManifest | null = null): Pro
     return parseDesktopState(await callDatabase("readDesktop", { desktopId: activeDesktopContext }, activeDesktopContext));
   } catch (error) {
     if (!seeded) throw error;
-    const desktop = { id: crypto.randomUUID(), name: "Desktop" };
+    const desktop = localDesktopIdentity(crypto.randomUUID(), "Desktop");
     const state = await createDesktopStateFromSeeded(seeded);
     await callDatabase("createDesktop", { desktop, state }, null);
     setDesktopContext(desktop.id);
@@ -505,9 +506,9 @@ function emptyDesktopState(): DesktopState {
 async function listDesktopsUnsafe(seeded: SeededManifest | null = null) {
   await initializeDatabase();
   const result = await callDatabase("listDesktops", undefined, null);
-  const desktops = result.desktops.map(parseDesktopIdentity);
+  const desktops = result.desktops.map((desktop) => parseDesktopIdentity(desktop, true));
   if (desktops.length === 0 && seeded) {
-    const desktop = { id: crypto.randomUUID(), name: "Desktop" };
+    const desktop = localDesktopIdentity(crypto.randomUUID(), "Desktop");
     await callDatabase("createDesktop", { desktop, state: await createDesktopStateFromSeeded(seeded) }, null);
     desktops.push(desktop);
   }
@@ -518,7 +519,7 @@ async function listDesktopsUnsafe(seeded: SeededManifest | null = null) {
 
 async function createDesktopUnsafe(nameValue: string) {
   await initializeDatabase();
-  const desktop: DesktopIdentity = { id: crypto.randomUUID(), name: normalizeDesktopName(nameValue) };
+  const desktop = localDesktopIdentity(crypto.randomUUID(), normalizeDesktopName(nameValue));
   const registry = await callDatabase("listDesktops", undefined);
   if (registry.desktops.some((candidate) => candidate.name.toLocaleLowerCase() === desktop.name.toLocaleLowerCase())) throw new Error("A desktop with that name already exists.");
   const state = emptyDesktopState();
@@ -527,38 +528,39 @@ async function createDesktopUnsafe(nameValue: string) {
     state.sync.catalogId = active.sync.catalogId;
     state.sync.catalogRevision = active.sync.catalogRevision;
   }
-  return callDatabase("createDesktop", { desktop, state });
+  return parseDesktopIdentity(await callDatabase("createDesktop", { desktop, state }), true);
 }
 
 async function createOfflineDesktopUnsafe(nameValue: string) {
   await initializeDatabase();
-  const desktop: DesktopIdentity = { id: crypto.randomUUID(), name: normalizeDesktopName(nameValue) };
+  const desktop = localDesktopIdentity(crypto.randomUUID(), normalizeDesktopName(nameValue));
   const registry = await callDatabase("listDesktops", undefined, null);
   if (registry.desktops.length !== 0) throw new Error("An offline desktop can only initialize an empty browser catalog.");
   const result = await callDatabase("createOfflineDesktop", { desktop, state: emptyDesktopState() }, null);
   setDesktopContext(desktop.id);
   desktopLoad = Promise.resolve(emptyDesktopState());
-  return result;
+  return { ...result, desktop: parseDesktopIdentity(result.desktop, true) };
 }
 
 async function ensureDesktopUnsafe(value: DesktopIdentity) {
   await initializeDatabase();
-  const desktop = parseDesktopIdentity(value);
+  const desktop = parseDesktopIdentity(value, true);
   const registry = await callDatabase("listDesktops", undefined);
   const existing = registry.desktops.find((candidate) => candidate.id === desktop.id);
   if (existing) {
     const hasPendingRename = (await callDatabase("readOutbox", undefined)).some((record) => record.operation.kind === "rename-desktop" && record.operation.desktop.id === desktop.id);
     if (!hasPendingRename && existing.name !== desktop.name) await callDatabase("renameDesktop", { desktopId: desktop.id, name: desktop.name });
+    await callDatabase("updateDesktopIdentity", { desktop: hasPendingRename ? { ...desktop, name: existing.name } : desktop });
     return desktop;
   }
-  return callDatabase("createDesktop", { desktop, state: emptyDesktopState() });
+  return parseDesktopIdentity(await callDatabase("createDesktop", { desktop, state: emptyDesktopState() }), true);
 }
 
 async function renameDesktopUnsafe(desktopId: string, nameValue: string) {
   const name = normalizeDesktopName(nameValue);
   const registry = await callDatabase("listDesktops", undefined);
   if (registry.desktops.some((candidate) => candidate.id !== desktopId && candidate.name.toLocaleLowerCase() === name.toLocaleLowerCase())) throw new Error("A desktop with that name already exists.");
-  return callDatabase("renameDesktop", { desktopId, name });
+  return parseDesktopIdentity(await callDatabase("renameDesktop", { desktopId, name }), true);
 }
 
 async function switchDesktopUnsafe(desktopId: string) {

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, CloudCheck, CloudSlash, File as FileGlyph, Folder, FolderPlus, GearSix, HardDrive, Info, Keyboard, LinkSimple, MagnifyingGlass, Plus, SpinnerGap, SquaresFour, Trash, UploadSimple, WarningCircle, X } from "@phosphor-icons/react";
+import { Check, CloudCheck, CloudSlash, File as FileGlyph, Folder, FolderPlus, GearSix, HardDrive, Info, Keyboard, LinkSimple, MagnifyingGlass, Plus, ShareNetwork, SpinnerGap, SquaresFour, Trash, UploadSimple, WarningCircle, X } from "@phosphor-icons/react";
 import seededDesktop from "virtual:hiraya-seeded";
 import { ContextMenu, DesktopContextMenu } from "./components/ContextMenu";
 import { AppWindow } from "./components/AppWindow";
@@ -85,10 +85,12 @@ import { KeyboardShortcutsPanel } from "./components/KeyboardShortcutsPanel";
 import { TrashWindow } from "./components/TrashWindow";
 import { PanelDialog } from "./components/PanelDialog";
 import { ConfirmationDialog, type ConfirmationRequest } from "./components/ConfirmationDialog";
+import { SharingDialog } from "./components/SharingDialog";
 import { canOpenActivity } from "./ui/activity-navigation";
 import type { OutboxRecord } from "./lib/outbox";
 import type { TrashItem } from "./lib/contracts";
 import type { KeyboardShortcut, WindowListItem } from "./ui/panel-data";
+import { canMutateDesktop, sharedOfflineMessage } from "./lib/permissions";
 
 type BaseRunningApp = { id: string; bounds: WindowBounds; minimized: boolean; zIndex: number };
 type FileApp = BaseRunningApp & { kind: "file"; fileId: string; file?: FileEntry; blob?: File; editable?: boolean; loadError?: string; editMode: boolean; contentRevision: number; remoteChanged: boolean };
@@ -171,6 +173,7 @@ function App({ session }: { session: AuthSession | null }) {
   const [offlineBusyId, setOfflineBusyId] = useState<string | null>(null);
   const [importProgress, setImportProgress] = useState<{ count: number; phase: "preparing" | "saving" | "syncing" } | null>(null);
   const [undoTrash, setUndoTrash] = useState<{ desktopId: string; label: string; rootIds: string[] } | null>(null);
+  const [sharingOpen, setSharingOpen] = useState(false);
   const desktopRef = useRef<HTMLElement>(null);
   const desktopSizeRef = useRef(desktopSize);
   const canvasRef = useRef<HTMLDivElement>(null);
@@ -260,7 +263,12 @@ function App({ session }: { session: AuthSession | null }) {
   const routeFileId = route?.fileId;
   const routePropertiesEntryId = route?.propertiesEntryId;
   const routeSettings = route?.settings;
-  const canMutate = syncStatus !== "connecting";
+  const activeDesktop = desktops.find((desktop) => desktop.id === activeDesktopId);
+  const canMutate = canMutateDesktop(activeDesktop, syncStatus);
+  const canManage = Boolean(activeDesktop?.capabilities.manage && syncStatus === "online");
+  const canSettings = Boolean(activeDesktop?.capabilities.settings && canMutate);
+  const canViewActivity = Boolean(activeDesktop?.capabilities.activity && syncStatus === "online");
+  const offlineSharedNotice = sharedOfflineMessage(activeDesktop, syncStatus);
   const syncIndicatorStatus = syncStatus === "online" && isSyncing ? "syncing" : syncStatus;
   const activeDesktopName = desktops.find((desktop) => desktop.id === activeDesktopId)?.name ?? "Desktop";
   const entryIndex = useMemo(() => createEntryIndex(entries), [entries]);
@@ -1326,7 +1334,7 @@ function App({ session }: { session: AuthSession | null }) {
   }
 
   function applyEditorSettings(next: EditorSettings) {
-    if (!canMutate) return;
+    if (!canSettings) return;
     setEditorSettings(next);
     editorSettingsSaveRef.current = editorSettingsSaveRef.current
       .then(() => saveEditorSettings(next))
@@ -1334,7 +1342,7 @@ function App({ session }: { session: AuthSession | null }) {
   }
 
   async function changeTheme(themeId: string) {
-    if (!canMutate) return;
+    if (!canSettings) return;
     setThemePreview(null);
     try {
       setAppearance(await selectTheme(themeId));
@@ -1345,7 +1353,7 @@ function App({ session }: { session: AuthSession | null }) {
   }
 
   async function persistCustomTheme(theme: CustomTheme) {
-    if (!canMutate) return;
+    if (!canSettings) return;
     try {
       const saved = await saveCustomTheme(theme);
       setAppearance(await selectTheme(saved.id));
@@ -1358,7 +1366,7 @@ function App({ session }: { session: AuthSession | null }) {
   }
 
   async function removeCustomTheme(themeId: string) {
-    if (!canMutate) return;
+    if (!canSettings) return;
     try {
       setAppearance(await deleteCustomTheme(themeId));
       setThemePreview(null);
@@ -1490,13 +1498,14 @@ function App({ session }: { session: AuthSession | null }) {
   }
 
   async function renameDesktop(desktopId: string, name: string) {
+    if (!desktopsRef.current.find((desktop) => desktop.id === desktopId)?.capabilities.manage) throw new Error("You do not have permission to rename this desktop.");
     const renamed = await renameDesktopMutation(desktopId, name);
     setDesktops((current) => current.map((desktop) => desktop.id === desktopId ? renamed : desktop));
   }
 
   async function deleteDesktop(desktopId: string) {
     const desktop = desktops.find((candidate) => candidate.id === desktopId);
-    if (!desktop || desktops.length === 1) return;
+    if (!desktop?.capabilities.delete || desktops.filter((candidate) => candidate.ownership === "owned").length === 1) return;
     if (!await requestConfirmation({ title: `Delete ${desktop.name}?`, message: `Delete “${desktop.name}” and every file, folder, and Trash item in it? This cannot be undone.`, confirmLabel: "Delete desktop", danger: true })) return;
     if (desktopId === activeDesktopIdRef.current) {
       const replacement = desktops.find((candidate) => candidate.id !== desktopId)!;
@@ -1718,6 +1727,7 @@ function App({ session }: { session: AuthSession | null }) {
   }
 
   function openSettingsWindow(syncRoute = true) {
+    if (!activeDesktop?.capabilities.settings && !activeDesktop?.capabilities.activity) return false;
     const id = "settings";
     if (runningAppsRef.current.some((app) => app.id === id)) {
       focusApp(id, syncRoute);
@@ -2301,6 +2311,7 @@ function App({ session }: { session: AuthSession | null }) {
   }
 
   function persistArrangement(initialPositions: Array<{ entryId: string; position: EntryPosition }>, initialAppBounds: Array<{ appId: string; bounds: WindowBounds }>) {
+    if (!canMutate) { restoreArrangement(initialPositions, initialAppBounds); return; }
     const updates = entriesRef.current
       .filter((entry) => entry.parentId === null)
       .map((entry) => ({ entryId: entry.id, position: entry.position }));
@@ -2409,8 +2420,8 @@ function App({ session }: { session: AuthSession | null }) {
     { id: "new-file", label: "New text file", keywords: ["create"] },
     { id: "new-folder", label: "New folder", keywords: ["create directory"] },
     { id: "upload", label: "Upload files", keywords: ["import add"] },
-    { id: "trash", label: "Open Trash", keywords: ["deleted restore"] },
-    { id: "settings", label: "Open Settings" },
+    ...(activeDesktop?.capabilities.write ? [{ id: "trash", label: "Open Trash", keywords: ["deleted restore"] }] : []),
+    ...(activeDesktop?.capabilities.settings || activeDesktop?.capabilities.activity ? [{ id: "settings", label: "Open Settings" }] : []),
     { id: "windows", label: "Show all windows", keywords: ["areas"] },
     { id: "shortcuts", label: "Show keyboard shortcuts", keywords: ["keys help"] },
     { id: "sync", label: "Show sync status", keywords: ["offline queue issues"] },
@@ -2429,6 +2440,7 @@ function App({ session }: { session: AuthSession | null }) {
   ];
 
   function runSearchCommand(commandId: string) {
+    if (["new-file", "new-folder", "upload", "trash"].includes(commandId) && !canMutate) return;
     if (commandId === "new-file") setDialog({ type: "create-file", parentId: null });
     else if (commandId === "new-folder") setDialog({ type: "create-folder", parentId: null });
     else if (commandId === "upload") chooseUpload(null);
@@ -2439,7 +2451,7 @@ function App({ session }: { session: AuthSession | null }) {
   return (
     <main className="desktop-shell" data-theme={isBuiltinThemeId(appearance.selectedThemeId) ? appearance.selectedThemeId : "custom"} style={themeStyle(activeTheme)}>
       <header className="menu-bar">
-        {activeDesktopId && <DesktopSwitcher desktops={desktops} activeDesktopId={activeDesktopId} disabled={loading} quota={catalogQuota} quotaStale={syncStatus === "offline"} onSwitch={(id) => void activateDesktop(id)} onCreate={createDesktop} onRename={renameDesktop} onDelete={deleteDesktop} />}
+        {activeDesktopId && <DesktopSwitcher desktops={desktops} activeDesktopId={activeDesktopId} disabled={loading} quota={catalogQuota} quotaStale={syncStatus === "offline"} onSwitch={(id) => void activateDesktop(id)} onCreate={createDesktop} onRename={renameDesktop} onDelete={deleteDesktop} canManageDesktop={(desktop) => desktop.ownership === "owned" || syncStatus === "online"} />}
         <nav className="taskbar" aria-label="Open windows">
           {runningApps.map((app) => {
             const entry = app.kind === "file" ? entryIndex.byId.get(app.fileId) : app.kind === "properties" ? entryIndex.byId.get(app.entryId) : app.kind === "explorer" && app.folderId ? entryIndex.byId.get(app.folderId) : null;
@@ -2478,17 +2490,18 @@ function App({ session }: { session: AuthSession | null }) {
             <button type="button" aria-label="Upload files" disabled={!canMutate} onClick={() => chooseUpload(null)}><UploadSimple size={16} /> <span>Upload files</span></button>
             <button type="button" aria-label="Search files, windows, and commands" title="Search (Ctrl/Command K)" onClick={() => setActivePanel("search")}><MagnifyingGlass size={16} /></button>
             <button type="button" aria-label="Show all windows" title="All windows" onClick={() => setActivePanel("windows")}><SquaresFour size={16} /></button>
-            <button type="button" aria-label="Open Trash" title="Trash" onClick={() => setActivePanel("trash")}><Trash size={16} /></button>
+            {canMutate && <button type="button" aria-label="Open Trash" title="Trash" onClick={() => setActivePanel("trash")}><Trash size={16} /></button>}
           </>}
           {isMobile ? <MobileHeaderMenu label="Navigation and tools" icon={<GearSix size={18} />}>
             {(dismiss) => <>
               <button type="button" onClick={() => { dismiss(); setActivePanel("search"); }}><MagnifyingGlass size={17} /> Search</button>
               <button type="button" onClick={() => { dismiss(); setActivePanel("windows"); }}><SquaresFour size={17} /> All windows</button>
-              <button type="button" onClick={() => { dismiss(); setActivePanel("trash"); }}><Trash size={17} /> Trash</button>
+              {canMutate && <button type="button" onClick={() => { dismiss(); setActivePanel("trash"); }}><Trash size={17} /> Trash</button>}
               <button type="button" onClick={() => { dismiss(); setActivePanel("shortcuts"); }}><Keyboard size={17} /> Keyboard shortcuts</button>
-              <button type="button" onClick={() => { dismiss(); openSettingsWindow(); }}><GearSix size={17} /> Settings</button>
+              {(activeDesktop?.capabilities.settings || activeDesktop?.capabilities.activity) && <button type="button" onClick={() => { dismiss(); openSettingsWindow(); }}><GearSix size={17} /> Settings</button>}
             </>}
-          </MobileHeaderMenu> : <button type="button" aria-label="Open settings" title="Settings" onClick={() => openSettingsWindow()}><GearSix size={16} /> <span>Settings</span></button>}
+          </MobileHeaderMenu> : (activeDesktop?.capabilities.settings || activeDesktop?.capabilities.activity) && <button type="button" aria-label="Open settings" title="Settings" onClick={() => openSettingsWindow()}><GearSix size={16} /> <span>Settings</span></button>}
+          {session && activeDesktop?.capabilities.manage && <button type="button" aria-label="Share desktop" title="Share desktop" disabled={!canManage} onClick={() => setSharingOpen(true)}><ShareNetwork size={16} /> <span>Share</span></button>}
           {session && <AccountMenu session={session} />}
           <button className="menu-bar__sync" data-status={syncIndicatorStatus} type="button" aria-label="Open sync status" title={syncIndicatorStatus === "local" ? "Changes are saved only in this browser" : syncIndicatorStatus === "syncing" ? "Synchronizing saved changes" : syncIndicatorStatus === "online" ? "Changes are saved and synchronized" : syncIndicatorStatus === "connecting" ? "Connecting to the Hiraya server" : syncIndicatorStatus === "blocked" ? "A queued change needs attention before synchronization can continue" : "Offline changes are saved and will synchronize after reconnecting"} onClick={() => setActivePanel("sync")}>
             {syncIndicatorStatus === "local" ? <HardDrive size={15} /> : syncIndicatorStatus === "online" ? <CloudCheck size={15} /> : syncIndicatorStatus === "blocked" ? <WarningCircle size={15} weight="fill" /> : syncIndicatorStatus === "connecting" || syncIndicatorStatus === "syncing" ? <SpinnerGap size={15} /> : <CloudSlash size={15} />}
@@ -2591,7 +2604,7 @@ function App({ session }: { session: AuthSession | null }) {
           <div className="desktop-state empty-state">
             <span className="empty-state__icon"><HardDrive size={28} weight="duotone" /></span>
             <h1>Your space is ready.</h1>
-            <p>{syncStatus === "local" ? "Create an item or drop files anywhere. Items are saved only in this browser." : "Create an item or drop files anywhere. Items are saved to this shared desktop and synchronized by the Hiraya server."}</p>
+            <p>{offlineSharedNotice || (syncStatus === "local" ? "Create an item or drop files anywhere. Items are saved only in this browser." : canMutate ? "Create an item or drop files anywhere. Items are saved to this shared desktop and synchronized by the Hiraya server." : "This desktop is read only for your account.")}</p>
             <div className="empty-state__actions">
               <button className="button button--primary" type="button" disabled={!canMutate} onClick={() => setDialog({ type: "create-file", parentId: null })}><Plus size={17} /> New text file</button>
               <button className="button button--quiet" type="button" disabled={!canMutate} onClick={() => setDialog({ type: "create-folder", parentId: null })}><FolderPlus size={17} /> New folder</button>
@@ -2646,7 +2659,8 @@ function App({ session }: { session: AuthSession | null }) {
                     blob={app.blob}
                      editable={Boolean(app.editable)}
                      editMode={app.editMode}
-                    readOnly={!canMutate}
+                     readOnly={!canMutate}
+                     canChangeSettings={canSettings}
                     remoteChanged={app.remoteChanged}
                     headerActionsTarget={headerElements.actions}
                     editorSettings={editorSettings}
@@ -2724,7 +2738,7 @@ function App({ session }: { session: AuthSession | null }) {
                     wallpaperUrl={wallpaperUrl}
                     appearance={appearance}
                     activeTheme={activeTheme}
-                    canMutate={canMutate}
+                    canMutate={canSettings}
                     exportDisabled={loading}
                     exporting={exporting}
                     fullscreenEnabled={document.fullscreenEnabled}
@@ -2736,8 +2750,8 @@ function App({ session }: { session: AuthSession | null }) {
                     externalEmbeddedPreviews={externalEmbeddedPreviews === true}
                     localPreferencesLoaded={externalEmbeddedPreviews !== null}
                     serverBuildTimestamp={serverBuildTimestamp}
-                    onListActivity={listActivity}
-                    onSubscribeToActivity={subscribeToActivityChanges}
+                    onListActivity={canViewActivity ? listActivity : async () => { throw new Error("Activity is unavailable for your role."); }}
+                    onSubscribeToActivity={canViewActivity ? subscribeToActivityChanges : () => () => undefined}
                     canOpenAffectedEntries={(activity) => canOpenActivity(activity, activeDesktopIdRef.current, entriesRef.current, desktops.map((desktop) => desktop.id))}
                     onOpenAffectedEntries={async (activity, ids) => {
                       if (!activity.desktopId) return;
@@ -2798,7 +2812,7 @@ function App({ session }: { session: AuthSession | null }) {
                     aria-label={`${activeDesktopName}, area ${visibleIndex + 1} of ${visibleSegments.length}${currentSegmentKey === activeSegmentKey ? ", current area" : ""}${editingAreas && isOccupiedSegment ? ", use arrow keys to move" : isOccupiedSegment ? ", long press to arrange" : ""}`}
                     aria-current={currentSegmentKey === activeSegmentKey ? "true" : undefined}
                     onClick={(event) => { if (event.detail === 0 && !editingAreas) goToSegment(desktopSegment.segment); }}
-                    onContextMenu={isOccupiedSegment ? (event) => { event.preventDefault(); setEditingAreas(true); } : undefined}
+                    onContextMenu={isOccupiedSegment && canMutate ? (event) => { event.preventDefault(); setEditingAreas(true); } : undefined}
                     onPointerDown={isOccupiedSegment ? (event) => startMinimapPress(event, currentSegmentKey) : undefined}
                     onPointerMove={moveMinimapPress}
                     onPointerUp={(event) => finishMinimapPress(event)}
@@ -2893,10 +2907,10 @@ function App({ session }: { session: AuthSession | null }) {
             chooseUpload(contextMenu.parentId, contextMenu.position);
             setContextMenu(null);
           }}
-          onSettings={() => {
+          onSettings={activeDesktop?.capabilities.settings || activeDesktop?.capabilities.activity ? () => {
             openSettingsWindow();
             setContextMenu(null);
-          }}
+          } : undefined}
           onPaste={clipboardRef.current ? () => void beginPaste(contextMenu.parentId, contextMenu.parentId === null ? contextMenu.position : undefined) : undefined}
           readOnly={!canMutate}
         />
@@ -2904,13 +2918,15 @@ function App({ session }: { session: AuthSession | null }) {
       {dialog && (!(dialog.type === "rename" || dialog.type === "delete") || dialogEntry) && <FileDialog dialog={dialog} entry={dialogEntry} entryCount={dialog.type === "delete" ? dialog.entryIds.length : 1} trashSupported={syncStatus !== "local"} onClose={() => setDialog(null)} onSubmit={handleDialogSubmit} />}
       {moveDialogEntries.length > 0 && (
         <MoveDialog
-          desktops={desktops.map((desktop) => ({ ...desktop, folders: (desktopMoveFolders[desktop.id] ?? []).filter((entry): entry is Extract<DesktopEntry, { kind: "folder" }> => entry.kind === "folder") }))}
+          desktops={desktops.filter((desktop) => desktop.capabilities.write && (desktop.ownership === "owned" || syncStatus === "online")).map((desktop) => ({ ...desktop, folders: (desktopMoveFolders[desktop.id] ?? []).filter((entry): entry is Extract<DesktopEntry, { kind: "folder" }> => entry.kind === "folder") }))}
           activeDesktopId={activeDesktopId}
           entries={moveDialogEntries}
           invalidIds={invalidMoveIds(moveDialogEntries)}
           loading={moveDestinationsLoading}
           onClose={() => { setMoveDialogSubmitting(false); setMoveDialogEntryIds([]); }}
           onMove={async (desktopId, parentId) => {
+            const destination = desktops.find((desktop) => desktop.id === desktopId);
+            if (!destination?.capabilities.write || destination.ownership === "shared" && syncStatus !== "online") throw new Error("You cannot write to that destination desktop right now.");
             if (desktopId === activeDesktopId) await handleMoveTo(moveDialogEntries, parentId, true);
             else {
               const next = await transferEntries(desktopId, moveDialogEntries.map((entry) => entry.id), parentId);
@@ -2943,7 +2959,8 @@ function App({ session }: { session: AuthSession | null }) {
       })} /></PanelDialog>}
       {activePanel === "windows" && <PanelDialog title="All windows" onClose={() => setActivePanel(null)}><AllWindowsPanel windows={windowItems} activeAreaId={activeSegmentKey} focusedWindowId={focusedAppId ?? undefined} onFocusWindow={(id) => { focusApp(id); setActivePanel(null); }} onNavigateArea={(id) => { const [row, column] = id.split(":").map(Number); if (Number.isSafeInteger(row) && Number.isSafeInteger(column)) goToSegment({ row, column }); }} /></PanelDialog>}
       {activePanel === "shortcuts" && <PanelDialog title="Keyboard shortcuts" onClose={() => setActivePanel(null)}><KeyboardShortcutsPanel shortcuts={keyboardShortcuts} /></PanelDialog>}
-      {activePanel === "trash" && <PanelDialog title="Trash" onClose={() => setActivePanel(null)}><TrashWindow onListTrash={() => listTrash(activeDesktopId)} onRestore={async (item, destination) => { await restoreTrash(activeDesktopId, item.entry.id, destination); setNotice(`${item.entry.name} restored`); }} onPermanentlyDelete={async (item) => { await permanentlyDeleteTrash(activeDesktopId, item.entry.id); setNotice(`${item.entry.name} permanently deleted`); }} onRequestPermanentDelete={(item: TrashItem, confirmedDelete) => { void requestConfirmation({ title: `Delete ${item.entry.name} permanently?`, message: "This item and everything inside it will be permanently deleted. This cannot be undone.", confirmLabel: "Delete permanently", danger: true }).then((confirmed) => { if (confirmed) void confirmedDelete().catch(() => undefined); }); }} /></PanelDialog>}
+      {activePanel === "trash" && canMutate && <PanelDialog title="Trash" onClose={() => setActivePanel(null)}><TrashWindow onListTrash={() => listTrash(activeDesktopId)} onRestore={async (item, destination) => { await restoreTrash(activeDesktopId, item.entry.id, destination); setNotice(`${item.entry.name} restored`); }} onPermanentlyDelete={async (item) => { await permanentlyDeleteTrash(activeDesktopId, item.entry.id); setNotice(`${item.entry.name} permanently deleted`); }} onRequestPermanentDelete={(item: TrashItem, confirmedDelete) => { void requestConfirmation({ title: `Delete ${item.entry.name} permanently?`, message: "This item and everything inside it will be permanently deleted. This cannot be undone.", confirmLabel: "Delete permanently", danger: true }).then((confirmed) => { if (confirmed) void confirmedDelete().catch(() => undefined); }); }} /></PanelDialog>}
+      {sharingOpen && activeDesktop?.capabilities.manage && <SharingDialog desktop={activeDesktop} onClose={() => setSharingOpen(false)} />}
       {confirmation && <ConfirmationDialog {...confirmation} onClose={resolveConfirmation} />}
     </main>
   );
