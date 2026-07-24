@@ -5213,17 +5213,74 @@ a:focus-visible {
 .file-icon__name,
 .public-icon > span { padding: 2px 5px; border-radius: max(2px, calc(var(--theme-radius-small) * .6)); color: var(--theme-chrome-text); background: var(--theme-chrome); text-shadow: none; }
 
+/* Popovers and dialogs use one primary, supporting, and title hierarchy. */
+.desktop-switcher__name,
+.desktop-switcher__panel header,
+.desktop-switcher__group h3,
+.desktop-switcher__form label,
+.desktop-switcher__quota-heading,
+.desktop-switcher__quota-heading span,
+.desktop-switcher__quota-row,
+.desktop-switcher__limit-note,
+.desktop-switcher__manage summary,
+.desktop-switcher__row > button:first-child small,
+.desktop-switcher__manage-row > span small,
+.sharing-dialog .window-kicker,
+.sharing-section__heading p,
+.sharing-invite label,
 .sharing-member span,
 .sharing-member code,
 .sharing-token strong,
 .sharing-token span,
 .publication-card span,
 .publication-card strong,
-.sharing-loading { font-size: 12px; }
+.sharing-loading,
+.sharing-dialog .inline-help-link,
+.sharing-dialog .form-error { font-size: max(12px, calc(11px * var(--theme-type-scale))); }
+
+.desktop-switcher__row > button:first-child,
+.desktop-switcher__create,
+.desktop-switcher__form input,
+.desktop-switcher__manage-row > span strong,
+.sharing-section__heading h3,
+.sharing-invite input,
+.sharing-invite select,
+.sharing-member strong,
+.sharing-member select { font-size: max(14px, calc(13px * var(--theme-type-scale))); }
+
+.desktop-switcher__panel header,
+.desktop-switcher__group h3,
+.desktop-switcher__manage summary,
+.desktop-switcher__quota-heading,
+.desktop-switcher__row > button:first-child strong,
+.desktop-switcher__manage-row > span strong,
+.sharing-section__heading h3,
+.sharing-invite label,
+.sharing-member strong,
+.sharing-avatar { font-weight: var(--theme-weight); }
+
+.desktop-switcher__panel header,
+.desktop-switcher__quota-heading { letter-spacing: .06em; }
+.desktop-switcher__group h3 { letter-spacing: 0; }
+.desktop-switcher__quota-heading span { letter-spacing: 0; text-transform: none; }
+.desktop-switcher__quota-row > strong { font-family: inherit; font-size: inherit; font-weight: var(--theme-weight); font-variant-numeric: tabular-nums; }
 .desktop-switcher__manage-row { min-height: 52px; }
 .desktop-switcher__manage-row > span { display: grid; gap: 2px; white-space: normal; }
-.desktop-switcher__manage-row > span strong { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
-.desktop-switcher__manage-row > span small { color: var(--theme-text-muted); font-size: 12px; line-height: 1.3; }
+.desktop-switcher__manage-row > span strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.desktop-switcher__manage-row > span small { color: var(--theme-text-muted); line-height: 1.4; }
+
+.sharing-dialog h2 { font-size: max(18px, calc(17px * var(--theme-type-scale))); font-weight: var(--theme-weight); }
+.sharing-dialog > header { color: var(--theme-chrome-text); }
+.sharing-dialog > header .window-kicker { color: color-mix(in srgb, var(--theme-chrome-text) 68%, transparent); }
+.sharing-section__heading p { line-height: 1.5; }
+.sharing-invite input,
+.sharing-invite select,
+.sharing-member select { font-weight: 400; }
+.sharing-member span,
+.sharing-member code { line-height: 1.4; }
+.sharing-avatar { font-size: max(12px, calc(11px * var(--theme-type-scale))); }
+.sharing-token span,
+.publication-card strong { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; }
 
 .theme-preview-canvas__illustration { display: grid; min-height: inherit; pointer-events: none; user-select: none; }
 .theme-preview-canvas__illustration :is(button, input, select, a) { pointer-events: none; }
