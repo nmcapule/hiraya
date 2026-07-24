@@ -3839,7 +3839,7 @@ a:focus-visible {
     justify-content: flex-start;
     color: var(--theme-text);
     background: transparent;
-    font-size: max(14px, calc(12px * var(--theme-type-scale)));
+    font-size: max(14px, calc(13px * var(--theme-type-scale)));
   }
   .menu-bar__actions .mobile-header-menu__panel > button:hover,
   .menu-bar__actions .mobile-header-menu__panel > button:focus-visible,
@@ -5286,6 +5286,29 @@ a:focus-visible {
 .sharing-avatar { font-size: max(12px, calc(11px * var(--theme-type-scale))); }
 .sharing-token span,
 .publication-card strong { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; }
+
+.command-palette__segments button,
+.command-palette__result,
+.command-palette__empty strong,
+.mobile-header-menu__panel > button,
+.mobile-header-menu__panel .account-menu__action,
+.account-menu__identity strong {
+  font-size: max(14px, calc(13px * var(--theme-type-scale)));
+}
+
+.command-palette__scope > span,
+.command-palette__warning,
+.command-palette__group h2,
+.command-palette__result small,
+.command-palette__empty span,
+.account-menu__identity span {
+  font-size: max(12px, calc(11px * var(--theme-type-scale)));
+}
+
+.command-palette__result strong,
+.command-palette__empty strong,
+.account-menu__identity strong { font-weight: var(--theme-weight); }
+.command-palette__result small { line-height: 1.4; }
 
 .theme-preview-canvas__illustration { display: grid; min-height: inherit; pointer-events: none; user-select: none; }
 .theme-preview-canvas__illustration :is(button, input, select, a) { pointer-events: none; }
