@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, BookOpenText, CaretDown, CloudCheck, CloudSlash, Desktop, DotsThree, File as FileGlyph, FolderOpen, FolderPlus, GearSix, HardDrive, IdentificationCard, Keyboard, MagnifyingGlass, Plus, ShareNetwork, SignOut, SpinnerGap, SquaresFour, Trash, UploadSimple, WarningCircle, X } from "@phosphor-icons/react";
 import seededDesktop from "virtual:hiraya-seeded";
 import { ContextMenu, DesktopContextMenu } from "./components/ContextMenu";
@@ -131,6 +131,30 @@ type RouteHistoryState = { hiraya: true; schemaVersion: 1; parentHash?: string; 
 type PendingPaste = { snapshot: ClipboardEntrySnapshot; parentId: string | null; position?: EntryPosition };
 const DESKTOP_LONG_PRESS_MS = 500;
 const ONBOARDING_VERSION = 1;
+
+function NotificationCard({ badge, tone = "neutral", icon, children, actions, dismissLabel, dismissDisabled = false, onDismiss, role }: {
+  badge: string;
+  tone?: StatusTone;
+  icon?: ReactNode;
+  children: ReactNode;
+  actions?: ReactNode;
+  dismissLabel: string;
+  dismissDisabled?: boolean;
+  onDismiss: () => void;
+  role?: "alert" | "status";
+}) {
+  return <div className="notification-card" data-tone={tone} role={role}>
+    <div className="notification-card__header">
+      <StatusBadge tone={tone}>{badge}</StatusBadge>
+      <button className="notification-dismiss" type="button" disabled={dismissDisabled} aria-label={dismissLabel} onClick={onDismiss}><X size={15} /></button>
+    </div>
+    <div className="notification-card__message">
+      {icon && <span className="notification-card__icon" aria-hidden="true">{icon}</span>}
+      <div>{children}</div>
+    </div>
+    {actions && <div className="notification-card__actions">{actions}</div>}
+  </div>;
+}
 
 function formatClock(date: Date) {
   return new Intl.DateTimeFormat(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" }).format(date);
@@ -3255,10 +3279,10 @@ function App({ session }: { session: AuthSession | null }) {
       {(isMobile && selectedEntries.length > 0 && !contextMenu || notificationTotal > 0 || importProgress || showUpdateToast) && <aside className="shell-status-region" aria-label="Selection, notifications, and progress">
         {isMobile && selectedEntries.length > 0 && !contextMenu && <div className="mobile-selection-toolbar" role="toolbar" aria-label={`${selectedEntries.length} selected`}><strong>{selectedEntries.length} selected</strong><button type="button" aria-label="More actions for selection" onClick={(event) => openEntryContextMenu(selectedEntries[0].id, event.currentTarget.getBoundingClientRect().right, event.currentTarget.getBoundingClientRect().top)}><DotsThree size={22} /> Actions</button></div>}
         {notificationTotal > 0 && <div className="notification-stack">
-          {showErrorNotification && <div className="error-banner" role="alert"><StatusBadge tone="danger">Error</StatusBadge><WarningCircle size={19} weight="fill" aria-hidden="true" /><span>{error}</span>{error === folderImportError && <button type="button" onClick={() => openHelp("files-and-folders")}>Folder import help</button>}<button className="notification-dismiss" type="button" onClick={() => { setError(""); setFolderImportError(""); }} aria-label="Dismiss error"><X size={14} /></button></div>}
-          {visibleTrashNotifications.map((notification) => <div className="notice notice--actionable" data-tone={notification.state === "failed" ? "danger" : "neutral"} key={notification.id}><StatusBadge tone={notification.state === "failed" ? "danger" : notification.state === "running" ? "progress" : "neutral"}>{notification.state === "failed" ? "Restore failed" : notification.state === "running" ? "Restoring" : "Undo available"}</StatusBadge><span><strong>{notification.label} moved to Trash</strong>{notification.state === "running" ? " Restoring..." : notification.error ? ` ${notification.error}` : " Undo remains available until dismissed."}</span><button className="notification-action notification-action--primary" type="button" disabled={notification.state === "running"} onClick={() => void undoMoveToTrash(notification)}>{notification.state === "failed" ? "Retry Undo" : "Undo"}</button><button className="notification-action" type="button" disabled={notification.state === "running"} onClick={() => void openTrashNotification(notification)}>View Trash</button><button className="notification-dismiss" type="button" disabled={notification.state === "running"} aria-label={`Dismiss Trash notification for ${notification.label}`} onClick={() => setTrashNotifications((current) => dismissTrashNotification(current, notification.id))}><X size={14} /></button></div>)}
-          {showNoticeNotification && <div className="notice"><StatusBadge>Saved</StatusBadge><span>{notice}</span><button className="notification-dismiss" type="button" aria-label="Dismiss notice" onClick={() => setNotice("")}><X size={14} /></button></div>}
-          {visibleAppNotifications.map((notification) => <div className="notice" key={notification.id}><StatusBadge>App</StatusBadge><span>{[notification.title, notification.body].filter(Boolean).join(": ")}</span><button className="notification-dismiss" type="button" aria-label="Dismiss app notification" onClick={() => appHostServices.notifications.dismiss(notification.owner, notification.id)}><X size={14} /></button></div>)}
+          {showErrorNotification && <NotificationCard badge="Error" tone="danger" icon={<WarningCircle size={18} weight="fill" />} role="alert" dismissLabel="Dismiss error" onDismiss={() => { setError(""); setFolderImportError(""); }} actions={error === folderImportError ? <button className="notification-action" type="button" onClick={() => openHelp("files-and-folders")}>Folder import help</button> : undefined}><span>{error}</span></NotificationCard>}
+          {visibleTrashNotifications.map((notification) => <NotificationCard badge={notification.state === "failed" ? "Restore failed" : notification.state === "running" ? "Restoring" : "Undo available"} tone={notification.state === "failed" ? "danger" : notification.state === "running" ? "progress" : "neutral"} key={notification.id} dismissLabel={`Dismiss Trash notification for ${notification.label}`} dismissDisabled={notification.state === "running"} onDismiss={() => setTrashNotifications((current) => dismissTrashNotification(current, notification.id))} actions={<><button className="notification-action notification-action--primary" type="button" disabled={notification.state === "running"} onClick={() => void undoMoveToTrash(notification)}>{notification.state === "failed" ? "Retry Undo" : "Undo"}</button><button className="notification-action" type="button" disabled={notification.state === "running"} onClick={() => void openTrashNotification(notification)}>View Trash</button></>}><strong>{notification.label} moved to Trash</strong><span>{notification.state === "running" ? "Restoring..." : notification.error || "Undo remains available until dismissed."}</span></NotificationCard>)}
+          {showNoticeNotification && <NotificationCard badge="Saved" role="status" dismissLabel="Dismiss notice" onDismiss={() => setNotice("")}><span>{notice}</span></NotificationCard>}
+          {visibleAppNotifications.map((notification) => <NotificationCard badge="App" key={notification.id} dismissLabel="Dismiss app notification" onDismiss={() => appHostServices.notifications.dismiss(notification.owner, notification.id)}><strong>{notification.title}</strong>{notification.body && <span>{notification.body}</span>}</NotificationCard>)}
           {hiddenNotificationCount > 0 && <details className="notice notification-drawer"><summary>{hiddenNotificationCount} more {hiddenNotificationCount === 1 ? "notification" : "notifications"}</summary><div className="notification-drawer__list" aria-label="Notification history">{!showNoticeNotification && notice && <div><StatusBadge>Saved</StatusBadge><span>{notice}</span></div>}{hiddenTrashNotifications.map((notification) => <div key={notification.id}><StatusBadge tone={notification.state === "failed" ? "danger" : "neutral"}>Trash</StatusBadge><span>{notification.label}</span><button type="button" disabled={notification.state === "running"} onClick={() => void undoMoveToTrash(notification)}>{notification.state === "failed" ? "Retry Undo" : "Undo"}</button><button type="button" onClick={() => void openTrashNotification(notification)}>View</button><button className="notification-dismiss" type="button" disabled={notification.state === "running"} aria-label={`Dismiss notification for ${notification.label}`} onClick={() => setTrashNotifications((current) => dismissTrashNotification(current, notification.id))}><X size={14} /></button></div>)}{hiddenAppNotifications.map((notification) => <div key={notification.id}><StatusBadge>App</StatusBadge><span>{[notification.title, notification.body].filter(Boolean).join(": ")}</span><button className="notification-dismiss" type="button" aria-label="Dismiss app notification" onClick={() => appHostServices.notifications.dismiss(notification.owner, notification.id)}><X size={14} /></button></div>)}</div></details>}
         </div>}
         {importProgress && <div className="import-progress"><SpinnerGap size={18} aria-hidden="true" /><div><StatusBadge tone="progress" surface="chrome">Importing</StatusBadge><strong>{importProgress.phase === "preparing" ? "Preparing import" : importProgress.phase === "saving" ? "Staging and saving import" : "Staging and synchronizing import"}</strong><span>{importProgress.folderCount} {importProgress.folderCount === 1 ? "folder" : "folders"}, {importProgress.fileCount} {importProgress.fileCount === 1 ? "file" : "files"}, {formatImportBytes(importProgress.totalBytes)}</span></div></div>}

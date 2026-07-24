@@ -5326,4 +5326,38 @@ a:focus-visible {
   opacity: 1;
   pointer-events: auto;
 }
+
+/* All desktop notifications share one card anatomy and alignment. */
+.notification-stack { align-items: stretch; }
+.notification-card {
+  display: grid;
+  width: 100%;
+  gap: 9px;
+  padding: 11px 12px 12px;
+  border: var(--theme-border-width) solid var(--theme-border);
+  border-radius: var(--theme-radius);
+  color: var(--theme-text);
+  background: var(--theme-elevated);
+  box-shadow: var(--theme-elevation-2);
+  animation: toast-in 180ms ease-out;
+}
+.notification-card[data-tone="danger"] { border-color: var(--theme-danger); }
+.notification-card__header { display: flex; min-height: 30px; align-items: center; justify-content: space-between; gap: 10px; }
+.notification-card__message { display: flex; min-width: 0; align-items: flex-start; gap: 9px; padding: 0 3px; font-size: 13px; font-weight: 500; line-height: 1.4; }
+.notification-card__message > div { display: grid; min-width: 0; flex: 1; gap: 2px; }
+.notification-card__message strong { overflow-wrap: anywhere; font-size: 13px; font-weight: 700; }
+.notification-card__message span { color: var(--theme-text-muted); overflow-wrap: anywhere; }
+.notification-card__icon { display: grid; width: 22px; height: 22px; flex: 0 0 22px; place-items: center; color: var(--theme-danger-surface-foreground); }
+.notification-card__actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 1px; }
+.notification-card .notification-action { min-width: 92px; min-height: 36px; padding: 7px 12px; }
+.notification-card .notification-action--primary { color: var(--theme-accent-text); background: var(--theme-accent); }
+.notification-card .notification-dismiss { display: grid; width: 32px; min-width: 32px; height: 32px; min-height: 32px; place-items: center; padding: 0; border: 0; border-radius: var(--theme-radius-small); color: var(--theme-text-muted); background: transparent; }
+.notification-card .notification-dismiss:hover,
+.notification-card .notification-dismiss:focus-visible { color: var(--theme-text); background: var(--theme-window-muted); }
+.notification-drawer { width: 100%; justify-self: stretch; }
+
+@media (max-width: 620px) {
+  .notification-card { padding: 10px; }
+  .notification-card__actions > .notification-action { min-width: 0; flex: 1; }
+}
 .desktop-shell:has(.shell-status-region) .desktop-minimap { opacity: 0; pointer-events: none; }
