@@ -27,11 +27,15 @@ function remoteStorage() {
   let sequence = 0;
   const cached = new Map<string, File>();
   const pending = new Map<string, Map<string, Blob>>();
-  const stats = { cacheWrites: 0, blockWrites: 0 };
+  const stats = { cacheWrites: 0, blockWrites: 0, remoteApplications: [] as Array<{ acknowledgedOperationId?: string; force: boolean; useAcknowledgedContent: boolean }> };
   const storage = {
     loadDesktop: async () => current,
     readDesktopState: async () => current,
-    applyRemoteDesktop: async (next: typeof current) => { current = next; return current; },
+    applyRemoteDesktop: async (next: typeof current, _contents: Map<string, Blob>, acknowledgedOperationId?: string, _desktopId?: string, force = false, useAcknowledgedContent = true) => {
+      stats.remoteApplications.push({ acknowledgedOperationId, force, useAcknowledgedContent });
+      current = next;
+      return current;
+    },
     bindOutboxCatalog: async () => undefined,
     readCachedFile: async (desktopId: string, catalogId: string, id: string, contentRevision: number) => cached.get(`${desktopId}:${catalogId}:${id}:${contentRevision}`) ?? null,
     cacheRemoteFile: async (desktopId: string, catalogId: string, id: string, contentRevision: number, content: Blob) => {
@@ -42,6 +46,7 @@ function remoteStorage() {
       stats.cacheWrites += 1;
       return file;
     },
+    removeCachedFile: async (desktopId: string, catalogId: string, id: string, contentRevision: number) => cached.delete(`${desktopId}:${catalogId}:${id}:${contentRevision}`),
     readOutbox: async () => outbox,
     enqueueMutation: async (operation: OutboxOperation, contents = new Map<string, Blob>()) => {
       const state = applyOutboxOperation({ entries: current.entries, snapToGrid: current.layout.snapToGrid, wallpaper: current.layout.wallpaper, editorSettings: current.editorSettings, appearance: current.appearance, sync: current.sync }, operation);
@@ -366,6 +371,113 @@ describe("canonical synchronization", () => {
     expect(storage.stats.cacheWrites).toBe(1);
     expect(directInit).toMatchObject({ method: "GET", credentials: "omit", referrerPolicy: "no-referrer", redirect: "error", cache: "no-store" });
     expect(new Headers(directInit?.headers).get("X-Test-Download")).toBe("yes");
+    await engine.stop();
+  });
+
+  test("reports, requests, and removes exact validated offline file revisions", async () => {
+    const storage = remoteStorage();
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/desktops/desk") return Response.json(remoteDesktopState());
+      if (String(input) === "/api/desktops/desk/entries/file-1/content-access?revision=1") return Response.json({ entryId: "file-1", contentRevision: 1, size: 4, sha256: "edb465624291e4053c6c5ea4b7eb320dec773e10a57d26b95dcf0564f8e310f8", access: { url: "https://downloads.example.test/file-1", method: "GET", headers: {}, expiresAt: 2_000_000_000_000 } });
+      if (String(input) === "https://downloads.example.test/file-1") return new Response("note");
+      throw new Error(`Unexpected request: ${String(input)}`);
+    }) as typeof fetch;
+    const engine = new SyncEngine({ storage, fetch: fetchImpl, eventSource: FakeEventSource as unknown as typeof EventSource });
+    await engine.start("desk", { x: 0, y: 0 });
+
+    expect(await engine.isFileAvailableOffline("file-1")).toBe(false);
+    expect(await (await engine.makeFileAvailableOffline("file-1")).text()).toBe("note");
+    expect(await engine.isFileAvailableOffline("file-1")).toBe(true);
+    expect(await engine.removeFileFromOfflineCache("file-1")).toBe(true);
+    expect(await engine.isFileAvailableOffline("file-1")).toBe(false);
+    await engine.stop();
+  });
+
+  test("retries blocked records in order and publishes queue changes", async () => {
+    const storage = remoteStorage();
+    let remote = remoteDesktopState();
+    let rejectMutation = true;
+    const queueSizes: number[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/desktops/desk" && !init?.method) return Response.json(remote);
+      if (String(input) === "/api/desktops/desk/root-entry-positions") {
+        if (rejectMutation) return Response.json({ error: "position conflict" }, { status: 409 });
+        remote = { ...remote, catalogRevision: 2, entries: [{ ...remote.entries[0], position: { x: 5, y: 6 }, revision: 2 }] };
+        return Response.json({});
+      }
+      throw new Error(`Unexpected request: ${String(input)}`);
+    }) as typeof fetch;
+    const engine = new SyncEngine({ storage, fetch: fetchImpl, eventSource: FakeEventSource as unknown as typeof EventSource });
+    await engine.start("desk", { x: 0, y: 0 });
+    const unsubscribe = engine.subscribeOutbox((records) => queueSizes.push(records.length));
+    await expect(engine.updateRootEntryPositions([{ entryId: "file-1", position: { x: 5, y: 6 } }])).rejects.toThrow("position conflict");
+    const [blocked] = await engine.listOutboxRecords();
+    expect(blocked.status).toBe("blocked");
+
+    rejectMutation = false;
+    await engine.retryBlockedOutboxRecord(blocked.operationId);
+    expect(await engine.listOutboxRecords()).toEqual([]);
+    expect(queueSizes).toContain(1);
+    expect(queueSizes.at(-1)).toBe(0);
+    unsubscribe();
+    await engine.stop();
+  });
+
+  test("discards only the first blocked record and force-reprojects authoritative state", async () => {
+    const storage = remoteStorage();
+    const remote = remoteDesktopState();
+    let latest = desktopStateSnapshot();
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/desktops/desk" && !init?.method) return Response.json(remote);
+      if (String(input) === "/api/desktops/desk/layout") return Response.json({ error: "layout conflict" }, { status: 409 });
+      throw new Error(`Unexpected request: ${String(input)}`);
+    }) as typeof fetch;
+    const engine = new SyncEngine({ storage, fetch: fetchImpl, eventSource: FakeEventSource as unknown as typeof EventSource });
+    await engine.start("desk", { x: 0, y: 0 });
+    engine.subscribe((desktop) => { latest = desktop; }, () => undefined);
+    await expect(engine.saveDesktopLayout({ ...remote.layout, snapToGrid: true })).rejects.toThrow("layout conflict");
+    const [blocked] = await engine.listOutboxRecords();
+    expect(latest.layout.snapToGrid).toBe(true);
+
+    await engine.discardBlockedOutboxRecord(blocked.operationId);
+    expect(await engine.listOutboxRecords()).toEqual([]);
+    expect(latest.layout.snapToGrid).toBe(remote.layout.snapToGrid);
+    expect(storage.stats.remoteApplications.at(-1)).toEqual({ acknowledgedOperationId: blocked.operationId, force: true, useAcknowledgedContent: false });
+    await engine.stop();
+  });
+
+  test("rejects discard unless the caller selects the blocked head record", async () => {
+    const first: OutboxRecord = { operationId: "first", sequence: 1, clientId: "client", catalogId: "catalog", desktopId: "desk", operation: { schemaVersion: 1, kind: "layout", layout: remoteDesktopState().layout }, status: "pending", error: null };
+    const second: OutboxRecord = { operationId: "second", sequence: 2, clientId: "client", catalogId: "catalog", desktopId: "desk", operation: { schemaVersion: 1, kind: "editor-settings", settings: remoteDesktopState().editorSettings }, status: "blocked", error: "conflict" };
+    const records = [first, second];
+    const storage = {
+      readOutbox: async () => records,
+    } as unknown as NonNullable<SyncEngineOptions["storage"]>;
+    const engine = new SyncEngine({ storage });
+
+    await expect(engine.discardBlockedOutboxRecord(first.operationId)).rejects.toThrow("Only blocked changes");
+    await expect(engine.discardBlockedOutboxRecord(second.operationId)).rejects.toThrow("earlier queued changes");
+    expect(records).toEqual([first, second]);
+  });
+
+  test("does not remove authoritative local file content from offline storage", async () => {
+    const remote = remoteDesktopState();
+    const file = { ...remote.entries[0] };
+    delete (file as Partial<typeof remote.entries[0]>).revision;
+    delete (file as Partial<typeof remote.entries[0]>).contentRevision;
+    const current = { ...desktopStateSnapshot(), entries: [file] };
+    let removed = false;
+    const storage = {
+      loadDesktop: async () => current,
+      readFile: async () => new File(["note"], "note.txt"),
+      removeCachedFile: async () => { removed = true; return true; },
+    } as unknown as NonNullable<SyncEngineOptions["storage"]>;
+    const engine = new SyncEngine({ frontendOnly: true, storage, eventSource: FakeEventSource as unknown as typeof EventSource });
+    await engine.start("desk", { x: 0, y: 0 });
+
+    expect(await engine.isFileAvailableOffline("file-1")).toBe(true);
+    await expect(engine.removeFileFromOfflineCache("file-1")).rejects.toThrow("Authoritative local file content");
+    expect(removed).toBe(false);
     await engine.stop();
   });
 

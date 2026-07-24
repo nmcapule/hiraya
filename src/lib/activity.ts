@@ -1,4 +1,4 @@
-import { isRecord } from "./contracts";
+import { isRecord, isValidId } from "./contracts";
 
 export const DEFAULT_ACTIVITY_PAGE_LIMIT = 50;
 export const MAX_ACTIVITY_PAGE_LIMIT = 100;
@@ -7,6 +7,7 @@ export const MAX_ACTIVITY_QUERY_LENGTH = 200;
 export type ValidActivityRecord = {
   catalogRevision: number;
   desktopId?: string;
+  entryIds?: string[];
   action: string;
   source: string;
   timestamp: number;
@@ -48,10 +49,18 @@ function parseValidRecord(value: unknown): ValidActivityRecord {
     if (typeof detail !== "string" || !detail.trim() || detail.length > 500) throw new Error("An activity record has invalid details.");
     return detail;
   });
+  let entryIds: string[] | undefined;
+  if (value.entryIds !== undefined) {
+    if (!Array.isArray(value.entryIds) || value.entryIds.length === 0 || value.entryIds.some((id) => !isValidId(id)) || new Set(value.entryIds).size !== value.entryIds.length) {
+      throw new Error("An activity record has invalid entry IDs.");
+    }
+    entryIds = value.entryIds;
+  }
   if (!Number.isSafeInteger(value.timestamp) || (value.timestamp as number) < 0) throw new Error("An activity record has an invalid timestamp.");
   return {
     catalogRevision: positiveInteger(value.catalogRevision, "An activity record has an invalid catalog revision."),
     ...(typeof value.desktopId === "string" ? { desktopId: value.desktopId } : {}),
+    ...(entryIds ? { entryIds } : {}),
     action: value.action,
     source: value.source,
     timestamp: value.timestamp as number,

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
-import { Minus, X } from "@phosphor-icons/react";
+import { ArrowsOut, CaretDown, Minus, X } from "@phosphor-icons/react";
 import {
   clampWindowBounds,
   resizeWindowBounds,
@@ -25,6 +25,10 @@ export type AppWindowProps = {
   onDragEnd?: (id: string, cancelled: boolean) => void;
   onMinimize: (id: string) => void;
   onClose: (id: string) => void;
+  maximized?: boolean;
+  canMoveArea?: boolean;
+  onToggleMaximize?: (id: string) => void;
+  onMoveArea?: (id: string, direction: "left" | "right" | "up" | "down") => void;
   children: ReactNode | ((headerElements: AppWindowHeaderElements) => ReactNode);
   titleArea?: ReactNode;
   headerContent?: ReactNode;
@@ -66,6 +70,10 @@ export function AppWindow({
   onDragEnd,
   onMinimize,
   onClose,
+  maximized = false,
+  canMoveArea = false,
+  onToggleMaximize,
+  onMoveArea,
   children,
   titleArea,
   headerContent,
@@ -73,6 +81,9 @@ export function AppWindow({
   const windowRef = useRef<HTMLElement>(null);
   const [headerLeadingElement, setHeaderLeadingElement] = useState<HTMLDivElement | null>(null);
   const [headerActionsElement, setHeaderActionsElement] = useState<HTMLDivElement | null>(null);
+  const [windowMenuOpen, setWindowMenuOpen] = useState(false);
+  const windowMenuButtonRef = useRef<HTMLButtonElement>(null);
+  const windowMenuRef = useRef<HTMLDivElement>(null);
   const interactionRef = useRef<Interaction | null>(null);
   const onBoundsChangeRef = useRef(onBoundsChange);
   onBoundsChangeRef.current = onBoundsChange;
@@ -156,6 +167,11 @@ export function AppWindow({
     windowRef.current?.focus();
   }, [focused, minimized, segmentActive]);
 
+  useEffect(() => {
+    if (!windowMenuOpen) return;
+    windowMenuRef.current?.querySelector<HTMLButtonElement>("[role='menuitem']")?.focus();
+  }, [windowMenuOpen]);
+
   const style: CSSProperties = mobile
     ? { position: "absolute", inset: 0, width: "100%", height: "100%", zIndex }
     : { position: "absolute", left: bounds.x, top: bounds.y, width: bounds.width, height: bounds.height, zIndex };
@@ -172,7 +188,8 @@ export function AppWindow({
       data-mobile={mobile || undefined}
       role="dialog"
       aria-modal="false"
-      aria-labelledby={titleId}
+      aria-labelledby={titleArea ? undefined : titleId}
+      aria-label={titleArea ? title : undefined}
       aria-hidden={minimized || !segmentActive || mobile && !focused || undefined}
       inert={!segmentActive}
       tabIndex={-1}
@@ -189,11 +206,18 @@ export function AppWindow({
         onLostPointerCapture={finishInteraction}
       >
         {typeof children === "function" && <div ref={setHeaderLeadingElement} className="app-window__header-leading" data-window-no-drag />}
-        <div className="app-window__title-area" id={titleArea ? titleId : undefined}>
+        <div className="app-window__title-area">
           {titleArea ?? <h2 id={titleId} className="app-window__title">{title}</h2>}
         </div>
         {(headerContent || typeof children === "function") && <div ref={setHeaderActionsElement} className="app-window__header-content" data-window-no-drag>{headerContent}</div>}
         <div className="app-window__controls" data-window-no-drag>
+          {onToggleMaximize && <div className="app-window__menu-wrap">
+            <button ref={windowMenuButtonRef} className="app-window__control" type="button" aria-label={`Window actions for ${title}`} aria-haspopup="menu" aria-expanded={windowMenuOpen} onClick={() => setWindowMenuOpen((open) => !open)}><CaretDown size={15} /></button>
+            {windowMenuOpen && <div ref={windowMenuRef} className="app-window__menu" role="menu" onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); event.nativeEvent.stopImmediatePropagation(); setWindowMenuOpen(false); windowMenuButtonRef.current?.focus(); } }}>
+              <button type="button" role="menuitem" onClick={() => { onToggleMaximize(id); setWindowMenuOpen(false); }}><ArrowsOut size={15} /> {maximized ? "Restore window" : "Maximize window"}<kbd>Alt Enter</kbd></button>
+              {canMoveArea && onMoveArea && (["left", "right", "up", "down"] as const).map((direction) => <button type="button" role="menuitem" key={direction} onClick={() => { onMoveArea(id, direction); setWindowMenuOpen(false); }}>Move to area {direction}<kbd>Alt {direction}</kbd></button>)}
+            </div>}
+          </div>}
           <button className="app-window__control app-window__control--minimize" type="button" onClick={() => onMinimize(id)} aria-label={`Minimize ${title}`}>
             <Minus size={16} />
           </button>

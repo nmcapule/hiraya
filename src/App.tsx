@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, CloudCheck, CloudSlash, File as FileGlyph, Folder, FolderPlus, GearSix, HardDrive, Info, LinkSimple, Plus, SpinnerGap, UploadSimple, WarningCircle } from "@phosphor-icons/react";
+import { Check, CloudCheck, CloudSlash, File as FileGlyph, Folder, FolderPlus, GearSix, HardDrive, Info, Keyboard, LinkSimple, MagnifyingGlass, Plus, SpinnerGap, SquaresFour, Trash, UploadSimple, WarningCircle, X } from "@phosphor-icons/react";
 import seededDesktop from "virtual:hiraya-seeded";
 import { ContextMenu, DesktopContextMenu } from "./components/ContextMenu";
 import { AppWindow } from "./components/AppWindow";
@@ -45,6 +45,16 @@ import {
   subscribeToSync,
   subscribeToActivityChanges,
   subscribeToDesktopCatalog,
+  subscribeToOutbox,
+  listOutboxRecords,
+  retryBlockedOutboxRecord,
+  discardBlockedOutboxRecord,
+  isFileAvailableOffline,
+  makeFileAvailableOffline,
+  removeFileFromOfflineCache,
+  listTrash,
+  restoreTrash,
+  permanentlyDeleteTrash,
   stopDesktopSync,
   type SyncStatus,
 } from "./lib/sync";
@@ -68,6 +78,17 @@ import { validateWallpaperImage } from "./lib/wallpaper-image";
 import { AccountMenu } from "./components/AccountMenu";
 import { MobileHeaderMenu } from "./components/MobileHeaderMenu";
 import type { AuthSession } from "./lib/auth";
+import { SearchCommandPalette, type SearchPaletteCommand } from "./components/SearchCommandPalette";
+import { SyncIssuesPanel } from "./components/SyncIssuesPanel";
+import { AllWindowsPanel } from "./components/AllWindowsPanel";
+import { KeyboardShortcutsPanel } from "./components/KeyboardShortcutsPanel";
+import { TrashWindow } from "./components/TrashWindow";
+import { PanelDialog } from "./components/PanelDialog";
+import { ConfirmationDialog, type ConfirmationRequest } from "./components/ConfirmationDialog";
+import { canOpenActivity } from "./ui/activity-navigation";
+import type { OutboxRecord } from "./lib/outbox";
+import type { TrashItem } from "./lib/contracts";
+import type { KeyboardShortcut, WindowListItem } from "./ui/panel-data";
 
 type BaseRunningApp = { id: string; bounds: WindowBounds; minimized: boolean; zIndex: number };
 type FileApp = BaseRunningApp & { kind: "file"; fileId: string; file?: FileEntry; blob?: File; editable?: boolean; loadError?: string; editMode: boolean; contentRevision: number; remoteChanged: boolean };
@@ -142,6 +163,14 @@ function App({ session }: { session: AuthSession | null }) {
   const [serverBuildTimestamp, setServerBuildTimestamp] = useState<string | null>(null);
   const [pendingPaste, setPendingPaste] = useState<PendingPaste | null>(null);
   const [marquee, setMarquee] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
+  const [activePanel, setActivePanel] = useState<"search" | "sync" | "windows" | "shortcuts" | "trash" | null>(null);
+  const [outboxRecords, setOutboxRecords] = useState<OutboxRecord[]>([]);
+  const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
+  const [confirmation, setConfirmation] = useState<ConfirmationRequest | null>(null);
+  const [offlineAvailability, setOfflineAvailability] = useState<Record<string, boolean | null>>({});
+  const [offlineBusyId, setOfflineBusyId] = useState<string | null>(null);
+  const [importProgress, setImportProgress] = useState<{ count: number; phase: "preparing" | "saving" | "syncing" } | null>(null);
+  const [undoTrash, setUndoTrash] = useState<{ desktopId: string; label: string; rootIds: string[] } | null>(null);
   const desktopRef = useRef<HTMLElement>(null);
   const desktopSizeRef = useRef(desktopSize);
   const canvasRef = useRef<HTMLDivElement>(null);
@@ -217,6 +246,9 @@ function App({ session }: { session: AuthSession | null }) {
   const windowSessionReadyRef = useRef(false);
   const windowSessionSaveRef = useRef<Promise<void>>(Promise.resolve());
   const updaterRef = useRef<PwaUpdater | null>(null);
+  const confirmationResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
+  const restoredWindowBoundsRef = useRef(new Map<string, WindowBounds>());
+  const windowCommandRef = useRef<{ maximize: (id: string) => void; move: (id: string, direction: "left" | "right" | "up" | "down") => void }>({ maximize: () => {}, move: () => {} });
   const autoUpdateRef = useRef(true);
   const localPreferencesRef = useRef<LocalPreferences>({ autoUpdate: true, externalEmbeddedPreviews: true });
   const updatePreferenceLoadedRef = useRef(false);
@@ -278,6 +310,19 @@ function App({ session }: { session: AuthSession | null }) {
   function setCurrentRoute(next: DesktopRoute) {
     routeRef.current = next;
     setRoute(next);
+  }
+
+  function requestConfirmation(request: ConfirmationRequest) {
+    confirmationResolverRef.current?.(false);
+    setConfirmation(request);
+    return new Promise<boolean>((resolve) => { confirmationResolverRef.current = resolve; });
+  }
+
+  function resolveConfirmation(confirmed: boolean) {
+    const resolve = confirmationResolverRef.current;
+    confirmationResolverRef.current = null;
+    setConfirmation(null);
+    resolve?.(confirmed);
   }
 
   function replaceSelection(surface: string, ids: string[], anchorId = ids.at(-1) ?? null) {
@@ -427,7 +472,10 @@ function App({ session }: { session: AuthSession | null }) {
   }
 
   function requestCloseApp(id: string) {
-    if (fileDirtyRef.current[id] && !window.confirm("Close this file and discard its unsaved changes?")) return false;
+    if (fileDirtyRef.current[id]) {
+      void requestConfirmation({ title: "Discard unsaved changes?", message: "Close this file and discard its unsaved editor changes?", confirmLabel: "Discard and close", danger: true }).then((confirmed) => { if (confirmed) closeApp(id); });
+      return false;
+    }
     closeApp(id);
     return true;
   }
@@ -660,7 +708,12 @@ function App({ session }: { session: AuthSession | null }) {
       applyLocationRouteRef.current(synced.entries, synced.layout);
       setLoading(false);
       restoreSavedWindowSession();
-    }, (nextStatus) => { if (active) setSyncStatus(nextStatus); }, (syncing) => { if (active) setIsSyncing(syncing); });
+    }, (nextStatus) => {
+      if (!active) return;
+      setSyncStatus(nextStatus);
+      if (nextStatus === "online") setLastSyncedAt(Date.now());
+    }, (syncing) => { if (active) setIsSyncing(syncing); });
+    const unsubscribeOutbox = subscribeToOutbox((records) => { if (active) setOutboxRecords([...records]); });
     const unsubscribeCatalog = subscribeToDesktopCatalog((registry) => {
       if (!active) return;
       desktopsRef.current = registry.desktops;
@@ -729,10 +782,22 @@ function App({ session }: { session: AuthSession | null }) {
     return () => {
       active = false;
       unsubscribe();
+      unsubscribeOutbox();
       unsubscribeCatalog();
       void stopDesktopSync();
     };
   }, []);
+
+  useEffect(() => () => confirmationResolverRef.current?.(false), []);
+
+  useEffect(() => {
+    if (activePanel !== "sync") return;
+    let active = true;
+    void listOutboxRecords().then((records) => { if (active) setOutboxRecords(records); }).catch((reason) => {
+      if (active) setError(reason instanceof Error ? reason.message : "The synchronization queue could not be loaded.");
+    });
+    return () => { active = false; };
+  }, [activePanel]);
 
   useEffect(() => {
     if (!moveDialogEntryIds.length || !activeDesktopId) return;
@@ -913,10 +978,19 @@ function App({ session }: { session: AuthSession | null }) {
     previousDesktopSizeRef.current = desktopSize;
     const current = routeRef.current;
     if (!current || (previous.width === desktopSize.width && previous.height === desktopSize.height)) return;
+    const focused = runningAppsRef.current.find((app) => app.id === focusedAppIdRef.current);
+    const selectedEntry = selectedIdsRef.current.map((id) => entriesRef.current.find((entry) => entry.id === id && entry.parentId === null)).find(Boolean);
+    const projectedSegment = focused
+      ? projectLogicalPosition(focused.bounds, desktopSize).segment
+      : selectedEntry
+        ? projectLogicalPosition(selectedEntry.position, desktopSize).segment
+        : {
+            column: Math.floor((current.column * previous.width + previous.width / 2) / desktopSize.width),
+            row: Math.floor((current.row * previous.height + previous.height / 2) / desktopSize.height),
+          };
     navigateRouteRef.current({
       ...current,
-      column: Math.floor((current.column * previous.width + previous.width / 2) / desktopSize.width),
-      row: Math.floor((current.row * previous.height + previous.height / 2) / desktopSize.height),
+      ...projectedSegment,
     }, "replace");
     updateRunningApps((currentApps) => currentApps.map((app) => {
       const projection = projectLogicalPosition(app.bounds, desktopSize);
@@ -1046,7 +1120,7 @@ function App({ session }: { session: AuthSession | null }) {
         event.preventDefault();
         const explorer = activeExplorer();
         void beginPasteRef.current(explorer?.folderId ?? null);
-      } else if ((event.key === "Delete" || event.key === "Backspace") && selectedIdsRef.current.length && canMutate) {
+      } else if (event.key === "Delete" && selectedIdsRef.current.length && canMutate) {
         event.preventDefault();
         setDialog({ type: "delete", entryIds: [...selectedIdsRef.current] });
       }
@@ -1067,8 +1141,34 @@ function App({ session }: { session: AuthSession | null }) {
   }, [activeDesktopSegment.entries, canMutate, dialog, entryIndex, moveDialogEntryIds.length, pendingPaste, selectionScope]);
 
   useEffect(() => {
+    function onGlobalShortcut(event: KeyboardEvent) {
+      const modifier = event.metaKey || event.ctrlKey;
+      if (modifier && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setActivePanel("search");
+        return;
+      }
+      if (event.key === "?" && !event.metaKey && !event.ctrlKey && !(event.target as Element | null)?.closest?.("input, textarea, [contenteditable='true'], .cm-editor")) {
+        event.preventDefault();
+        setActivePanel("shortcuts");
+        return;
+      }
+      if (event.altKey && event.key === "Enter" && focusedAppIdRef.current) {
+        event.preventDefault();
+        windowCommandRef.current.maximize(focusedAppIdRef.current);
+      } else if (event.altKey && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key) && focusedAppIdRef.current) {
+        event.preventDefault();
+        windowCommandRef.current.move(focusedAppIdRef.current, event.key.replace("Arrow", "").toLowerCase() as "left" | "right" | "up" | "down");
+      }
+    }
+    window.addEventListener("keydown", onGlobalShortcut);
+    return () => window.removeEventListener("keydown", onGlobalShortcut);
+  }, []);
+
+  useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       if (event.key !== "Escape") return;
+      if ((event.target as Element | null)?.closest?.("input, textarea, [contenteditable='true'], .cm-editor")) return;
       const owner = topOverlay({
         dialog: Boolean(dialog),
         moveDialog: moveDialogEntries.length > 0,
@@ -1093,7 +1193,7 @@ function App({ session }: { session: AuthSession | null }) {
 
   useEffect(() => {
     if (!notice) return;
-    const timer = window.setTimeout(() => setNotice(""), 2800);
+    const timer = window.setTimeout(() => { setNotice(""); setUndoTrash(null); }, 6500);
     return () => window.clearTimeout(timer);
   }, [notice]);
 
@@ -1102,7 +1202,7 @@ function App({ session }: { session: AuthSession | null }) {
   const wallpaperFileExists = Boolean(wallpaperFile);
   const wallpaperContentRevision = wallpaperFileId ? contentRevisionsRef.current[wallpaperFileId] ?? wallpaperFile?.modifiedAt ?? 0 : 0;
   const wallpaperKey = wallpaperFileId && activeDesktopId ? `${activeDesktopId}:${wallpaperFileId}:${wallpaperContentRevision}` : null;
-  const wallpaperLoadReady = syncStatus !== "offline" && syncStatus !== "connecting";
+  const wallpaperLoadReady = true;
   const wallpaperUrl = wallpaperAsset?.key === wallpaperKey ? wallpaperAsset.url : null;
 
   useEffect(() => {
@@ -1129,6 +1229,21 @@ function App({ session }: { session: AuthSession | null }) {
   useEffect(() => () => {
     if (wallpaperAssetRef.current) URL.revokeObjectURL(wallpaperAssetRef.current.url);
   }, []);
+
+  const availabilityEntryIds = [contextMenuEntry?.kind === "file" ? contextMenuEntry.id : null, ...runningApps.filter((app): app is PropertiesApp => app.kind === "properties").map((app) => entryIndex.byId.get(app.entryId)?.kind === "file" ? app.entryId : null)].filter((id): id is string => Boolean(id));
+  const availabilityKey = [...new Set(availabilityEntryIds)].sort().join("\n");
+  useEffect(() => {
+    let active = true;
+    for (const id of availabilityKey ? availabilityKey.split("\n") : []) {
+      setOfflineAvailability((current) => ({ ...current, [id]: null }));
+      void isFileAvailableOffline(id).then((available) => {
+        if (active) setOfflineAvailability((current) => ({ ...current, [id]: available }));
+      }).catch(() => {
+        if (active) setOfflineAvailability((current) => ({ ...current, [id]: false }));
+      });
+    }
+    return () => { active = false; };
+  }, [availabilityKey]);
 
   function childrenCount(parentId: string | null) {
     return parentId !== null ? entryIndex.children.get(parentId)?.length ?? 0 : activeDesktopSegment.entries.length;
@@ -1328,7 +1443,7 @@ function App({ session }: { session: AuthSession | null }) {
   async function performDesktopActivation(desktopId: string, token: number) {
     activationGenerationRef.current = token;
     if (desktopId === activeDesktopIdRef.current) return true;
-    if (Object.values(fileDirtyRef.current).some(Boolean) && !window.confirm("Switch desktops and discard unsaved editor changes?")) return false;
+    if (Object.values(fileDirtyRef.current).some(Boolean) && !await requestConfirmation({ title: "Switch desktops?", message: "Switching desktops will discard unsaved editor changes in open files.", confirmLabel: "Discard and switch", danger: true })) return false;
     const previousDesktopId = activeDesktopIdRef.current;
     let syncStopped = false;
     setLoading(true);
@@ -1382,7 +1497,7 @@ function App({ session }: { session: AuthSession | null }) {
   async function deleteDesktop(desktopId: string) {
     const desktop = desktops.find((candidate) => candidate.id === desktopId);
     if (!desktop || desktops.length === 1) return;
-    if (!window.confirm(`Delete “${desktop.name}” and every file and folder in it? This cannot be undone.`)) return;
+    if (!await requestConfirmation({ title: `Delete ${desktop.name}?`, message: `Delete “${desktop.name}” and every file, folder, and Trash item in it? This cannot be undone.`, confirmLabel: "Delete desktop", danger: true })) return;
     if (desktopId === activeDesktopIdRef.current) {
       const replacement = desktops.find((candidate) => candidate.id !== desktopId)!;
       if (!await activateDesktop(replacement.id)) return;
@@ -1432,11 +1547,15 @@ function App({ session }: { session: AuthSession | null }) {
     } else {
       if (!dialogEntry) { setDialog(null); return; }
       const ids = dialog.type === "delete" ? dialog.entryIds : [];
+      const selected = new Set(ids);
+      const rootIds = ids.filter((id) => !entryIndex.ancestors(id).some((ancestor) => selected.has(ancestor.id)));
       const deleted = await deleteEntries(ids);
       const deletedIds = new Set(deleted.map((entry) => entry.id));
       setEntries((current) => current.filter((entry) => !deletedIds.has(entry.id)));
       replaceSelection(selectionScope, selectedIdsRef.current.filter((id) => !deletedIds.has(id)));
-      setNotice(`${ids.length === 1 ? dialogEntry.name : `${ids.length} items`} deleted`);
+      const label = ids.length === 1 ? dialogEntry.name : `${ids.length} items`;
+      setNotice(syncStatus === "local" ? `${label} deleted permanently` : `${label} moved to Trash`);
+      setUndoTrash(syncStatus === "online" ? { desktopId: activeDesktopIdRef.current, label, rootIds } : null);
     }
     setDialog(null);
   }
@@ -1444,6 +1563,7 @@ function App({ session }: { session: AuthSession | null }) {
   async function handleImport(sources: File[], parentId: string | null, base?: EntryPosition) {
     if (!sources.length || !canMutate) return;
     setError("");
+    setImportProgress({ count: sources.length, phase: "preparing" });
     try {
       const offset = childrenCount(parentId);
       const occupied = parentId === null
@@ -1457,6 +1577,7 @@ function App({ session }: { session: AuthSession | null }) {
         occupied.push(localPosition);
         return restoreLogicalPosition(localPosition, activeSegment, desktopSize);
       });
+      setImportProgress({ count: sources.length, phase: syncStatus === "local" ? "saving" : "syncing" });
       const imported = await importFiles(sources, parentId, positions);
       setEntries((current) => {
         const existingIds = new Set(current.map((entry) => entry.id));
@@ -1466,6 +1587,8 @@ function App({ session }: { session: AuthSession | null }) {
       setNotice(`${imported.length} ${imported.length === 1 ? "file" : "files"} added`);
     } catch (importError) {
       setError(importError instanceof Error ? importError.message : "The upload could not be completed.");
+    } finally {
+      setImportProgress(null);
     }
   }
   handleImportRef.current = handleImport;
@@ -1657,7 +1780,7 @@ function App({ session }: { session: AuthSession | null }) {
     popup.opener = null;
     try {
       const shortcut = parseInternetShortcut(await (await readFile(file.id)).text());
-      if (shortcut.sensitive && !window.confirm(`This shortcut uses the sensitive ${shortcut.scheme}: scheme. Open it anyway?`)) {
+      if (shortcut.sensitive && !await requestConfirmation({ title: "Open sensitive link?", message: `This shortcut uses the sensitive ${shortcut.scheme}: scheme. Only continue if you trust it.`, confirmLabel: "Open link", danger: true })) {
         popup.close();
         return;
       }
@@ -1714,6 +1837,52 @@ function App({ session }: { session: AuthSession | null }) {
       setContextMenu(null);
     } catch {
       setError("The file could not be downloaded.");
+    }
+  }
+
+  async function copyDeepLink(entry: DesktopEntry) {
+    const segment = entry.parentId === null ? projectLogicalPosition(entry.position, desktopSizeRef.current).segment : activeSegment;
+    const target = entry.kind === "folder"
+      ? { desktopId: activeDesktopIdRef.current, ...segment, explorerFolderId: entry.id }
+      : { desktopId: activeDesktopIdRef.current, ...segment, fileId: entry.id };
+    const url = new URL(window.location.href);
+    url.hash = formatDesktopRoute(target);
+    try {
+      await navigator.clipboard.writeText(url.href);
+      setNotice(`Link to ${entry.name} copied`);
+      setContextMenu(null);
+    } catch {
+      setError("The browser did not allow Hiraya to copy this link.");
+    }
+  }
+
+  async function changeOfflineAvailability(file: FileEntry, available: boolean) {
+    if (offlineBusyId) return;
+    setOfflineBusyId(file.id);
+    setError("");
+    try {
+      if (available) await makeFileAvailableOffline(file.id);
+      else await removeFileFromOfflineCache(file.id);
+      setOfflineAvailability((current) => ({ ...current, [file.id]: available }));
+      setNotice(available ? `${file.name} is available offline` : `Offline copy of ${file.name} removed`);
+      setContextMenu(null);
+    } catch (availabilityError) {
+      setError(availabilityError instanceof Error ? availabilityError.message : "Offline availability could not be changed.");
+    } finally {
+      setOfflineBusyId(null);
+    }
+  }
+
+  async function undoMoveToTrash() {
+    const pending = undoTrash;
+    if (!pending) return;
+    try {
+      if (activeDesktopIdRef.current !== pending.desktopId && !await activateDesktop(pending.desktopId)) return;
+      for (const id of pending.rootIds) await restoreTrash(pending.desktopId, id, "original");
+      setUndoTrash(null);
+      setNotice(`${pending.label} restored`);
+    } catch (restoreError) {
+      setError(restoreError instanceof Error ? restoreError.message : "The Trash move could not be undone.");
     }
   }
 
@@ -1825,6 +1994,44 @@ function App({ session }: { session: AuthSession | null }) {
     setFocusedApp(nextApp?.id ?? null);
     navigateRoute(routeForApp(nextApp, { ...currentRoute, ...segment }), mode);
   }
+
+  function appIsMaximized(app: RunningApp) {
+    const local = projectLogicalPosition(app.bounds, desktopSizeRef.current).local;
+    return local.x === 0 && local.y === 0 && app.bounds.width === desktopSizeRef.current.width && app.bounds.height === desktopSizeRef.current.height;
+  }
+
+  function toggleMaximizeApp(id: string) {
+    const app = runningAppsRef.current.find((candidate) => candidate.id === id);
+    if (!app) return;
+    const size = desktopSizeRef.current;
+    const segment = projectLogicalPosition(app.bounds, size).segment;
+    const restored = restoredWindowBoundsRef.current.get(id);
+    const maximized = appIsMaximized(app);
+    const fallback = initialWindowBounds(size, app.kind === "file" ? { width: 920, height: 680, minWidth: 420, minHeight: 320 } : { width: 720, height: 590, minWidth: 360, minHeight: 280 });
+    const bounds = maximized
+      ? restored ?? { ...fallback, ...restoreLogicalPosition(fallback, segment, size) }
+      : { ...restoreLogicalPosition({ x: 0, y: 0 }, segment, size), width: size.width, height: size.height };
+    if (!maximized) restoredWindowBoundsRef.current.set(id, app.bounds);
+    else restoredWindowBoundsRef.current.delete(id);
+    updateRunningApps((current) => current.map((candidate) => candidate.id === id ? { ...candidate, bounds } : candidate));
+    focusApp(id);
+  }
+
+  function moveAppToArea(id: string, direction: "left" | "right" | "up" | "down") {
+    const app = runningAppsRef.current.find((candidate) => candidate.id === id);
+    if (!app) return;
+    const size = desktopSizeRef.current;
+    const projection = projectLogicalPosition(app.bounds, size);
+    const segment = {
+      column: projection.segment.column + (direction === "left" ? -1 : direction === "right" ? 1 : 0),
+      row: projection.segment.row + (direction === "up" ? -1 : direction === "down" ? 1 : 0),
+    };
+    const moved = { ...app, bounds: { ...app.bounds, ...restoreLogicalPosition(projection.local, segment, size) } };
+    updateRunningApps((current) => current.map((candidate) => candidate.id === id ? moved : candidate));
+    goToSegment(segment, "push", moved);
+  }
+
+  windowCommandRef.current = { maximize: toggleMaximizeApp, move: moveAppToArea };
 
   function edgeAt(clientX: number, clientY: number) {
     const desktop = desktopRef.current;
@@ -2188,16 +2395,55 @@ function App({ session }: { session: AuthSession | null }) {
     }
   }
 
-  const activeApps = runningApps.filter((app) => appIsInSegment(app, activeSegment));
+  function runningAppLabel(app: RunningApp) {
+    const entry = app.kind === "file" ? entryIndex.byId.get(app.fileId) : app.kind === "properties" ? entryIndex.byId.get(app.entryId) : app.kind === "explorer" && app.folderId ? entryIndex.byId.get(app.folderId) : null;
+    return app.kind === "settings" ? "Settings" : app.kind === "properties" ? `${entry?.name ?? "Item"} properties` : app.kind === "explorer" ? entry?.name ?? activeDesktopName : entry?.name ?? app.file?.name ?? "File";
+  }
+
+  const windowItems: WindowListItem[] = runningApps.map((app) => {
+    const area = segmentForApp(app);
+    const areaIndex = visibleSegments.findIndex((candidate) => candidate.key === segmentKey(area));
+    return { id: app.id, title: runningAppLabel(app), areaId: segmentKey(area), areaLabel: `Area ${areaIndex >= 0 ? areaIndex + 1 : `${area.column}, ${area.row}`}`, minimized: app.minimized };
+  });
+  const searchCommands: SearchPaletteCommand[] = [
+    { id: "new-file", label: "New text file", keywords: ["create"] },
+    { id: "new-folder", label: "New folder", keywords: ["create directory"] },
+    { id: "upload", label: "Upload files", keywords: ["import add"] },
+    { id: "trash", label: "Open Trash", keywords: ["deleted restore"] },
+    { id: "settings", label: "Open Settings" },
+    { id: "windows", label: "Show all windows", keywords: ["areas"] },
+    { id: "shortcuts", label: "Show keyboard shortcuts", keywords: ["keys help"] },
+    { id: "sync", label: "Show sync status", keywords: ["offline queue issues"] },
+  ];
+  const keyboardShortcuts: KeyboardShortcut[] = [
+    { id: "search", group: "Navigation", label: "Search files, windows, and commands", keys: ["Ctrl/⌘", "K"] },
+    { id: "shortcuts", group: "Navigation", label: "Show keyboard shortcuts", keys: ["?"] },
+    { id: "select-all", group: "Files", label: "Select all in the current view", keys: ["Ctrl/⌘", "A"] },
+    { id: "copy", group: "Files", label: "Copy selected items", keys: ["Ctrl/⌘", "C"] },
+    { id: "paste", group: "Files", label: "Paste items", keys: ["Ctrl/⌘", "V"] },
+    { id: "trash", group: "Files", label: "Move selected items to Trash", keys: ["Delete"] },
+    { id: "save", group: "Editor", label: "Save the open file", keys: ["Ctrl/⌘", "S"] },
+    { id: "maximize", group: "Windows", label: "Maximize or restore focused window", keys: ["Alt", "Enter"] },
+    { id: "move-window", group: "Windows", label: "Move focused window between areas", keys: ["Alt", "Arrow key"] },
+    { id: "close", group: "Windows", label: "Close the top panel or focused window", keys: ["Escape"] },
+  ];
+
+  function runSearchCommand(commandId: string) {
+    if (commandId === "new-file") setDialog({ type: "create-file", parentId: null });
+    else if (commandId === "new-folder") setDialog({ type: "create-folder", parentId: null });
+    else if (commandId === "upload") chooseUpload(null);
+    else if (commandId === "settings") openSettingsWindow();
+    else if (["trash", "windows", "shortcuts", "sync"].includes(commandId)) setActivePanel(commandId as "trash" | "windows" | "shortcuts" | "sync");
+  }
 
   return (
     <main className="desktop-shell" data-theme={isBuiltinThemeId(appearance.selectedThemeId) ? appearance.selectedThemeId : "custom"} style={themeStyle(activeTheme)}>
       <header className="menu-bar">
         {activeDesktopId && <DesktopSwitcher desktops={desktops} activeDesktopId={activeDesktopId} disabled={loading} quota={catalogQuota} quotaStale={syncStatus === "offline"} onSwitch={(id) => void activateDesktop(id)} onCreate={createDesktop} onRename={renameDesktop} onDelete={deleteDesktop} />}
         <nav className="taskbar" aria-label="Open windows">
-          {activeApps.map((app) => {
+          {runningApps.map((app) => {
             const entry = app.kind === "file" ? entryIndex.byId.get(app.fileId) : app.kind === "properties" ? entryIndex.byId.get(app.entryId) : app.kind === "explorer" && app.folderId ? entryIndex.byId.get(app.folderId) : null;
-            const label = app.kind === "settings" ? "Settings" : app.kind === "properties" ? `${entry?.name ?? "Item"} properties` : app.kind === "explorer" ? entry?.name ?? activeDesktopName : entry?.name ?? app.file?.name ?? "File";
+            const label = runningAppLabel(app);
             return (
               <button
                 className="taskbar__entry"
@@ -2230,13 +2476,24 @@ function App({ session }: { session: AuthSession | null }) {
             <button type="button" aria-label="New text file" disabled={!canMutate} onClick={() => setDialog({ type: "create-file", parentId: null })}><Plus size={15} weight="bold" /> <span>New text file</span></button>
             <button type="button" aria-label="New folder" disabled={!canMutate} onClick={() => setDialog({ type: "create-folder", parentId: null })}><FolderPlus size={16} /> <span>New folder</span></button>
             <button type="button" aria-label="Upload files" disabled={!canMutate} onClick={() => chooseUpload(null)}><UploadSimple size={16} /> <span>Upload files</span></button>
+            <button type="button" aria-label="Search files, windows, and commands" title="Search (Ctrl/Command K)" onClick={() => setActivePanel("search")}><MagnifyingGlass size={16} /></button>
+            <button type="button" aria-label="Show all windows" title="All windows" onClick={() => setActivePanel("windows")}><SquaresFour size={16} /></button>
+            <button type="button" aria-label="Open Trash" title="Trash" onClick={() => setActivePanel("trash")}><Trash size={16} /></button>
           </>}
-          <button type="button" aria-label="Open settings" title="Settings" onClick={() => openSettingsWindow()}><GearSix size={16} /> <span>Settings</span></button>
+          {isMobile ? <MobileHeaderMenu label="Navigation and tools" icon={<GearSix size={18} />}>
+            {(dismiss) => <>
+              <button type="button" onClick={() => { dismiss(); setActivePanel("search"); }}><MagnifyingGlass size={17} /> Search</button>
+              <button type="button" onClick={() => { dismiss(); setActivePanel("windows"); }}><SquaresFour size={17} /> All windows</button>
+              <button type="button" onClick={() => { dismiss(); setActivePanel("trash"); }}><Trash size={17} /> Trash</button>
+              <button type="button" onClick={() => { dismiss(); setActivePanel("shortcuts"); }}><Keyboard size={17} /> Keyboard shortcuts</button>
+              <button type="button" onClick={() => { dismiss(); openSettingsWindow(); }}><GearSix size={17} /> Settings</button>
+            </>}
+          </MobileHeaderMenu> : <button type="button" aria-label="Open settings" title="Settings" onClick={() => openSettingsWindow()}><GearSix size={16} /> <span>Settings</span></button>}
           {session && <AccountMenu session={session} />}
-          <span className="menu-bar__sync" data-status={syncIndicatorStatus} role="status" title={syncIndicatorStatus === "local" ? "Changes are saved only in this browser" : syncIndicatorStatus === "syncing" ? "Synchronizing saved changes" : syncIndicatorStatus === "online" ? "Changes are saved and synchronized" : syncIndicatorStatus === "connecting" ? "Connecting to the Hiraya server" : syncIndicatorStatus === "blocked" ? "A queued change needs attention before synchronization can continue" : "Offline changes are saved and will synchronize after reconnecting"}>
+          <button className="menu-bar__sync" data-status={syncIndicatorStatus} type="button" aria-label="Open sync status" title={syncIndicatorStatus === "local" ? "Changes are saved only in this browser" : syncIndicatorStatus === "syncing" ? "Synchronizing saved changes" : syncIndicatorStatus === "online" ? "Changes are saved and synchronized" : syncIndicatorStatus === "connecting" ? "Connecting to the Hiraya server" : syncIndicatorStatus === "blocked" ? "A queued change needs attention before synchronization can continue" : "Offline changes are saved and will synchronize after reconnecting"} onClick={() => setActivePanel("sync")}>
             {syncIndicatorStatus === "local" ? <HardDrive size={15} /> : syncIndicatorStatus === "online" ? <CloudCheck size={15} /> : syncIndicatorStatus === "blocked" ? <WarningCircle size={15} weight="fill" /> : syncIndicatorStatus === "connecting" || syncIndicatorStatus === "syncing" ? <SpinnerGap size={15} /> : <CloudSlash size={15} />}
             <span>{syncIndicatorStatus === "local" ? "Saved locally" : syncIndicatorStatus === "syncing" ? "Syncing" : syncIndicatorStatus === "online" ? "Synced" : syncIndicatorStatus === "connecting" ? "Connecting" : syncIndicatorStatus === "blocked" ? "Sync blocked" : "Offline"}</span>
-          </span>
+          </button>
           <span className="menu-bar__clock">{formatClock(clock)}</span>
         </div>
       </header>
@@ -2376,6 +2633,10 @@ function App({ session }: { session: AuthSession | null }) {
                 onDragEnd={finishWindowEdgeNavigation}
                 onMinimize={minimizeApp}
                 onClose={requestCloseApp}
+                maximized={appIsMaximized(app)}
+                canMoveArea={!isMobile}
+                onToggleMaximize={toggleMaximizeApp}
+                onMoveArea={moveAppToArea}
                  titleArea={<div><span className="window-kicker">{app.kind === "file" ? app.editMode || file && ["text", "url"].includes(fileCapabilities(file).preview) ? "Text editor" : file && fileCapabilities(file).preview === "markdown" ? "Markdown" : "Preview" : app.kind === "explorer" ? "Folder" : app.kind === "properties" ? "Properties" : "Hiraya desktop"}</span><h2 id={titleId}>{title}</h2></div>}
               >
                 {(headerElements) => <>
@@ -2446,6 +2707,10 @@ function App({ session }: { session: AuthSession | null }) {
                     rootLabel={activeDesktopName}
                     ancestors={entryIndex.ancestors(propertiesEntry.id)}
                     descendants={propertiesEntry.kind === "folder" ? entryIndex.descendants(propertiesEntry.id) : []}
+                    offlineAvailable={propertiesEntry.kind === "file" ? offlineAvailability[propertiesEntry.id] ?? null : undefined}
+                    offlineBusy={offlineBusyId === propertiesEntry.id}
+                    onMakeAvailableOffline={propertiesEntry.kind === "file" && syncStatus !== "local" ? () => void changeOfflineAvailability(propertiesEntry, true) : undefined}
+                    onRemoveOfflineCopy={propertiesEntry.kind === "file" && syncStatus !== "local" ? () => void changeOfflineAvailability(propertiesEntry, false) : undefined}
                   />
                 )}
                 {app.kind === "settings" && (
@@ -2473,6 +2738,19 @@ function App({ session }: { session: AuthSession | null }) {
                     serverBuildTimestamp={serverBuildTimestamp}
                     onListActivity={listActivity}
                     onSubscribeToActivity={subscribeToActivityChanges}
+                    canOpenAffectedEntries={(activity) => canOpenActivity(activity, activeDesktopIdRef.current, entriesRef.current, desktops.map((desktop) => desktop.id))}
+                    onOpenAffectedEntries={async (activity, ids) => {
+                      if (!activity.desktopId) return;
+                      if (activity.desktopId !== activeDesktopIdRef.current && !await activateDesktop(activity.desktopId)) return;
+                       const affected = ids.map((id) => entriesRef.current.find((entry) => entry.id === id)).filter((entry): entry is DesktopEntry => Boolean(entry));
+                       if (affected.length === 1) handleOpen(affected[0]);
+                      else if (affected.length > 1) {
+                        replaceSelection("desktop", affected.map((entry) => entry.id));
+                         const root = affected.find((entry) => entry.parentId === null);
+                         if (root) goToSegment(projectLogicalPosition(root.position, desktopSizeRef.current).segment);
+                      } else setError("The entries affected by this activity no longer exist.");
+                    }}
+                    onConfirmThemeDelete={(theme) => requestConfirmation({ title: `Delete ${theme.name}?`, message: `Delete the custom theme “${theme.name}”?`, confirmLabel: "Delete theme", danger: true })}
                     onLayoutPreview={previewLayout}
                     onLayoutChange={persistLayout}
                     onWallpaperUpload={handleWallpaperUpload}
@@ -2503,6 +2781,7 @@ function App({ session }: { session: AuthSession | null }) {
               <button type="button" onClick={() => { setEditingAreas(false); setDraggedSegmentKey(null); }}><Check size={12} /> Done</button>
             </div>
           )}
+          <span className="desktop-minimap__summary">Area {Math.max(1, visibleSegments.findIndex((candidate) => candidate.key === activeSegmentKey) + 1)} of {visibleSegments.length}</span>
           <div className="desktop-minimap__grid" style={{ "--minimap-columns": segmentColumns, "--minimap-rows": segmentRows } as React.CSSProperties}>
             {visibleSegments.map((desktopSegment, visibleIndex) => {
               const column = desktopSegment.segment.column - minColumn;
@@ -2565,8 +2844,9 @@ function App({ session }: { session: AuthSession | null }) {
 
       {(error || notice) && <div className="notification-stack">
         {error && <div className="error-banner" role="alert"><WarningCircle size={19} weight="fill" /><span>{error}</span><button type="button" onClick={() => setError("")} aria-label="Dismiss error">Dismiss</button></div>}
-        {notice && <div className="notice" role="status">{notice}</div>}
+        {notice && <div className="notice" role="status"><span>{notice}</span>{undoTrash && <button type="button" onClick={() => void undoMoveToTrash()}>Undo</button>}<button type="button" aria-label="Dismiss notice" onClick={() => { setNotice(""); setUndoTrash(null); }}><X size={14} /></button></div>}
       </div>}
+      {importProgress && <div className="import-progress" role="status" aria-live="polite"><SpinnerGap size={18} /><div><strong>{importProgress.phase === "preparing" ? "Preparing import" : importProgress.phase === "saving" ? "Saving files locally" : "Saving and synchronizing files"}</strong><span>{importProgress.count} {importProgress.count === 1 ? "file" : "files"}. This API does not support safe cancellation or byte-level progress.</span></div></div>}
       {showUpdateToast && (
         <UpdateToast
           applying={updateApplying}
@@ -2585,11 +2865,16 @@ function App({ session }: { session: AuthSession | null }) {
           onRename={() => { setDialog({ type: "rename", entryId: contextMenuEntry.id }); setContextMenu(null); }}
           onDownload={contextMenuEntry.kind === "file" ? () => void download(contextMenuEntry) : undefined}
           onCopy={() => void copySelection()}
+          onCopyLink={contextMenuEntries.length === 1 ? () => void copyDeepLink(contextMenuEntry) : undefined}
+          offlineAvailable={contextMenuEntry.kind === "file" ? offlineAvailability[contextMenuEntry.id] ?? null : undefined}
+          onMakeAvailableOffline={contextMenuEntry.kind === "file" && syncStatus !== "local" ? () => void changeOfflineAvailability(contextMenuEntry, true) : undefined}
+          onRemoveOfflineCopy={contextMenuEntry.kind === "file" && syncStatus !== "local" ? () => void changeOfflineAvailability(contextMenuEntry, false) : undefined}
           onPasteInto={contextMenuEntry.kind === "folder" && clipboardRef.current ? () => void beginPaste(contextMenuEntry.id) : undefined}
           onMove={() => { setMoveDialogSubmitting(false); setMoveDialogEntryIds(contextMenuEntries.map((entry) => entry.id)); setContextMenu(null); }}
           onProperties={() => { openPropertiesWindow(contextMenuEntry.id); setContextMenu(null); }}
           onDelete={() => { setDialog({ type: "delete", entryIds: contextMenuEntries.map((entry) => entry.id) }); setContextMenu(null); }}
           selectionCount={contextMenuEntries.length}
+          trashSupported={syncStatus !== "local"}
           readOnly={!canMutate}
         />
       )}
@@ -2616,7 +2901,7 @@ function App({ session }: { session: AuthSession | null }) {
           readOnly={!canMutate}
         />
       )}
-      {dialog && (!(dialog.type === "rename" || dialog.type === "delete") || dialogEntry) && <FileDialog dialog={dialog} entry={dialogEntry} entryCount={dialog.type === "delete" ? dialog.entryIds.length : 1} onClose={() => setDialog(null)} onSubmit={handleDialogSubmit} />}
+      {dialog && (!(dialog.type === "rename" || dialog.type === "delete") || dialogEntry) && <FileDialog dialog={dialog} entry={dialogEntry} entryCount={dialog.type === "delete" ? dialog.entryIds.length : 1} trashSupported={syncStatus !== "local"} onClose={() => setDialog(null)} onSubmit={handleDialogSubmit} />}
       {moveDialogEntries.length > 0 && (
         <MoveDialog
           desktops={desktops.map((desktop) => ({ ...desktop, folders: (desktopMoveFolders[desktop.id] ?? []).filter((entry): entry is Extract<DesktopEntry, { kind: "folder" }> => entry.kind === "folder") }))}
@@ -2643,6 +2928,23 @@ function App({ session }: { session: AuthSession | null }) {
         />
       )}
       {pendingPaste && <PasteConflictDialog roots={pendingPaste.snapshot.selectedRootIds.map((id) => pendingPaste.snapshot.entries.find((entry) => entry.id === id)!)} existingNames={entries.filter((entry) => entry.parentId === pendingPaste.parentId).map((entry) => entry.name)} onClose={() => setPendingPaste(null)} onPaste={(names) => commitPaste(pendingPaste.snapshot, pendingPaste.parentId, pendingPaste.position, names)} />}
+      {activePanel === "search" && <SearchCommandPalette entries={entries} windows={windowItems.map((window) => ({ id: window.id, title: window.title, detail: window.areaLabel }))} commands={searchCommands} onOpenEntry={handleOpen} onFocusWindow={focusApp} onRunCommand={runSearchCommand} onClose={() => setActivePanel(null)} />}
+      {activePanel === "sync" && <PanelDialog title="Sync status" onClose={() => setActivePanel(null)}><SyncIssuesPanel status={syncStatus} records={outboxRecords} lastSyncedAt={lastSyncedAt} affectedLabels={(record) => {
+        const operation = record.operation;
+        const ids = operation.kind === "delete" ? [operation.entryId]
+          : operation.kind === "delete-entries" || operation.kind === "move-entries" || operation.kind === "entry-transfer" ? operation.entryIds
+            : operation.kind === "update-entry" || operation.kind === "save-content" ? [operation.entry.id]
+              : operation.kind === "create" ? operation.entries.map((entry) => entry.id) : [];
+        return ids.map((id) => entriesRef.current.find((entry) => entry.id === id)?.name).filter((name): name is string => Boolean(name));
+      }} onRetry={(record) => void retryBlockedOutboxRecord(record.operationId).catch((reason) => setError(reason instanceof Error ? reason.message : "The queued change could not be retried."))} onDiscard={(record) => void requestConfirmation({ title: "Discard queued change?", message: "Discard this blocked local change and restore the server version? This cannot be undone.", confirmLabel: "Discard change", danger: true }).then(async (confirmed) => {
+        if (!confirmed) return;
+        try { setOutboxRecords(await discardBlockedOutboxRecord(record.operationId)); }
+        catch (reason) { setError(reason instanceof Error ? reason.message : "The queued change could not be discarded."); }
+      })} /></PanelDialog>}
+      {activePanel === "windows" && <PanelDialog title="All windows" onClose={() => setActivePanel(null)}><AllWindowsPanel windows={windowItems} activeAreaId={activeSegmentKey} focusedWindowId={focusedAppId ?? undefined} onFocusWindow={(id) => { focusApp(id); setActivePanel(null); }} onNavigateArea={(id) => { const [row, column] = id.split(":").map(Number); if (Number.isSafeInteger(row) && Number.isSafeInteger(column)) goToSegment({ row, column }); }} /></PanelDialog>}
+      {activePanel === "shortcuts" && <PanelDialog title="Keyboard shortcuts" onClose={() => setActivePanel(null)}><KeyboardShortcutsPanel shortcuts={keyboardShortcuts} /></PanelDialog>}
+      {activePanel === "trash" && <PanelDialog title="Trash" onClose={() => setActivePanel(null)}><TrashWindow onListTrash={() => listTrash(activeDesktopId)} onRestore={async (item, destination) => { await restoreTrash(activeDesktopId, item.entry.id, destination); setNotice(`${item.entry.name} restored`); }} onPermanentlyDelete={async (item) => { await permanentlyDeleteTrash(activeDesktopId, item.entry.id); setNotice(`${item.entry.name} permanently deleted`); }} onRequestPermanentDelete={(item: TrashItem, confirmedDelete) => { void requestConfirmation({ title: `Delete ${item.entry.name} permanently?`, message: "This item and everything inside it will be permanently deleted. This cannot be undone.", confirmLabel: "Delete permanently", danger: true }).then((confirmed) => { if (confirmed) void confirmedDelete().catch(() => undefined); }); }} /></PanelDialog>}
+      {confirmation && <ConfirmationDialog {...confirmation} onClose={resolveConfirmation} />}
     </main>
   );
 }

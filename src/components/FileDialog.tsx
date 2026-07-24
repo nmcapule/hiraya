@@ -9,9 +9,10 @@ type Props = {
   entryCount?: number;
   onClose: () => void;
   onSubmit: (name: string) => Promise<void>;
+  trashSupported?: boolean;
 };
 
-export function FileDialog({ dialog, entry, entryCount = 1, onClose, onSubmit }: Props) {
+export function FileDialog({ dialog, entry, entryCount = 1, onClose, onSubmit, trashSupported = true }: Props) {
   const creatingFile = dialog.type === "create-file";
   const creatingFolder = dialog.type === "create-folder";
   const [name, setName] = useState(creatingFile ? "untitled.txt" : creatingFolder ? "New folder" : entry?.name ?? "");
@@ -34,7 +35,8 @@ export function FileDialog({ dialog, entry, entryCount = 1, onClose, onSubmit }:
   }
 
   const noun = entry?.kind === "folder" || creatingFolder ? "folder" : "file";
-  const title = creatingFile ? "New text file" : creatingFolder ? "New folder" : dialog.type === "rename" ? `Rename ${noun}` : entryCount > 1 ? `Delete ${entryCount} items` : `Delete ${noun}`;
+  const deleteLabel = trashSupported ? "Move to Trash" : "Delete permanently";
+  const title = creatingFile ? "New text file" : creatingFolder ? "New folder" : dialog.type === "rename" ? `Rename ${noun}` : entryCount > 1 ? `${deleteLabel} (${entryCount} items)` : `${deleteLabel}: ${noun}`;
 
   return (
     <div ref={backdropRef} className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && !submitting && onClose()}>
@@ -51,8 +53,10 @@ export function FileDialog({ dialog, entry, entryCount = 1, onClose, onSubmit }:
         <form onSubmit={handleSubmit}>
           {dialog.type === "delete" ? (
             <p className="dialog-message">
-              {entryCount > 1 ? <>Delete <strong>{entryCount} selected items</strong>?</> : <>Delete <strong>{entry?.name}</strong>?</>}
-              {entryCount > 1 || entry?.kind === "folder" ? " Everything inside selected folders will also be deleted. This cannot be undone." : " This cannot be undone."}
+              {trashSupported
+                ? entryCount > 1 ? <>Move <strong>{entryCount} selected items</strong> to Trash?</> : <>Move <strong>{entry?.name}</strong> to Trash?</>
+                : entryCount > 1 ? <>Permanently delete <strong>{entryCount} selected items</strong>?</> : <>Permanently delete <strong>{entry?.name}</strong>?</>}
+              {trashSupported ? entryCount > 1 || entry?.kind === "folder" ? " Everything inside selected folders will move with them." : " You can restore it from Trash." : " This cannot be undone."}
             </p>
           ) : (
             <>
@@ -73,9 +77,9 @@ export function FileDialog({ dialog, entry, entryCount = 1, onClose, onSubmit }:
           )}
           {error && <p className="form-error" id="file-name-error" role="alert">{error}</p>}
           <div className="dialog-actions">
-            <button className="button button--quiet" type="button" onClick={onClose} disabled={submitting}>Cancel</button>
-            <button className={`button ${dialog.type === "delete" ? "button--danger" : "button--primary"}`} type="submit" disabled={submitting} autoFocus={dialog.type === "delete"}>
-              {submitting ? (dialog.type === "delete" ? "Deleting..." : "Saving...") : creatingFile ? "Create file" : creatingFolder ? "Create folder" : dialog.type === "rename" ? "Rename" : "Delete"}
+            <button className="button button--quiet" type="button" onClick={onClose} disabled={submitting} autoFocus={dialog.type === "delete"}>Cancel</button>
+            <button className={`button ${dialog.type === "delete" ? "button--danger" : "button--primary"}`} type="submit" disabled={submitting}>
+              {submitting ? (dialog.type === "delete" ? trashSupported ? "Moving..." : "Deleting..." : "Saving...") : creatingFile ? "Create file" : creatingFolder ? "Create folder" : dialog.type === "rename" ? "Rename" : deleteLabel}
             </button>
           </div>
         </form>

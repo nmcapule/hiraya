@@ -7,6 +7,7 @@ import {
   parseThemeDefinition,
   parseThemeState,
   resolveTheme,
+  themeContrastIssues,
   themeIconMetrics,
 } from "../src/lib/themes";
 
@@ -14,6 +15,27 @@ describe("themes", () => {
   test("all built-in definitions satisfy the shared theme contract", () => {
     for (const id of BUILTIN_THEME_IDS) {
       expect(parseThemeDefinition(BUILTIN_THEMES[id].definition)).toEqual(BUILTIN_THEMES[id].definition);
+      expect(themeContrastIssues(BUILTIN_THEMES[id].definition)).toEqual([]);
+    }
+  });
+
+  test("checks every themed text and indicator role", () => {
+    const definition = BUILTIN_THEMES[DEFAULT_THEME_ID].definition;
+    const cases: Array<[keyof typeof definition.colors, string]> = [
+      ["textMuted", "muted"],
+      ["chromeText", "chrome"],
+      ["accentText", "accent"],
+      ["selection", "selection"],
+      ["accent", "accent indicator"],
+      ["editorComment", "editor comment"],
+      ["editorKeyword", "editor keyword"],
+      ["editorString", "editor string"],
+    ];
+    for (const [key, issue] of cases) {
+      const colors = { ...definition.colors, [key]: key === "chromeText" || key === "accent" ? definition.colors.chrome : definition.colors.window };
+      if (key.startsWith("editor")) colors[key] = definition.colors.editorBackground;
+      if (key === "accentText") colors[key] = definition.colors.accent;
+      expect(themeContrastIssues({ ...definition, colors })).toContainEqual(expect.stringContaining(issue));
     }
   });
 

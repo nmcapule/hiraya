@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { ArrowClockwise, ArrowLeft, ArrowsOut, CaretRight, ClockCounterClockwise, CornersIn, CornersOut, ExportIcon, GlobeSimple, GridFour, ImageSquare, PaintBrush, UploadSimple } from "@phosphor-icons/react";
 import { ActivityLog } from "./ActivityLog";
 import type { ActivityPage, ActivityQuery } from "../lib/activity";
+import type { ActivityRecord } from "../lib/activity";
 import {
   BUILTIN_THEME_IDS,
   BUILTIN_THEMES,
@@ -70,6 +71,9 @@ type Props = {
   serverBuildTimestamp: string | null;
   onListActivity: (query?: ActivityQuery) => Promise<ActivityPage>;
   onSubscribeToActivity: (listener: () => void) => () => void;
+  onOpenAffectedEntries?: (activity: ActivityRecord, entryIds: readonly string[]) => void;
+  canOpenAffectedEntries?: (activity: ActivityRecord, entryIds: readonly string[]) => boolean;
+  onConfirmThemeDelete: (theme: CustomTheme) => Promise<boolean>;
   onLayoutPreview: (layout: DesktopLayout, desktopId: string) => void;
   onLayoutChange: (layout: DesktopLayout, desktopId: string) => Promise<void>;
   onWallpaperUpload: (file: File, layout: DesktopLayout, desktopId: string) => Promise<void>;
@@ -152,6 +156,9 @@ export function SettingsWindow({
   serverBuildTimestamp,
   onListActivity,
   onSubscribeToActivity,
+  onOpenAffectedEntries,
+  canOpenAffectedEntries,
+  onConfirmThemeDelete,
   onLayoutPreview,
   onLayoutChange,
   onWallpaperUpload,
@@ -282,7 +289,7 @@ export function SettingsWindow({
   };
 
   const deleteTheme = async (theme: CustomTheme) => {
-    if (mutationsDisabled || !window.confirm(`Delete “${theme.name}”?`)) return;
+    if (mutationsDisabled || !await onConfirmThemeDelete(theme)) return;
     setSaving(true);
     try {
       await onThemeDelete(theme.id);
@@ -622,7 +629,7 @@ export function SettingsWindow({
                 <p>Accepted changes from this desktop, newest first.</p>
               </div>
             </header>
-            <ActivityLog onListActivity={onListActivity} onSubscribe={onSubscribeToActivity} />
+            <ActivityLog onListActivity={onListActivity} onSubscribe={onSubscribeToActivity} onOpenAffectedEntries={onOpenAffectedEntries} canOpenAffectedEntries={canOpenAffectedEntries} />
           </div>
         )}
       </div>

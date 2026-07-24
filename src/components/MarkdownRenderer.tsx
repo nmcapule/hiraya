@@ -8,6 +8,7 @@ type Props = {
   externalEmbeddedPreviews: boolean;
   onResolveLink: (path: string) => Promise<{ file: FileEntry; blob: Blob }>;
   onOpenLinkedFile: (file: FileEntry) => void;
+  onLinkError?: (message: string) => void;
 };
 
 function isExternal(value: string) {
@@ -42,18 +43,25 @@ function LocalImage({ src, alt, externalEmbeddedPreviews, onResolveLink }: {
   return resolvedSrc ? <img src={resolvedSrc} alt={alt} /> : <span className="markdown-renderer__missing-media">{alt || src}</span>;
 }
 
-export function MarkdownRenderer({ content, externalEmbeddedPreviews, onResolveLink, onOpenLinkedFile }: Props) {
+export function MarkdownRenderer({ content, externalEmbeddedPreviews, onResolveLink, onOpenLinkedFile, onLinkError }: Props) {
+  const [linkError, setLinkError] = useState("");
+
   async function openLocalLink(href: string) {
+    setLinkError("");
+    onLinkError?.("");
     try {
       const { file } = await onResolveLink(href);
       onOpenLinkedFile(file);
-    } catch {
-      // Broken desktop links remain inert instead of navigating away from the catalog.
+    } catch (error) {
+      const message = error instanceof Error ? error.message : `Could not open ${href}.`;
+      setLinkError(message);
+      onLinkError?.(message);
     }
   }
 
   return (
     <article className="markdown-renderer">
+      {linkError && !onLinkError && <p className="markdown-renderer__missing-media" role="alert">{linkError}</p>}
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{

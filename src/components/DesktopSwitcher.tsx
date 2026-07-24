@@ -44,15 +44,20 @@ export function DesktopSwitcher({ desktops, activeDesktopId, disabled, quota, qu
   useEffect(() => {
     if (!open) return;
     const onPointerDown = (event: PointerEvent) => { if (!rootRef.current?.contains(event.target as Node)) close(false); };
+    const onFocusIn = (event: FocusEvent) => { if (!rootRef.current?.contains(event.target as Node)) close(false); };
     const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") { event.preventDefault(); event.stopImmediatePropagation(); close(); } };
     window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("focusin", onFocusIn);
     window.addEventListener("keydown", onKeyDown);
-    return () => { window.removeEventListener("pointerdown", onPointerDown); window.removeEventListener("keydown", onKeyDown); };
+    return () => { window.removeEventListener("pointerdown", onPointerDown); window.removeEventListener("focusin", onFocusIn); window.removeEventListener("keydown", onKeyDown); };
   }, [open]);
 
   useEffect(() => {
     if (editing) inputRef.current?.focus();
-    else if (open) requestAnimationFrame(() => rootRef.current?.querySelector<HTMLElement>(".desktop-switcher__list button")?.focus());
+    else if (open) requestAnimationFrame(() => (
+      rootRef.current?.querySelector<HTMLElement>("[data-desktop-switch-target][aria-current='true']")
+      ?? rootRef.current?.querySelector<HTMLElement>("[data-desktop-switch-target]")
+    )?.focus());
   }, [editing, open]);
 
   async function submit(event: React.FormEvent) {
@@ -70,7 +75,22 @@ export function DesktopSwitcher({ desktops, activeDesktopId, disabled, quota, qu
   }
 
   return <div className="desktop-switcher" ref={rootRef}>
-    <button ref={triggerRef} className="brand-mark desktop-switcher__trigger" type="button" disabled={disabled} aria-haspopup="dialog" aria-expanded={open} aria-controls="desktop-switcher-dialog" onClick={() => setOpen((value) => !value)}>
+    <button
+      ref={triggerRef}
+      className="brand-mark desktop-switcher__trigger"
+      type="button"
+      disabled={disabled}
+      aria-haspopup="dialog"
+      aria-expanded={open}
+      aria-controls={open ? "desktop-switcher-dialog" : undefined}
+      onClick={() => { if (open) close(false); else setOpen(true); }}
+      onKeyDown={(event) => {
+        if (event.key === "ArrowDown" && !open) {
+          event.preventDefault();
+          setOpen(true);
+        }
+      }}
+    >
       <span className="brand-mark__shape"><span /></span><strong>Hiraya</strong><span className="desktop-switcher__name">{active?.name}</span><CaretDown size={13} />
     </button>
     {open && <section id="desktop-switcher-dialog" className="desktop-switcher__panel" role="dialog" aria-modal="false" aria-labelledby="desktop-switcher-title">
@@ -80,7 +100,7 @@ export function DesktopSwitcher({ desktops, activeDesktopId, disabled, quota, qu
           const protectedReason = desktopDeleteProtection(desktops.length);
           const descriptionId = `desktop-delete-${desktop.id.replaceAll(/[^a-zA-Z0-9_-]/g, "-")}`;
           return <div className="desktop-switcher__row" role="listitem" key={desktop.id} data-active={desktop.id === activeDesktopId || undefined}>
-          <button type="button" aria-pressed={desktop.id === activeDesktopId} onClick={() => { onSwitch(desktop.id); close(); }}>
+           <button type="button" data-desktop-switch-target aria-current={desktop.id === activeDesktopId ? "true" : undefined} onClick={() => { onSwitch(desktop.id); close(); }}>
             <Desktop size={18} weight="duotone" /><span>{desktop.name}</span>{desktop.id === activeDesktopId && <Check size={15} />}
           </button>
           <button type="button" className="icon-button" aria-label={`Rename ${desktop.name}`} onClick={() => setEditing({ mode: "rename", id: desktop.id, value: desktop.name })}><PencilSimple size={15} /></button>

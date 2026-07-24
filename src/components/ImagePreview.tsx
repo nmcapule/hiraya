@@ -5,6 +5,7 @@ type Props = {
   alt: string;
   zoom: "fit" | number;
   onZoomChange: (zoom: number) => void;
+  onFit?: () => void;
 };
 
 type Pan = {
@@ -36,13 +37,24 @@ function gestureDetails(points: Point[], viewport: HTMLDivElement) {
   };
 }
 
-export function ImagePreview({ src, alt, zoom, onZoomChange }: Props) {
+export function ImagePreview({ src, alt, zoom, onZoomChange, onFit }: Props) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const panRef = useRef<Pan | null>(null);
   const pointersRef = useRef(new Map<number, Point>());
   const pinchRef = useRef<Pinch | null>(null);
   const [naturalSize, setNaturalSize] = useState({ width: 0, height: 0 });
   const fitted = zoom === "fit";
+
+  function fittedZoom() {
+    const viewport = viewportRef.current;
+    if (!viewport || !naturalSize.width || !naturalSize.height) return 1;
+    return Math.min(1, viewport.clientWidth / naturalSize.width, viewport.clientHeight / naturalSize.height);
+  }
+
+  function changeZoom(multiplier: number) {
+    const current = fitted ? fittedZoom() : zoom;
+    onZoomChange(Math.round(Math.min(8, Math.max(0.01, current * multiplier)) * 1000) / 1000);
+  }
 
   useEffect(() => {
     const animationFrame = requestAnimationFrame(() => {
@@ -94,10 +106,33 @@ export function ImagePreview({ src, alt, zoom, onZoomChange }: Props) {
       className="image-preview"
       data-fitted={fitted || undefined}
       tabIndex={0}
-      aria-label={`Image preview: ${alt}. Use arrow keys to pan.`}
+      aria-label={fitted
+        ? `Image preview: ${alt}. Fit mode. Press plus or minus to zoom, or 0 for actual size.`
+        : `Image preview: ${alt}. Use arrow keys to pan, plus or minus to zoom, or 0 for actual size${onFit ? ", or F to fit" : ""}.`}
       onKeyDown={(event) => {
         const viewport = viewportRef.current;
-        if (!viewport || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "PageUp", "PageDown"].includes(event.key)) return;
+        if (!viewport) return;
+        if (event.key === "+" || event.key === "=") {
+          event.preventDefault();
+          changeZoom(1.25);
+          return;
+        }
+        if (event.key === "-") {
+          event.preventDefault();
+          changeZoom(0.8);
+          return;
+        }
+        if (event.key === "0") {
+          event.preventDefault();
+          onZoomChange(1);
+          return;
+        }
+        if (event.key.toLowerCase() === "f" && onFit) {
+          event.preventDefault();
+          onFit();
+          return;
+        }
+        if (fitted || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "PageUp", "PageDown"].includes(event.key)) return;
         event.preventDefault();
         const amount = event.key === "PageUp" || event.key === "PageDown" ? viewport.clientHeight * 0.8 : 48;
         viewport.scrollBy({

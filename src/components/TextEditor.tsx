@@ -29,6 +29,7 @@ type Props = {
   onSave: (value: string) => void;
   onResolveLink: (path: string) => Promise<LinkedFile>;
   onOpenLinkedFile: (file: FileEntry) => void;
+  onLinkError?: (message: string) => void;
 };
 
 function languageExtension(language: EditorLanguage): Extension {
@@ -282,6 +283,7 @@ function inlinePreviews(
 function inlineMarkdownLinks(
   resolveLink: (path: string) => Promise<LinkedFile>,
   openFile: (file: FileEntry) => void,
+  reportError: (message: string) => void,
 ): Extension {
   function buildDecorations(state: EditorState) {
     const decorations: Range<Decoration>[] = [];
@@ -316,8 +318,13 @@ function inlineMarkdownLinks(
       window.open(destination, "_blank", "noopener,noreferrer");
       return;
     }
+    element.removeAttribute("aria-invalid");
+    reportError("");
     void resolveLink(destination).then(({ file }) => openFile(file)).catch((error: unknown) => {
-      element.title = error instanceof Error ? error.message : `Could not open ${destination}.`;
+      const message = error instanceof Error ? error.message : `Could not open ${destination}.`;
+      element.title = message;
+      element.setAttribute("aria-invalid", "true");
+      reportError(message);
     });
   };
 
@@ -344,7 +351,7 @@ function inlineMarkdownLinks(
   ];
 }
 
-export function TextEditor({ file, value, settings, theme, externalEmbeddedPreviews, readOnly = false, onChange, onSave, onResolveLink, onOpenLinkedFile }: Props) {
+export function TextEditor({ file, value, settings, theme, externalEmbeddedPreviews, readOnly = false, onChange, onSave, onResolveLink, onOpenLinkedFile, onLinkError }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView>(null);
   const languageConfig = useRef(new Compartment());
@@ -357,11 +364,13 @@ export function TextEditor({ file, value, settings, theme, externalEmbeddedPrevi
   const onSaveRef = useRef(onSave);
   const resolveLinkRef = useRef(onResolveLink);
   const openLinkedFileRef = useRef(onOpenLinkedFile);
+  const linkErrorRef = useRef(onLinkError);
   const initialConfig = useRef({ value, fileName: file.name, language: editorLanguageFor(file.name, settings.language), fontSize: settings.fontSize, lineWrap: settings.lineWrap, theme, externalEmbeddedPreviews, readOnly });
   onChangeRef.current = onChange;
   onSaveRef.current = onSave;
   resolveLinkRef.current = onResolveLink;
   openLinkedFileRef.current = onOpenLinkedFile;
+  linkErrorRef.current = onLinkError;
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -389,6 +398,18 @@ export function TextEditor({ file, value, settings, theme, externalEmbeddedPrevi
         inlineMarkdownLinks(
           (path) => resolveLinkRef.current(path),
           (linkedFile) => openLinkedFileRef.current(linkedFile),
+          (message) => {
+            linkErrorRef.current?.(message);
+            if (linkErrorRef.current) return;
+            containerRef.current?.querySelector("[data-editor-link-error]")?.remove();
+            if (!message || !containerRef.current) return;
+            const alert = document.createElement("div");
+            alert.className = "window-error";
+            alert.dataset.editorLinkError = "true";
+            alert.role = "alert";
+            alert.textContent = message;
+            containerRef.current.prepend(alert);
+          },
         ),
       ],
     });

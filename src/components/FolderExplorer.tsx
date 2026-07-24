@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   ArrowLeft,
@@ -7,9 +7,16 @@ import {
   FilePlus,
   Folder,
   FolderPlus,
+  ListBullets,
+  MagnifyingGlass,
+  SortAscending,
+  SortDescending,
+  SquaresFour,
   UploadSimple,
+  X,
 } from "@phosphor-icons/react";
 import type { DesktopEntry, FolderEntry } from "../types";
+import { filterAndSortEntries, formatEntrySize, type FolderSortKey, type SortDirection } from "../ui/folder-explorer";
 import type { AppWindowHeaderElements } from "./AppWindow";
 import { MobileHeaderMenu } from "./MobileHeaderMenu";
 
@@ -44,8 +51,9 @@ type DragState = {
   longPressTimer?: number;
 };
 
-const byKindAndName = (a: DesktopEntry, b: DesktopEntry) =>
-  a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === "folder" ? -1 : 1;
+type ExplorerView = "list" | "grid";
+
+const dateFormatter = new Intl.DateTimeFormat(undefined, { dateStyle: "medium" });
 
 export function FolderExplorer({
   folder,
@@ -68,8 +76,13 @@ export function FolderExplorer({
   const drag = useRef<DragState | null>(null);
   const dropTarget = useRef<HTMLElement | null>(null);
   const suppressClick = useRef(false);
+  const [search, setSearch] = useState("");
+  const [sortKey, setSortKey] = useState<FolderSortKey>("name");
+  const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
+  const [view, setView] = useState<ExplorerView>("list");
   const parentId = folder?.id ?? null;
-  const orderedChildren = [...children].sort(byKindAndName);
+  const orderedChildren = filterAndSortEntries(children, search, sortKey, sortDirection);
+  const orderedIds = orderedChildren.map((item) => item.id);
   const trail = folder && breadcrumbs.at(-1)?.id !== folder.id ? [...breadcrumbs, folder] : breadcrumbs;
 
   useEffect(() => () => {
@@ -113,7 +126,7 @@ export function FolderExplorer({
         if (!current || current.pointerId !== event.pointerId || current.moved) return;
         current.longPressTimer = undefined;
         current.longPressed = true;
-        if (!selectedIds.has(entry.id)) onSelect(entry, { toggle: false, range: false, orderedIds: orderedChildren.map((item) => item.id) });
+        if (!selectedIds.has(entry.id)) onSelect(entry, { toggle: false, range: false, orderedIds });
         onContextMenu(entry, event.clientX, event.clientY);
       }, 500);
     }
@@ -183,6 +196,31 @@ export function FolderExplorer({
           headerElements.actions,
         )}
 
+        <div className="folder-explorer__toolbar">
+          <label className="folder-explorer__search">
+            <MagnifyingGlass size={16} aria-hidden="true" />
+            <span className="sr-only">Search this folder</span>
+            <input type="search" value={search} placeholder="Search this folder" onChange={(event) => setSearch(event.target.value)} />
+            {search && <button type="button" aria-label="Clear folder search" onClick={() => setSearch("")}><X size={14} /></button>}
+          </label>
+          <label className="folder-explorer__sort">
+            <span>Sort</span>
+            <select value={sortKey} aria-label="Sort folder contents by" onChange={(event) => setSortKey(event.target.value as FolderSortKey)}>
+              <option value="name">Name</option>
+              <option value="date">Date modified</option>
+              <option value="type">Type</option>
+              <option value="size">Size</option>
+            </select>
+          </label>
+          <button className="folder-explorer__tool-button" type="button" aria-label={`Sort ${sortDirection === "asc" ? "descending" : "ascending"}`} title={`Sort ${sortDirection === "asc" ? "descending" : "ascending"}`} onClick={() => setSortDirection((current) => current === "asc" ? "desc" : "asc")}>
+            {sortDirection === "asc" ? <SortAscending size={18} /> : <SortDescending size={18} />}
+          </button>
+          <div className="folder-explorer__view-options" role="group" aria-label="Folder view">
+            <button type="button" aria-label="List view" aria-pressed={view === "list"} onClick={() => setView("list")}><ListBullets size={18} /></button>
+            <button type="button" aria-label="Grid view" aria-pressed={view === "grid"} onClick={() => setView("grid")}><SquaresFour size={18} /></button>
+          </div>
+        </div>
+
         <div className="folder-explorer__content" onContextMenu={(event) => {
           if ((event.target as Element).closest(".folder-explorer__row")) return;
           event.preventDefault();
@@ -198,8 +236,14 @@ export function FolderExplorer({
                 <button className="button button--quiet" type="button" onClick={() => onUpload(parentId)}><UploadSimple size={17} /> Upload</button>
               </div>}
             </div>
+          ) : orderedChildren.length === 0 ? (
+            <div className="folder-explorer__empty folder-explorer__empty--search" role="status">
+              <MagnifyingGlass size={38} weight="duotone" aria-hidden="true" />
+              <p>No items match "{search.trim()}".</p>
+              <button className="button button--quiet" type="button" onClick={() => setSearch("")}>Clear search</button>
+            </div>
           ) : (
-            <div className="folder-explorer__list" aria-label={`Contents of ${folder?.name ?? rootLabel}`}>
+            <div className="folder-explorer__list" data-view={view} aria-label={`Contents of ${folder?.name ?? rootLabel}`}>
               {orderedChildren.map((entry) => (
                 <button
                   className="folder-explorer__row"
@@ -213,7 +257,7 @@ export function FolderExplorer({
                       suppressClick.current = false;
                       return;
                     }
-                    onSelect(entry, { toggle: event.metaKey || event.ctrlKey, range: event.shiftKey, orderedIds: orderedChildren.map((item) => item.id) });
+                    onSelect(entry, { toggle: event.metaKey || event.ctrlKey, range: event.shiftKey, orderedIds });
                   }}
                   onDoubleClick={() => open(entry)}
                   onKeyDown={(event) => {
@@ -226,14 +270,14 @@ export function FolderExplorer({
                     }
                     else if (event.key === "ContextMenu" || event.shiftKey && event.key === "F10") {
                       event.preventDefault();
-                      if (!selectedIds.has(entry.id)) onSelect(entry, { toggle: false, range: false, orderedIds: orderedChildren.map((item) => item.id) });
+                      if (!selectedIds.has(entry.id)) onSelect(entry, { toggle: false, range: false, orderedIds });
                       const bounds = event.currentTarget.getBoundingClientRect();
                       onContextMenu(entry, bounds.left + bounds.width / 2, bounds.top + bounds.height / 2);
                     }
                   }}
                   onContextMenu={(event) => {
                     event.preventDefault();
-                    if (!selectedIds.has(entry.id)) onSelect(entry, { toggle: false, range: false, orderedIds: orderedChildren.map((item) => item.id) });
+                    if (!selectedIds.has(entry.id)) onSelect(entry, { toggle: false, range: false, orderedIds });
                     onContextMenu(entry, event.clientX, event.clientY);
                   }}
                   onPointerDown={(event) => handlePointerDown(event, entry)}
@@ -244,6 +288,8 @@ export function FolderExplorer({
                   {entry.kind === "folder" ? <Folder size={24} weight="duotone" /> : <FileGlyph size={24} weight="duotone" />}
                   <span className="folder-explorer__name">{entry.name}</span>
                   <span className="folder-explorer__kind">{entry.kind === "folder" ? "Folder" : entry.mimeType || "File"}</span>
+                  <time className="folder-explorer__date" dateTime={new Date(entry.modifiedAt).toISOString()}>{dateFormatter.format(entry.modifiedAt)}</time>
+                  <span className="folder-explorer__size">{formatEntrySize(entry)}</span>
                 </button>
               ))}
             </div>

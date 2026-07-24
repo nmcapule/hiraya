@@ -1,10 +1,13 @@
 import { useDeferredValue, useEffect, useRef, useState } from "react";
-import { MagnifyingGlass, SpinnerGap, X } from "@phosphor-icons/react";
+import { ArrowRight, MagnifyingGlass, SpinnerGap, X } from "@phosphor-icons/react";
 import type { ActivityPage, ActivityQuery, ActivityRecord } from "../lib/activity";
+import { activityEntryIds } from "../ui/activity-navigation";
 
-type Props = {
+export type ActivityLogProps = {
   onListActivity: (query?: ActivityQuery) => Promise<ActivityPage>;
   onSubscribe: (listener: () => void) => () => void;
+  onOpenAffectedEntries?: (activity: ActivityRecord, entryIds: readonly string[]) => void;
+  canOpenAffectedEntries?: (activity: ActivityRecord, entryIds: readonly string[]) => boolean;
 };
 
 function formatAction(action: string) {
@@ -18,7 +21,7 @@ function formatSource(source: string) {
   return source;
 }
 
-export function ActivityLog({ onListActivity, onSubscribe }: Props) {
+export function ActivityLog({ onListActivity, onSubscribe, onOpenAffectedEntries, canOpenAffectedEntries }: ActivityLogProps) {
   const [search, setSearch] = useState("");
   const deferredSearch = useDeferredValue(search.trim());
   const [activities, setActivities] = useState<ActivityRecord[]>([]);
@@ -86,8 +89,9 @@ export function ActivityLog({ onListActivity, onSubscribe }: Props) {
         <>
           <span className="sr-only" role="status">{activities.length} activity {activities.length === 1 ? "record" : "records"} shown{deferredSearch ? " for this search" : ""}.</span>
           <ol className="activity-list" aria-label="Desktop activity">
-            {activities.map((activity) => (
-              <li className="activity-item" key={activity.catalogRevision}>
+            {activities.map((activity) => {
+              const entryIds = activityEntryIds(activity);
+              return <li className="activity-item" key={activity.catalogRevision}>
                 <div className="activity-item__rail" aria-hidden="true"><span /></div>
                 <div className="activity-item__content">
                   {"broken" in activity ? (
@@ -108,8 +112,13 @@ export function ActivityLog({ onListActivity, onSubscribe }: Props) {
                     </>
                   )}
                 </div>
-              </li>
-            ))}
+                {onOpenAffectedEntries && entryIds.length > 0 && !("broken" in activity) && (canOpenAffectedEntries?.(activity, entryIds) ?? true) && (
+                  <button className="activity-item__open" type="button" aria-label={`Open affected ${entryIds.length === 1 ? "entry" : "entries"}: ${activity.summary}`} onClick={() => onOpenAffectedEntries(activity, entryIds)}>
+                    <span>Open</span><ArrowRight size={16} aria-hidden="true" />
+                  </button>
+                )}
+              </li>;
+            })}
           </ol>
           {error && <div className="activity-state activity-state--error" role="alert"><span>{error}</span><button className="button button--quiet" type="button" onClick={() => void loadOlder()}>Retry</button></div>}
           {nextBefore !== null && <button className="button button--quiet activity-load-more" type="button" disabled={loadingOlder} onClick={() => void loadOlder()}>{loadingOlder ? "Loading" : "Load older"}</button>}

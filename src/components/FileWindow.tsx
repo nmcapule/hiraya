@@ -76,10 +76,13 @@ type Props = {
 export function FileWindow({ file, blob, editable, editMode = false, readOnly = false, remoteChanged = false, headerActionsTarget, editorSettings, externalEmbeddedPreviews, theme, onSave, onDownload, onEdit, onEditorSettingsChange, onResolveLink, onOpenLinkedFile, onDirtyChange }: Props) {
   const [content, setContent] = useState("");
   const [savedContent, setSavedContent] = useState("");
-  const [contentLoaded, setContentLoaded] = useState(false);
+  const [contentState, setContentState] = useState<"loading" | "ready" | "error">("loading");
+  const [contentError, setContentError] = useState("");
+  const [decodeAttempt, setDecodeAttempt] = useState(0);
   const [objectUrl, setObjectUrl] = useState("");
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
+  const [linkError, setLinkError] = useState("");
   const [imageZoom, setImageZoom] = useState<ImageZoom>("fit");
   const savingRef = useRef(false);
   const onSaveRef = useRef(onSave);
@@ -93,12 +96,17 @@ export function FileWindow({ file, blob, editable, editMode = false, readOnly = 
   useEffect(() => {
     if (editable) {
       let active = true;
-      setContentLoaded(false);
+      setContentState("loading");
+      setContentError("");
       void blob.text().then((text) => {
         if (!active) return;
         setContent(text);
         setSavedContent(text);
-        setContentLoaded(true);
+        setContentState("ready");
+      }).catch((error: unknown) => {
+        if (!active) return;
+        setContentError(error instanceof Error ? error.message : "The file could not be decoded as text.");
+        setContentState("error");
       });
       return () => { active = false; };
     }
@@ -106,7 +114,7 @@ export function FileWindow({ file, blob, editable, editMode = false, readOnly = 
     const url = URL.createObjectURL(blob);
     setObjectUrl(url);
     return () => URL.revokeObjectURL(url);
-  }, [blob, editable]);
+  }, [blob, decodeAttempt, editable]);
 
   const save = useCallback(async (nextContent: string) => {
     if (savingRef.current) return;
@@ -130,6 +138,7 @@ export function FileWindow({ file, blob, editable, editMode = false, readOnly = 
   }, [file.name]);
 
   const dirty = content !== savedContent;
+  const contentLoaded = contentState === "ready";
   const preview = fileCapabilities(file).preview;
   const textEditor = editable && (editMode || preview === "text" || preview === "url");
 
@@ -141,6 +150,7 @@ export function FileWindow({ file, blob, editable, editMode = false, readOnly = 
 
   useEffect(() => {
     setImageZoom("fit");
+    setLinkError("");
   }, [file.id]);
 
   useEffect(() => {
@@ -209,8 +219,16 @@ export function FileWindow({ file, blob, editable, editMode = false, readOnly = 
         headerActionsTarget,
       )}
         {saveError && <div className="window-error" role="alert">{saveError}</div>}
+        {linkError && <div className="window-error" role="alert">{linkError}</div>}
         {remoteChanged && <div className="window-error" role="alert">This file changed on the server. Your unsaved text is preserved; saving it will become the latest version.</div>}
         <div className="file-window__content">
+          {editable && contentState === "loading" && <div className="app-window__loading" role="status">Decoding {file.name}...</div>}
+          {editable && contentState === "error" && (
+            <div className="app-window__loading" role="alert">
+              <span>{contentError || `The contents of ${file.name} could not be decoded.`}</span>
+              <button className="button button--primary" type="button" onClick={() => setDecodeAttempt((attempt) => attempt + 1)}>Retry</button>
+            </div>
+          )}
           {textEditor && contentLoaded && (
             <TextEditor
               key={file.id}
@@ -224,12 +242,13 @@ export function FileWindow({ file, blob, editable, editMode = false, readOnly = 
               onSave={(nextContent) => void save(nextContent)}
               onResolveLink={onResolveLink}
               onOpenLinkedFile={onOpenLinkedFile}
+              onLinkError={setLinkError}
             />
           )}
           {!editMode && preview === "markdown" && contentLoaded && (
-            <MarkdownRenderer content={content} externalEmbeddedPreviews={externalEmbeddedPreviews} onResolveLink={onResolveLink} onOpenLinkedFile={onOpenLinkedFile} />
+            <MarkdownRenderer content={content} externalEmbeddedPreviews={externalEmbeddedPreviews} onResolveLink={onResolveLink} onOpenLinkedFile={onOpenLinkedFile} onLinkError={setLinkError} />
           )}
-          {!editable && preview === "image" && objectUrl && <ImagePreview src={objectUrl} alt={file.name} zoom={imageZoom} onZoomChange={setImageZoom} />}
+          {!editable && preview === "image" && objectUrl && <ImagePreview src={objectUrl} alt={file.name} zoom={imageZoom} onZoomChange={setImageZoom} onFit={() => setImageZoom("fit")} />}
           {!editable && preview === "pdf" && objectUrl && <iframe className="preview-frame" src={objectUrl} title={file.name} />}
           {!editable && preview === "video" && objectUrl && <video className="preview-media" src={objectUrl} controls aria-label={`Video: ${file.name}`} />}
           {!editable && preview === "audio" && objectUrl && <audio className="preview-audio" src={objectUrl} controls aria-label={`Audio: ${file.name}`} />}

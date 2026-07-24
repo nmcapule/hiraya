@@ -6,14 +6,14 @@ describe("activity contracts", () => {
   test("validates newest-first pages and strips unknown fields", () => {
     expect(parseActivityPage({
       activities: [
-        { catalogRevision: 3, desktopId: "desk", timestamp: 20, action: "move", source: "api", summary: "Renamed file", details: ["From: a.txt", "To: b.txt"], ignored: true },
+        { catalogRevision: 3, desktopId: "desk", entryIds: ["first", "second"], timestamp: 20, action: "move", source: "api", summary: "Renamed file", details: ["From: a.txt", "To: b.txt"], ignored: true },
         { catalogRevision: 1, timestamp: 10, action: "create", source: "api", summary: "Created file", details: ["File: a.txt"] },
       ],
       nextBefore: 1,
       ignored: true,
     })).toEqual({
       activities: [
-        { catalogRevision: 3, desktopId: "desk", timestamp: 20, action: "move", source: "api", summary: "Renamed file", details: ["From: a.txt", "To: b.txt"] },
+        { catalogRevision: 3, desktopId: "desk", entryIds: ["first", "second"], timestamp: 20, action: "move", source: "api", summary: "Renamed file", details: ["From: a.txt", "To: b.txt"] },
         { catalogRevision: 1, timestamp: 10, action: "create", source: "api", summary: "Created file", details: ["File: a.txt"] },
       ],
       nextBefore: 1,
@@ -44,6 +44,14 @@ describe("activity contracts", () => {
       activities: [{ catalogRevision: "broken", timestamp: 10, action: "update", source: "api", summary: "Broken revision", details: [] }],
       nextBefore: null,
     })).toThrow("invalid catalog revision");
+  });
+
+  test("strictly validates affected entry IDs", () => {
+    const record = { catalogRevision: 1, timestamp: 10, action: "move", source: "api", summary: "Moved file", details: [] };
+    for (const entryIds of [[], ["same", "same"], ["bad/id"], [""], null, "entry"]) {
+      expect(parseActivityPage({ activities: [{ ...record, entryIds }], nextBefore: null }).activities).toEqual([{ catalogRevision: 1, broken: true }]);
+    }
+    expect(parseActivityPage({ activities: [record], nextBefore: null }).activities).toEqual([record]);
   });
 
   test("normalizes queries and builds the server route", () => {

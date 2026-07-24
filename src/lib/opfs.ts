@@ -634,10 +634,10 @@ async function loadDesktopUnsafe(_viewport: EntryPosition, seeded: SeededManifes
   return { entries: manifest.entries, layout: desktopStateLayout(manifest), editorSettings: manifest.editorSettings, appearance: manifest.appearance, sync: manifest.sync };
 }
 
-async function applyRemoteDesktopUnsafe(snapshot: DesktopStateSnapshot, contents: Map<string, Blob>, acknowledgedOperationId?: string, desktopId = activeDesktopContext) {
+async function applyRemoteDesktopUnsafe(snapshot: DesktopStateSnapshot, contents: Map<string, Blob>, acknowledgedOperationId?: string, desktopId = activeDesktopContext, force = false, useAcknowledgedContent = true) {
   if (!desktopId) throw new Error("No desktop is active.");
   const current = parseManifestV13(await callDatabase("readDesktop", { desktopId }, null));
-  if (current.sync.catalogId === snapshot.sync.catalogId && current.sync.catalogRevision >= snapshot.sync.catalogRevision) {
+  if (!force && current.sync.catalogId === snapshot.sync.catalogId && current.sync.catalogRevision >= snapshot.sync.catalogRevision) {
     return { entries: current.entries, layout: manifestLayout(current), editorSettings: current.editorSettings, appearance: current.appearance, sync: current.sync };
   }
   const next: Manifest = {
@@ -649,7 +649,7 @@ async function applyRemoteDesktopUnsafe(snapshot: DesktopStateSnapshot, contents
     sync: snapshot.sync,
   };
   assertValidManifest(next);
-  const acknowledgedRecord = acknowledgedOperationId
+  const acknowledgedRecord = acknowledgedOperationId && useAcknowledgedContent
     ? (await callDatabase("readOutbox", undefined, null)).find((record) => record.operationId === acknowledgedOperationId)
     : undefined;
 
@@ -1087,6 +1087,25 @@ async function cacheRemoteFileUnsafe(desktopId: string, catalogId: string, id: F
   return new File([stored], entry.name, { type: entry.mimeType, lastModified: entry.modifiedAt });
 }
 
+async function removeCachedFileUnsafe(desktopId: string, catalogId: string, id: FileEntry["id"], contentRevision: number) {
+  const manifest = parseManifestV13(await callDatabase("readDesktop", { desktopId }, null));
+  const entry = getFileEntry(manifest.entries, id);
+  if (manifest.sync.catalogId !== catalogId || manifest.sync.contentRevisions[id] !== contentRevision) return false;
+  const hasPendingContent = (await callDatabase("readOutbox", undefined, null)).some((record) => operationContentIds(record.operation).includes(id));
+  if (hasPendingContent) throw new Error("Pending file content cannot be removed from offline storage.");
+  const marker = await readContentCacheMarker(id);
+  if (!marker || marker.catalogId !== catalogId || marker.contentRevision !== contentRevision || marker.size !== entry.size) return false;
+
+  // Remove availability first so interrupted cleanup cannot leave an unverified cache hit.
+  await removeContentCacheMarker(id);
+  try {
+    await (await getFilesDirectory()).removeEntry(id);
+  } catch (error) {
+    if (!isNotFound(error)) throw error;
+  }
+  return true;
+}
+
 async function captureDesktopStateUnsafe(): Promise<{
   entries: DesktopEntry[];
   layout: DesktopLayout;
@@ -1196,8 +1215,8 @@ export function readCurrentDesktop(): Promise<DesktopStateSnapshot> {
   });
 }
 
-export function applyRemoteDesktop(snapshot: DesktopStateSnapshot, contents: Map<string, Blob>, acknowledgedOperationId?: string, desktopId?: string) {
-  return serializeStorage(() => applyRemoteDesktopUnsafe(snapshot, contents, acknowledgedOperationId, desktopId));
+export function applyRemoteDesktop(snapshot: DesktopStateSnapshot, contents: Map<string, Blob>, acknowledgedOperationId?: string, desktopId?: string, force = false, useAcknowledgedContent = true) {
+  return serializeStorage(() => applyRemoteDesktopUnsafe(snapshot, contents, acknowledgedOperationId, desktopId, force, useAcknowledgedContent));
 }
 
 export function saveEditorSettings(settings: EditorSettings) { return serializeStorage(() => saveEditorSettingsUnsafe(settings)); }
@@ -1219,6 +1238,7 @@ export function updateEntryPosition(id: string, position: EntryPosition) { retur
 export function readFile(id: FileEntry["id"]) { return serializeStorage(() => readFileUnsafe(id)); }
 export function readCachedFile(desktopId: string, catalogId: string, id: FileEntry["id"], contentRevision: number) { return serializeStorage(() => readCachedFileUnsafe(desktopId, catalogId, id, contentRevision)); }
 export function cacheRemoteFile(desktopId: string, catalogId: string, id: FileEntry["id"], contentRevision: number, content: Blob) { return serializeStorage(() => cacheRemoteFileUnsafe(desktopId, catalogId, id, contentRevision, content)); }
+export function removeCachedFile(desktopId: string, catalogId: string, id: FileEntry["id"], contentRevision: number) { return serializeStorage(() => removeCachedFileUnsafe(desktopId, catalogId, id, contentRevision)); }
 export function captureDesktopState() { return serializeStorage(() => captureDesktopStateUnsafe()); }
 export function readDesktopState(desktopId: string) { return serializeStorage(() => readDesktopStateUnsafe(desktopId)); }
 export function readFileByRelativePath(fromFileId: FileEntry["id"], relativePath: string) { return serializeStorage(() => readFileByRelativePathUnsafe(fromFileId, relativePath)); }

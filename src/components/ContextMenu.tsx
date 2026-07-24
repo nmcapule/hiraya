@@ -1,5 +1,43 @@
-import { Copy, DownloadSimple, FilePlus, FolderOpen, FolderPlus, FolderSimplePlus, GearSix, Info, PencilSimple, Trash, UploadSimple, ClipboardText } from "@phosphor-icons/react";
+import { useLayoutEffect, useRef, useState, type CSSProperties } from "react";
+import { CloudArrowDown, CloudSlash, Copy, DownloadSimple, FilePlus, FolderOpen, FolderPlus, FolderSimplePlus, GearSix, Info, LinkSimple, PencilSimple, Trash, UploadSimple, ClipboardText } from "@phosphor-icons/react";
 import type { ContextMenuState, DesktopEntry } from "../types";
+
+const VIEWPORT_MARGIN = 8;
+const MENU_BAR_INSET = 48;
+
+function useMenuPosition(x: number, y: number) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [style, setStyle] = useState<CSSProperties>({
+    left: Math.max(VIEWPORT_MARGIN, x),
+    top: Math.max(MENU_BAR_INSET, y),
+    maxHeight: `calc(100dvh - ${MENU_BAR_INSET + VIEWPORT_MARGIN}px)`,
+    overflowY: "auto",
+    overscrollBehavior: "contain",
+  });
+
+  useLayoutEffect(() => {
+    function positionMenu() {
+      const element = ref.current;
+      if (!element) return;
+      const bounds = element.getBoundingClientRect();
+      const maxHeight = Math.max(0, window.innerHeight - MENU_BAR_INSET - VIEWPORT_MARGIN);
+      const renderedHeight = Math.min(bounds.height, maxHeight);
+      setStyle({
+        left: Math.min(Math.max(VIEWPORT_MARGIN, x), Math.max(VIEWPORT_MARGIN, window.innerWidth - VIEWPORT_MARGIN - bounds.width)),
+        top: Math.min(Math.max(MENU_BAR_INSET, y), Math.max(MENU_BAR_INSET, window.innerHeight - VIEWPORT_MARGIN - renderedHeight)),
+        maxHeight,
+        overflowY: "auto",
+        overscrollBehavior: "contain",
+      });
+    }
+
+    positionMenu();
+    window.addEventListener("resize", positionMenu);
+    return () => window.removeEventListener("resize", positionMenu);
+  }, [x, y]);
+
+  return { ref, style };
+}
 
 type Props = {
   menu: Extract<Exclude<ContextMenuState, null>, { type: "entry" }>;
@@ -13,16 +51,20 @@ type Props = {
   onMove: () => void;
   onProperties: () => void;
   onDelete: () => void;
+  onCopyLink?: () => void;
+  offlineAvailable?: boolean | null;
+  onMakeAvailableOffline?: () => void;
+  onRemoveOfflineCopy?: () => void;
   readOnly?: boolean;
   selectionCount?: number;
+  trashSupported?: boolean;
 };
 
-export function ContextMenu({ menu, entry, onOpen, onEditFile, onRename, onDownload, onCopy, onPasteInto, onMove, onProperties, onDelete, readOnly = false, selectionCount = 1 }: Props) {
-  const left = Math.min(menu.x, window.innerWidth - 190);
-  const top = Math.min(menu.y, window.innerHeight - 352);
+export function ContextMenu({ menu, entry, onOpen, onEditFile, onRename, onDownload, onCopy, onPasteInto, onMove, onProperties, onDelete, onCopyLink, offlineAvailable, onMakeAvailableOffline, onRemoveOfflineCopy, readOnly = false, selectionCount = 1, trashSupported = true }: Props) {
+  const position = useMenuPosition(menu.x, menu.y);
 
   return (
-    <div className="context-menu" role="menu" style={{ left: Math.max(8, left), top: Math.max(48, top) }} onKeyDown={handleMenuKeyDown}>
+    <div ref={position.ref} className="context-menu" role="menu" style={position.style} onKeyDown={handleMenuKeyDown}>
       {selectionCount === 1 && <button type="button" role="menuitem" autoFocus onClick={onOpen}>
         <FolderOpen size={17} /> Open
       </button>}
@@ -39,6 +81,9 @@ export function ContextMenu({ menu, entry, onOpen, onEditFile, onRename, onDownl
         </button>
       )}
       <button type="button" role="menuitem" onClick={onCopy}><Copy size={17} /> Copy {selectionCount > 1 ? `${selectionCount} items` : ""}<kbd>Ctrl/⌘ C</kbd></button>
+      {selectionCount === 1 && onCopyLink && <button type="button" role="menuitem" onClick={onCopyLink}><LinkSimple size={17} /> Copy link</button>}
+      {selectionCount === 1 && entry.kind === "file" && onMakeAvailableOffline && offlineAvailable === false && <button type="button" role="menuitem" onClick={onMakeAvailableOffline}><CloudArrowDown size={17} /> Make available offline</button>}
+      {selectionCount === 1 && entry.kind === "file" && onRemoveOfflineCopy && offlineAvailable === true && <button type="button" role="menuitem" onClick={onRemoveOfflineCopy}><CloudSlash size={17} /> Remove offline copy</button>}
       {onPasteInto && <button type="button" role="menuitem" disabled={readOnly} onClick={onPasteInto}><ClipboardText size={17} /> Paste into</button>}
       <button type="button" role="menuitem" disabled={readOnly} onClick={onMove}>
         <FolderSimplePlus size={17} /> Move to...
@@ -47,7 +92,7 @@ export function ContextMenu({ menu, entry, onOpen, onEditFile, onRename, onDownl
         <Info size={17} /> Properties
       </button>}
       <button className="context-menu__danger" type="button" role="menuitem" disabled={readOnly} onClick={onDelete}>
-        <Trash size={17} /> Delete
+        <Trash size={17} /> {trashSupported ? "Move to Trash" : "Delete permanently"}
       </button>
     </div>
   );
@@ -64,11 +109,10 @@ type DesktopProps = {
 };
 
 export function DesktopContextMenu({ menu, onCreateFile, onCreateFolder, onUpload, onSettings, onPaste, readOnly = false }: DesktopProps) {
-  const left = Math.min(menu.x, window.innerWidth - 190);
-  const top = Math.min(menu.y, window.innerHeight - 220);
+  const position = useMenuPosition(menu.x, menu.y);
 
   return (
-    <div className="context-menu" role="menu" style={{ left: Math.max(8, left), top: Math.max(48, top) }} onKeyDown={handleMenuKeyDown}>
+    <div ref={position.ref} className="context-menu" role="menu" style={position.style} onKeyDown={handleMenuKeyDown}>
       <button type="button" role="menuitem" autoFocus={!readOnly} disabled={readOnly} onClick={onCreateFile}>
         <FilePlus size={17} /> New text file
       </button>

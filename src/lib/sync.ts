@@ -2,7 +2,7 @@ import type { SeededManifest } from "./seeded-manifest";
 import * as storage from "./opfs";
 import { assertUniqueName, namesMatch, validateEntryName } from "./entry-validation";
 import { API_ROUTES } from "./api-routes";
-import { parseBlobMutationPreparation, parseContentAccessDescriptor, parseLayout, parsePosition, parseRemoteDesktopState, parseRootEntryPositionUpdates, type RemoteDesktopState, type RemoteEntry } from "./contracts";
+import { assertValidId, parseBlobMutationPreparation, parseContentAccessDescriptor, parseLayout, parsePosition, parseRemoteDesktopState, parseRootEntryPositionUpdates, parseTrashDeleteResult, parseTrashDocument, parseTrashRestoreResult, type RemoteDesktopState, type RemoteEntry, type TrashDeleteResult, type TrashDocument, type TrashRestoreResult } from "./contracts";
 import type { DesktopEntry, DesktopIdentity, DesktopLayout, RootEntryPositionUpdate, EditorSettings, EntryPosition, FileEntry, FolderEntry } from "../types";
 import type { OutboxOperation, OutboxRecord } from "./outbox";
 import { desktopPendingOperationProtection, outboxDesktopRetentionIds } from "./outbox";
@@ -30,7 +30,7 @@ export async function fetchServerBuildTimestamp(fetchImpl: typeof fetch = global
 
 type StorageBoundary = Pick<typeof storage,
   "applyRemoteDesktop" | "createEntries" | "createFolder" | "createTextFile" | "deleteEntries" | "deleteEntry" | "importFiles" | "loadDesktop" |
-  "moveEntries" | "moveEntry" | "readCurrentDesktop" | "captureDesktopState" | "readFile" | "readCachedFile" | "cacheRemoteFile" | "resolveFileByRelativePath" |
+  "moveEntries" | "moveEntry" | "readCurrentDesktop" | "captureDesktopState" | "readFile" | "readCachedFile" | "cacheRemoteFile" | "removeCachedFile" | "resolveFileByRelativePath" |
   "readDesktopState" |
   "renameEntry" | "saveDesktopLayout" | "saveEditorSettings" | "saveTextFile" | "updateEntryPosition"
   | "updateRootEntryPositions" | "enqueueMutation" | "readOutbox" | "bindOutboxCatalog" |
@@ -78,6 +78,13 @@ export class VirtualFileChangedError extends Error {
   constructor() {
     super("This file changed while it was loading. Try opening it again.");
     this.name = "VirtualFileChangedError";
+  }
+}
+
+export class TrashUnavailableError extends Error {
+  constructor(message = "Trash is only available when connected to a Hiraya server.") {
+    super(message);
+    this.name = "TrashUnavailableError";
   }
 }
 
@@ -130,6 +137,7 @@ export class SyncEngine {
   private readonly clearIntervalImpl: typeof globalThis.clearInterval;
   private readonly storage: StorageBoundary;
   private readonly onUnauthorized: () => void;
+  private readonly directMutationClientId = crypto.randomUUID();
   private desktop: storage.DesktopStateSnapshot | null = null;
   private status: SyncStatus = "connecting";
   private events: EventSource | null = null;
@@ -148,6 +156,7 @@ export class SyncEngine {
   private readonly statusListeners = new Set<(next: SyncStatus) => void>();
   private readonly syncWorkListeners = new Set<(syncing: boolean) => void>();
   private readonly activityChangeListeners = new Set<() => void>();
+  private readonly outboxListeners = new Set<(records: readonly OutboxRecord[]) => void>();
   private readonly catalogListeners = new Set<(catalog: DesktopRegistry) => void>();
   private readonly contentLoads = new Map<string, Promise<File>>();
 
@@ -230,6 +239,28 @@ export class SyncEngine {
     return () => {
       this.activityChangeListeners.delete(listener);
     };
+  }
+
+  subscribeOutbox(listener: (records: readonly OutboxRecord[]) => void) {
+    this.outboxListeners.add(listener);
+    void this.storage.readOutbox().then((records) => {
+      if (this.outboxListeners.has(listener)) this.notifyOutboxListener(listener, records);
+    });
+    return () => { this.outboxListeners.delete(listener); };
+  }
+
+  private notifyOutboxListener(listener: (records: readonly OutboxRecord[]) => void, records: readonly OutboxRecord[]) {
+    try {
+      listener(records);
+    } catch (error) {
+      console.error("A synchronization queue listener failed.", error);
+    }
+  }
+
+  private async publishOutbox() {
+    if (this.outboxListeners.size === 0) return;
+    const records = await this.storage.readOutbox();
+    for (const listener of this.outboxListeners) this.notifyOutboxListener(listener, records);
   }
 
   subscribeDesktopCatalog(listener: (catalog: DesktopRegistry) => void) {
@@ -336,14 +367,14 @@ export class SyncEngine {
     return API_ROUTES.syncHealth;
   }
 
-  private async applyRemoteState(remote: RemoteDesktopState, generation = this.generation, acknowledgedOperationId?: string, desktopId = this.desktopId) {
+  private async applyRemoteState(remote: RemoteDesktopState, generation = this.generation, acknowledgedOperationId?: string, desktopId = this.desktopId, force = false, useAcknowledgedContent = true) {
     this.assertActive(generation);
     const desktop = desktopId === this.desktopId ? this.current() : await this.storage.readDesktopState(desktopId);
     const identityChanged = desktop.sync.catalogId !== remote.catalogId;
-    if (!identityChanged && remote.catalogRevision <= desktop.sync.catalogRevision) return desktop;
+    if (!force && !identityChanged && remote.catalogRevision <= desktop.sync.catalogRevision) return desktop;
     const next = toSnapshot(remote);
     this.assertActive(generation);
-    const applied = await this.storage.applyRemoteDesktop(next, new Map(), acknowledgedOperationId, desktopId);
+    const applied = await this.storage.applyRemoteDesktop(next, new Map(), acknowledgedOperationId, desktopId, force, useAcknowledgedContent);
     this.assertActive(generation);
     if (desktopId === this.desktopId) this.publish(applied);
     this.publishActivityChange();
@@ -365,6 +396,7 @@ export class SyncEngine {
   private async bindOutboxCatalog(catalogId: string) {
     await this.storage.bindOutboxCatalog(catalogId);
     this.catalogId = catalogId;
+    await this.publishOutbox();
   }
 
   private idempotencyHeaders(record: OutboxRecord, headers?: HeadersInit) {
@@ -495,12 +527,13 @@ export class SyncEngine {
     }
   }
 
-  private async replayRecord(record: OutboxRecord, generation: number) {
+  private async replayRecord(record: OutboxRecord, generation: number, retryBlocked = false) {
     this.assertActive(generation);
-    if (record.status === "blocked") throw new SyncRequestError(record.error ?? "A pending change is blocked.", 409, true);
+    if (record.status === "blocked" && !retryBlocked) throw new SyncRequestError(record.error ?? "A pending change is blocked.", 409, true);
     if (!this.catalogId || record.catalogId !== this.catalogId) {
       const message = "Pending changes belong to a different catalog.";
       await this.storage.blockMutation(record.operationId, message);
+      await this.publishOutbox();
       throw new SyncRequestError(message, 409, true);
     }
     try {
@@ -514,8 +547,12 @@ export class SyncEngine {
         await this.reconcile(record.operationId, record.desktopId);
       }
       await this.storage.acknowledgeMutation(record.operationId);
+      await this.publishOutbox();
     } catch (error) {
-      if (error instanceof SyncRequestError && error.permanent) await this.storage.blockMutation(record.operationId, error.message);
+      if (error instanceof SyncRequestError && error.permanent) {
+        await this.storage.blockMutation(record.operationId, error.message);
+        await this.publishOutbox();
+      }
       throw error;
     }
   }
@@ -530,6 +567,7 @@ export class SyncEngine {
       if (ownerDesktopId === this.desktopId && !createsActiveDesktop) {
         const message = "A desktop mutation is ordered before its pending desktop creation.";
         await this.storage.blockMutation(record.operationId, message);
+        await this.publishOutbox();
         throw new SyncRequestError(message, 409, true);
       }
       await this.replayRecord(record, generation);
@@ -641,6 +679,7 @@ export class SyncEngine {
     return this.queue(async () => {
       const queued = await this.storage.enqueueMutation({ ...operation, schemaVersion: 1 } as OutboxOperation, contents);
       this.publish(queued.desktop);
+      await this.publishOutbox();
       if (this.status === "online") {
         try {
           await this.replayOutbox();
@@ -758,6 +797,7 @@ export class SyncEngine {
         ? await this.storage.transferEntries(this.desktopId, destinationDesktopId, unique, parentId)
         : (await this.storage.enqueueTransfer(this.desktopId, destinationDesktopId, unique, parentId)).desktop;
       this.publish(result);
+      if (!this.frontendOnly) await this.publishOutbox();
       if (!this.frontendOnly && this.status === "online") {
         try { await this.replayOutbox(); }
         catch (error) {
@@ -1006,6 +1046,40 @@ export class SyncEngine {
     }
   }
 
+  async isFileAvailableOffline(id: FileEntry["id"]) {
+    const entry = this.current().entries.find((candidate): candidate is FileEntry => candidate.id === id && candidate.kind === "file");
+    if (!entry) throw new Error("That file no longer exists.");
+    const catalogId = this.current().sync.catalogId;
+    if (this.frontendOnly || !catalogId) {
+      try {
+        await this.storage.readFile(id);
+        return true;
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "NotFoundError") return false;
+        throw error;
+      }
+    }
+    const contentRevision = this.current().sync.contentRevisions[id];
+    if (!Number.isSafeInteger(contentRevision)) throw new Error("That file has invalid synchronization metadata.");
+    return await this.storage.readCachedFile(this.desktopId, catalogId, id, contentRevision) !== null;
+  }
+
+  makeFileAvailableOffline(id: FileEntry["id"]) {
+    return this.readFile(id);
+  }
+
+  removeFileFromOfflineCache(id: FileEntry["id"]) {
+    return this.queue(async () => {
+      const entry = this.current().entries.find((candidate): candidate is FileEntry => candidate.id === id && candidate.kind === "file");
+      if (!entry) throw new Error("That file no longer exists.");
+      const catalogId = this.current().sync.catalogId;
+      if (this.frontendOnly || !catalogId) throw new Error("Authoritative local file content cannot be removed from offline storage.");
+      const contentRevision = this.current().sync.contentRevisions[id];
+      if (!Number.isSafeInteger(contentRevision)) throw new Error("That file has invalid synchronization metadata.");
+      return this.storage.removeCachedFile(this.desktopId, catalogId, id, contentRevision);
+    });
+  }
+
   async readFileByRelativePath(fromFileId: FileEntry["id"], relativePath: string) {
     const file = await this.storage.resolveFileByRelativePath(fromFileId, relativePath);
     return { file, blob: await this.readFile(file.id) };
@@ -1017,6 +1091,59 @@ export class SyncEngine {
       blocked: records.filter((record) => record.status === "blocked").length,
       records,
     };
+  }
+
+  listOutboxRecords() {
+    return this.storage.readOutbox().then((records) => [...records]);
+  }
+
+  retryBlockedOutboxRecord(operationId: string) {
+    if (this.frontendOnly) throw new Error("Local-only desktops do not have a synchronization queue.");
+    return this.queue(async () => {
+      const records = await this.storage.readOutbox();
+      const index = records.findIndex((record) => record.operationId === operationId);
+      if (index < 0) throw new Error("That queued change no longer exists.");
+      if (records[index].status !== "blocked") throw new Error("Only blocked changes can be retried manually.");
+      try {
+        for (const [recordIndex, record] of records.slice(0, index + 1).entries()) {
+          if (record.status === "blocked" && recordIndex !== index) throw new Error("Resolve the earlier blocked change first.");
+          await this.replayRecord(record, this.generation, recordIndex === index);
+        }
+        const remaining = [...await this.storage.readOutbox()];
+        this.setStatus(remaining.some((record) => record.status === "blocked") ? "blocked" : "online");
+        return remaining;
+      } catch (error) {
+        if (error instanceof SyncRequestError) this.setStatus(error.permanent ? "blocked" : "offline");
+        throw error;
+      }
+    });
+  }
+
+  discardBlockedOutboxRecord(operationId: string) {
+    if (this.frontendOnly) throw new Error("Local-only desktops do not have a synchronization queue.");
+    return this.queue(async () => {
+      const records = await this.storage.readOutbox();
+      const record = records.find((candidate) => candidate.operationId === operationId);
+      if (!record) throw new Error("That queued change no longer exists.");
+      if (record.status !== "blocked") throw new Error("Only blocked changes can be discarded.");
+      if (records[0]?.operationId !== operationId) throw new Error("Resolve earlier queued changes before discarding this change.");
+
+      const generation = this.generation;
+      const remote = await this.fetchDesktop(record.desktopId);
+      const destinationDesktopId = record.operation.kind === "entry-transfer" ? record.operation.destinationDesktopId : null;
+      const destination = destinationDesktopId
+        ? await this.fetchDesktop(destinationDesktopId)
+        : null;
+      await this.applyRemoteState(remote, generation, record.operationId, record.desktopId, true, false);
+      if (destination && destinationDesktopId) await this.applyRemoteState(destination, generation, undefined, destinationDesktopId, true);
+      await this.storage.acknowledgeMutation(record.operationId);
+      await this.publishOutbox();
+      if (record.operation.kind === "create-desktop" || record.operation.kind === "rename-desktop" || record.operation.kind === "delete-desktop") await this.refreshCatalog();
+      const remaining = [...await this.storage.readOutbox()];
+      if (remaining.some((candidate) => candidate.status === "blocked")) this.setStatus("blocked");
+      else this.setStatus("online");
+      return remaining;
+    });
   }
 
   async listActivity(query: ActivityQuery = {}) {
@@ -1035,6 +1162,60 @@ export class SyncEngine {
       throw new Error(body?.error || `Activity could not be loaded (${response.status}).`);
     }
     return parseActivityPage(await response.json());
+  }
+
+  private async trashRequest(input: RequestInfo | URL, init?: RequestInit) {
+    if (this.frontendOnly) throw new TrashUnavailableError();
+    let response: Response;
+    try {
+      response = await this.fetchImpl(input, { cache: "no-store", credentials: "same-origin", ...init });
+    } catch {
+      this.setStatus("offline");
+      throw new TrashUnavailableError("Trash is unavailable while the Hiraya server is offline.");
+    }
+    this.requireAuthentication(response);
+    if (!response.ok) {
+      const body = await response.json().catch(() => null) as { error?: string } | null;
+      throw new Error(body?.error || `The Trash request failed (${response.status}).`);
+    }
+    return response.json() as Promise<unknown>;
+  }
+
+  async listTrash(desktopId: string): Promise<TrashDocument> {
+    assertValidId(desktopId, "Trash requires a valid desktop ID.");
+    return parseTrashDocument(await this.trashRequest(API_ROUTES.desktopTrash(desktopId)), desktopId);
+  }
+
+  async restoreTrash(desktopId: string, entryId: string, destination: "original" | "root"): Promise<TrashRestoreResult> {
+    assertValidId(desktopId, "Trash requires a valid desktop ID.");
+    assertValidId(entryId, "Trash restore requires a valid entry ID.");
+    if (destination !== "original" && destination !== "root") throw new Error("Trash restore requires an original or root destination.");
+    const result = parseTrashRestoreResult(await this.trashRequest(API_ROUTES.desktopTrashRestore(desktopId, entryId), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Hiraya-Client-ID": this.directMutationClientId,
+        "X-Hiraya-Operation-ID": crypto.randomUUID(),
+      },
+      body: JSON.stringify({ destination }),
+    }), entryId, destination);
+    if (this.running) await this.reconcile(undefined, desktopId);
+    this.catalogRevision = Math.max(this.catalogRevision, result.catalogRevision);
+    return result;
+  }
+
+  async permanentlyDeleteTrash(desktopId: string, entryId: string): Promise<TrashDeleteResult> {
+    assertValidId(desktopId, "Trash requires a valid desktop ID.");
+    assertValidId(entryId, "Permanent deletion requires a valid entry ID.");
+    const result = parseTrashDeleteResult(await this.trashRequest(API_ROUTES.desktopTrashEntry(desktopId, entryId), {
+      method: "DELETE",
+      headers: {
+        "X-Hiraya-Client-ID": this.directMutationClientId,
+        "X-Hiraya-Operation-ID": crypto.randomUUID(),
+      },
+    }));
+    this.catalogRevision = Math.max(this.catalogRevision, result.catalogRevision);
+    return result;
   }
 }
 
@@ -1069,6 +1250,16 @@ export const saveCustomTheme = defaultEngine.saveCustomTheme.bind(defaultEngine)
 export const deleteCustomTheme = defaultEngine.deleteCustomTheme.bind(defaultEngine);
 export const readFile = defaultEngine.readFile.bind(defaultEngine);
 export const readFileByRelativePath = defaultEngine.readFileByRelativePath.bind(defaultEngine);
+export const isFileAvailableOffline = defaultEngine.isFileAvailableOffline.bind(defaultEngine);
+export const makeFileAvailableOffline = defaultEngine.makeFileAvailableOffline.bind(defaultEngine);
+export const removeFileFromOfflineCache = defaultEngine.removeFileFromOfflineCache.bind(defaultEngine);
 export const getOutboxStatus = defaultEngine.getOutboxStatus.bind(defaultEngine);
+export const listOutboxRecords = defaultEngine.listOutboxRecords.bind(defaultEngine);
+export const retryBlockedOutboxRecord = defaultEngine.retryBlockedOutboxRecord.bind(defaultEngine);
+export const discardBlockedOutboxRecord = defaultEngine.discardBlockedOutboxRecord.bind(defaultEngine);
+export const subscribeToOutbox = defaultEngine.subscribeOutbox.bind(defaultEngine);
 export const listActivity = defaultEngine.listActivity.bind(defaultEngine);
 export const subscribeToActivityChanges = defaultEngine.subscribeActivityChanges.bind(defaultEngine);
+export const listTrash = defaultEngine.listTrash.bind(defaultEngine);
+export const restoreTrash = defaultEngine.restoreTrash.bind(defaultEngine);
+export const permanentlyDeleteTrash = defaultEngine.permanentlyDeleteTrash.bind(defaultEngine);

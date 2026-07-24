@@ -52,10 +52,10 @@ const HEX_COLOR = /^#[\da-f]{6}$/i;
 
 const duskColors: ThemeColors = {
   shell: "#25383d", chrome: "#141c1f", chromeText: "#f4f6f1", window: "#f2f1eb", windowMuted: "#e4e4dd",
-  text: "#192229", textMuted: "#666f6c", accent: "#e7b964", accentText: "#20261f", border: "#c6c9c1",
-  danger: "#983c34", dangerSurface: "#f3dfdc", desktopText: "#ffffff", selection: "#b88936",
+  text: "#192229", textMuted: "#59625f", accent: "#e7b964", accentText: "#20261f", border: "#c6c9c1",
+  danger: "#983c34", dangerSurface: "#f3dfdc", desktopText: "#ffffff", selection: "#96651d",
   editorBackground: "#f8f7f2", editorText: "#27302d", editorGutter: "#e8e8e1", editorKeyword: "#875d18",
-  editorString: "#47735d", editorComment: "#78817c",
+  editorString: "#47735d", editorComment: "#606964",
 };
 
 export const BUILTIN_THEMES: Record<BuiltinThemeId, { name: string; description: string; definition: ThemeDefinition }> = {
@@ -74,10 +74,10 @@ export const BUILTIN_THEMES: Record<BuiltinThemeId, { name: string; description:
     definition: {
       colors: {
         shell: "#534b3f", chrome: "#eee5d5", chromeText: "#332f29", window: "#fffaf0", windowMuted: "#eee4d2",
-        text: "#302d28", textMuted: "#726a5f", accent: "#a65f36", accentText: "#fffaf0", border: "#c9bba5",
+        text: "#302d28", textMuted: "#665e54", accent: "#a65f36", accentText: "#fffaf0", border: "#c9bba5",
         danger: "#9b3f35", dangerSurface: "#f6dfd8", desktopText: "#fffdf7", selection: "#bc7449",
         editorBackground: "#fffdf7", editorText: "#342f29", editorGutter: "#f0e6d7", editorKeyword: "#9a4f2d",
-        editorString: "#557348", editorComment: "#8a7d6d",
+        editorString: "#557348", editorComment: "#706354",
       },
       shape: { radius: 9, borderWidth: 1 }, effects: { blur: 4, opacity: 0.98, shadow: 0.3 },
       typography: { family: "humanist", scale: 1.02, weight: 600 }, density: 1.05, motion: 0.85, iconSize: 60,
@@ -149,12 +149,23 @@ function contrastRatio(foreground: string, background: string) {
 
 export function themeContrastIssues(definition: ThemeDefinition) {
   const { colors } = definition;
-  return [
+  const textPairs = [
     ["window text", colors.text, colors.window],
+    ["muted window text", colors.textMuted, colors.window],
+    ["muted surface text", colors.textMuted, colors.windowMuted],
     ["chrome text", colors.chromeText, colors.chrome],
     ["accent text", colors.accentText, colors.accent],
     ["editor text", colors.editorText, colors.editorBackground],
+    ["editor comment", colors.editorComment, colors.editorBackground],
+    ["editor gutter text", colors.editorComment, colors.editorGutter],
+    ["editor keyword", colors.editorKeyword, colors.editorBackground],
+    ["editor string", colors.editorString, colors.editorBackground],
   ].filter(([, foreground, background]) => contrastRatio(foreground, background) < 4.5).map(([label]) => label);
+  const indicatorPairs = [
+    ["accent indicator", colors.accent, colors.chrome],
+    ["selection and focus", colors.selection, colors.window],
+  ].filter(([, foreground, background]) => contrastRatio(foreground, background) < 3).map(([label]) => label);
+  return [...textPairs, ...indicatorPairs];
 }
 
 function boundedNumber(value: unknown, min: number, max: number, integer = false) {

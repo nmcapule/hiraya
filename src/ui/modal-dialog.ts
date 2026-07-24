@@ -29,6 +29,8 @@ export function useModalDialog(
     });
 
     function onKeyDown(event: KeyboardEvent) {
+      const topDialog = Array.from(document.querySelectorAll<HTMLElement>("[aria-modal='true']")).at(-1);
+      if (topDialog !== dialog) return;
       if (event.key === "Escape") {
         event.preventDefault();
         event.stopPropagation();

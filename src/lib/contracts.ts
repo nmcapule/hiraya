@@ -38,6 +38,23 @@ export type RemoteDesktopState = RemoteDesktopIdentity & {
   appearance: RemoteAppearance;
 };
 
+export type TrashItem = {
+  entry: RemoteEntry;
+  deletedAt: number;
+  descendantCount: number;
+};
+
+export type TrashDocument = {
+  schemaVersion: 1;
+  catalogId: string;
+  catalogRevision: number;
+  desktopId: string;
+  items: TrashItem[];
+};
+
+export type TrashRestoreResult = { catalogRevision: number; entries: RemoteEntry[] };
+export type TrashDeleteResult = { catalogRevision: number; deletedIds: string[] };
+
 export type DirectBlobAccess = { url: string; method: "GET" | "PUT"; headers: Record<string, string>; expiresAt: number };
 export type DirectBlobTarget = { entryId: string; access: DirectBlobAccess };
 export type BlobMutationPreparation = { state: "prepared"; uploadId: string; expiresAt: number; items: DirectBlobTarget[] } | { state: "committed" };
@@ -314,6 +331,10 @@ function parseEntry(value: unknown, remote: boolean): ParsedEntry {
   return { ...base, kind: "file", mimeType, size: value.size as number, ...revisions };
 }
 
+function parseRemoteEntry(value: unknown): RemoteEntry {
+  return parseEntry(value, true) as RemoteEntry;
+}
+
 export function parseLocalEntry(value: unknown): DesktopEntry {
   return parseEntry(value, false);
 }
@@ -348,6 +369,68 @@ export function parseEntries(value: unknown, remote = false): ParsedEntry[] {
     }
   }
   return entries;
+}
+
+export function parseTrashDocument(value: unknown, expectedDesktopId?: string): TrashDocument {
+  if (!isRecord(value)) throw new Error("The server Trash response has an unsupported format.");
+  if (readRevision(value.schemaVersion, "The server Trash response has an unsupported schema version.") !== 1) {
+    throw new Error("The server Trash response uses an unsupported schema version.");
+  }
+  assertValidId(value.catalogId, "The server Trash response has an invalid catalog identity.");
+  assertValidId(value.desktopId, "The server Trash response has an invalid desktop identity.");
+  if (expectedDesktopId !== undefined && value.desktopId !== expectedDesktopId) throw new Error("The server Trash response is for a different desktop.");
+  if (!Array.isArray(value.items)) throw new Error("The server Trash response has invalid items.");
+  const catalogRevision = readRevision(value.catalogRevision);
+  const ids = new Set<string>();
+  const items = value.items.map((candidate): TrashItem => {
+    if (!isRecord(candidate)) throw new Error("A Trash item has an unsupported format.");
+    const entry = parseRemoteEntry(candidate.entry);
+    if (ids.has(entry.id)) throw new Error("The server Trash response contains duplicate entry IDs.");
+    if (entry.revision > catalogRevision || entry.contentRevision > catalogRevision) throw new Error("A Trash item has a revision newer than its catalog.");
+    ids.add(entry.id);
+    return {
+      entry,
+      deletedAt: readNonNegativeInteger(candidate.deletedAt, "A Trash item has an invalid deletion date."),
+      descendantCount: readNonNegativeInteger(candidate.descendantCount, "A Trash item has an invalid descendant count."),
+    };
+  });
+  for (let index = 1; index < items.length; index += 1) {
+    const previous = items[index - 1];
+    const current = items[index];
+    if (current.deletedAt > previous.deletedAt || current.deletedAt === previous.deletedAt && current.entry.id < previous.entry.id) {
+      throw new Error("The server Trash response is not newest-first.");
+    }
+  }
+  return {
+    schemaVersion: 1,
+    catalogId: value.catalogId,
+    catalogRevision,
+    desktopId: value.desktopId,
+    items,
+  };
+}
+
+export function parseTrashRestoreResult(value: unknown, rootEntryId: string, destination?: "original" | "root"): TrashRestoreResult {
+  if (!isRecord(value) || !Array.isArray(value.entries) || value.entries.length === 0) throw new Error("The Trash restore response has an unsupported format.");
+  const catalogRevision = readRevision(value.catalogRevision);
+  const entries = value.entries.map(parseRemoteEntry);
+  const root = entries.find((entry) => entry.id === rootEntryId);
+  if (!root) throw new Error("The Trash restore response is missing its root entry.");
+  if (entries.some((entry) => entry.revision !== catalogRevision)) throw new Error("The Trash restore response has inconsistent entry revisions.");
+  if (destination === "root" && root.parentId !== null) throw new Error("The Trash restore response did not restore its root to the desktop.");
+  const normalized = entries.map((entry) => entry.id === rootEntryId ? { ...entry, parentId: null } : entry);
+  parseEntries(normalized, true);
+  return { catalogRevision, entries };
+}
+
+export function parseTrashDeleteResult(value: unknown): TrashDeleteResult {
+  if (!isRecord(value) || !Array.isArray(value.deletedIds) || value.deletedIds.length === 0) throw new Error("The permanent-delete response has an unsupported format.");
+  const deletedIds = value.deletedIds.map((id) => {
+    assertValidId(id, "The permanent-delete response has an invalid entry ID.");
+    return id;
+  });
+  if (new Set(deletedIds).size !== deletedIds.length) throw new Error("The permanent-delete response contains duplicate entry IDs.");
+  return { catalogRevision: readRevision(value.catalogRevision), deletedIds };
 }
 
 export function parseRemoteDesktopState(value: unknown): RemoteDesktopState {
