@@ -1,8 +1,9 @@
 import { useMemo, useRef, useState } from "react";
-import { Folder, File as FileIcon, X } from "@phosphor-icons/react";
+import { Folder, X } from "@phosphor-icons/react";
 import type { DialogRequest } from "../apps/host/dialogs";
 import type { DesktopEntry, FileEntry, FolderEntry } from "../types";
 import { useModalDialog } from "../ui/modal-dialog";
+import { EntryIcon } from "./VisualPrimitives";
 
 type Props = {
   request: Extract<DialogRequest, { kind: "openFile" | "openFolder" | "saveFile" }>;
@@ -60,7 +61,7 @@ export function AppPickerDialog({ request, entries, onCancel, onOpenFiles, onOpe
       <header className="window-header"><div><span className="window-kicker">App request</span><h2 id="app-picker-title">{title}</h2></div><button className="icon-button" type="button" onClick={onCancel} disabled={busy} aria-label="Close dialog"><X size={18} /></button></header>
       <div className="app-picker__content">
         {request.kind === "openFile" ? <div className="app-picker__list" role="group" aria-label="Files">
-          {files.map((file) => <label className="app-picker__item" key={file.id}><input type={request.params.multiple ? "checkbox" : "radio"} name="picked-file" checked={selected.includes(file.id)} onChange={(event) => setSelected(event.target.checked ? request.params.multiple ? [...selected, file.id] : [file.id] : selected.filter((id) => id !== file.id))} /><FileIcon size={17} /><span>{file.name}</span></label>)}
+          {files.map((file) => <label className="app-picker__item" key={file.id}><input type={request.params.multiple ? "checkbox" : "radio"} name="picked-file" checked={selected.includes(file.id)} onChange={(event) => setSelected(event.target.checked ? request.params.multiple ? [...selected, file.id] : [file.id] : selected.filter((id) => id !== file.id))} /><EntryIcon entry={file} size={17} /><span>{file.name}</span></label>)}
           {!files.length && <p>No matching files are available.</p>}
         </div> : <>
           <label>Location<select value={folderId} onChange={(event) => setFolderId(event.target.value)}><option value="">Desktop</option>{folders.map((folder) => <option key={folder.id} value={folder.id}>{folderLabels.get(folder.id)}</option>)}</select></label>

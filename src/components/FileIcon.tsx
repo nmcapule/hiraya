@@ -1,23 +1,6 @@
 import { useEffect, useLayoutEffect, useRef } from "react";
-import {
-  File as FileGlyph,
-  FileArchive,
-  FileAudio,
-  FileCode,
-  FileImage,
-  FilePdf,
-  FileText,
-  FileVideo,
-  Folder,
-  LinkSimple,
-  CloudArrowDown,
-  CloudCheck,
-  CloudSlash,
-  SpinnerGap,
-  WarningCircle,
-} from "@phosphor-icons/react";
+import { AvailabilityBadge, EntryIcon } from "./VisualPrimitives";
 import type { DesktopEntry, EntryPosition } from "../types";
-import { fileCapabilities } from "../ui/file-capabilities";
 import { offlineStatusLabel, type OfflineEntryAvailability } from "../lib/offline-availability";
 
 type Props = {
@@ -40,21 +23,7 @@ type Props = {
   offlineAvailability?: OfflineEntryAvailability;
 };
 
-export function EntryTypeIcon({ entry, size = 43 }: { entry: DesktopEntry; size?: number }) {
-  if (entry.kind === "folder") return <Folder size={size} weight="duotone" aria-hidden="true" />;
-  const { icon } = fileCapabilities(entry);
-  const props = { size, weight: "duotone" as const, "aria-hidden": true };
-
-  if (icon === "image") return <FileImage {...props} />;
-  if (icon === "video") return <FileVideo {...props} />;
-  if (icon === "audio") return <FileAudio {...props} />;
-  if (icon === "pdf") return <FilePdf {...props} />;
-  if (icon === "archive") return <FileArchive {...props} />;
-  if (icon === "url") return <LinkSimple {...props} />;
-  if (icon === "code") return <FileCode {...props} />;
-  if (icon === "text") return <FileText {...props} />;
-  return <FileGlyph {...props} />;
-}
+export const EntryTypeIcon = EntryIcon;
 
 export function FileIcon({ entry, selected, onSelect, onOpen, onMove, onDragAtEdge, onDragEnd, getSnapPreview, onContextMenu, onContextMenuAt, onExternalDrop, offlineAvailability }: Props) {
   const iconRef = useRef<HTMLButtonElement>(null);
@@ -324,10 +293,8 @@ export function FileIcon({ entry, selected, onSelect, onOpen, onMove, onDragAtEd
         onPointerCancel={(event) => { void finishDrag(event, true); }}
       >
         <span className="file-icon__art">
-          <EntryTypeIcon entry={entry} />
-          {offlineAvailability && offlineAvailability.status !== "unavailable" && <span className="offline-badge" data-status={offlineAvailability.status} title={offlineStatusLabel(offlineAvailability)} aria-hidden="true">
-            {offlineAvailability.status === "error" ? <WarningCircle /> : offlineAvailability.status === "updating" ? <SpinnerGap /> : offlineAvailability.status === "pinned" ? <CloudArrowDown /> : offlineAvailability.status === "partial" ? <CloudSlash /> : <CloudCheck />}
-          </span>}
+          <EntryIcon entry={entry} size={43} />
+          {offlineAvailability && <AvailabilityBadge availability={offlineAvailability} />}
         </span>
         <span className="file-icon__name">{entry.name}</span>
       </button>

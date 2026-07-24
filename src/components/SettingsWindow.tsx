@@ -13,12 +13,14 @@ import {
   type ThemeDefinition,
   type ThemeState,
   themeContrastIssues,
+  themeStyle,
 } from "../lib/themes";
 import { DEFAULT_WALLPAPER, WALLPAPERS, type DesktopEntry, type DesktopLayout, type FileEntry, type WallpaperPreset } from "../types";
 import { WALLPAPER_IMAGE_ACCEPT } from "../lib/wallpaper-image";
 import type { AppWindowHeaderElements } from "./AppWindow";
 import { installedAppIsAvailable, type InstalledApp } from "../apps/installed-apps";
 import type { PwaInstallState } from "../lib/pwa-install";
+import { RoleBadge, StatusBadge } from "./VisualPrimitives";
 
 const WALLPAPER_LABELS: Record<WallpaperPreset, { name: string; description: string }> = {
   dusk: { name: "Dusk", description: "Misty green with a warm horizon" },
@@ -49,6 +51,17 @@ const COLOR_LABELS: Record<keyof ThemeColors, string> = {
   editorComment: "Editor comment",
 };
 
+const SETTINGS_CATEGORIES = [
+  { id: "desktop", label: "Desktop", scope: "Shared with this desktop" },
+  { id: "files", label: "Files & content", scope: "This desktop and this browser" },
+  { id: "connection", label: "Connection & Offline", scope: "This desktop and browser storage" },
+  { id: "apps", label: "Apps & permissions", scope: "This device" },
+  { id: "device", label: "Device", scope: "This browser or installed app" },
+  { id: "data", label: "Data & admin", scope: "This desktop and server operations" },
+  { id: "help", label: "Help", scope: "Bundled on this device" },
+] as const;
+type SettingsCategory = typeof SETTINGS_CATEGORIES[number]["id"];
+
 type Props = {
   page: "main" | "themes" | "activity" | "apps";
   onPageChange: (page: "main" | "themes" | "activity" | "apps") => void;
@@ -58,7 +71,6 @@ type Props = {
   entries: DesktopEntry[];
   wallpaperUrl: string | null;
   appearance: ThemeState;
-  activeTheme: ThemeDefinition;
   canMutate: boolean;
   canViewActivity: boolean;
   restrictionReason: string;
@@ -89,7 +101,6 @@ type Props = {
   onWallpaperUpload: (file: File, layout: DesktopLayout, desktopId: string) => Promise<void>;
   onWallpaperSelect: (fileId: string, layout: DesktopLayout, desktopId: string) => Promise<void>;
   onThemeSelect: (themeId: string) => void | Promise<void>;
-  onThemePreview: (theme: ThemeDefinition | null) => void;
   onThemeSave: (theme: CustomTheme) => void | Promise<void>;
   onThemeDelete: (themeId: string) => void | Promise<void>;
   onExport: () => void;
@@ -156,7 +167,6 @@ export function SettingsWindow({
   entries,
   wallpaperUrl,
   appearance,
-  activeTheme,
   canMutate,
   canViewActivity,
   restrictionReason,
@@ -187,7 +197,6 @@ export function SettingsWindow({
   onWallpaperUpload,
   onWallpaperSelect,
   onThemeSelect,
-  onThemePreview,
   onThemeSave,
   onThemeDelete,
   onExport,
@@ -204,10 +213,12 @@ export function SettingsWindow({
   const [draft, setDraft] = useState<CustomTheme | null>(null);
   const [saving, setSaving] = useState(false);
   const [wallpaperBusy, setWallpaperBusy] = useState(false);
+  const [settingsCategory, setSettingsCategory] = useState<SettingsCategory>("desktop");
   const [layoutDraft, setLayoutDraft] = useState(() => ({ desktopId: activeDesktopId, layout }));
   const contentRef = useRef<HTMLDivElement>(null);
   const wallpaperUploadRef = useRef<HTMLInputElement>(null);
   const wallpaperCommitTimerRef = useRef<number | null>(null);
+  const draftSafeColorsRef = useRef<ThemeColors | null>(null);
   const pendingLayoutRef = useRef<{ desktopId: string; layout: DesktopLayout } | null>(null);
   const mainThemesButtonRef = useRef<HTMLButtonElement>(null);
   const mainActivityButtonRef = useRef<HTMLButtonElement>(null);
@@ -225,14 +236,13 @@ export function SettingsWindow({
   const wallpaperFile = wallpaperFileId ? entries.find((entry): entry is FileEntry => entry.id === wallpaperFileId && entry.kind === "file") : null;
   const wallpaperFiles = entries.filter((entry): entry is FileEntry => entry.kind === "file" && ["image/jpeg", "image/png", "image/webp"].includes(entry.mimeType.split(";", 1)[0].trim().toLowerCase()) && entry.size <= 20 * 1024 * 1024);
   const wallpaperName = displayedLayout.wallpaper.source in WALLPAPER_LABELS ? WALLPAPER_LABELS[displayedLayout.wallpaper.source as WallpaperPreset].name : wallpaperFile?.name ?? "Custom image";
+  const activeSettingsCategory = SETTINGS_CATEGORIES.find((category) => category.id === settingsCategory)!;
   const formatBuildTimestamp = (timestamp: string | null) => {
     if (!timestamp) return "Unavailable";
     const date = new Date(timestamp);
     if (Number.isNaN(date.valueOf())) return "Unavailable";
     return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "medium" }).format(date);
   };
-
-  useEffect(() => () => onThemePreview(null), [onThemePreview]);
 
   useEffect(() => {
     if (pendingLayoutRef.current?.desktopId === activeDesktopId) return;
@@ -276,16 +286,14 @@ export function SettingsWindow({
 
   const startDraft = (name: string, definition: ThemeDefinition, id: string = crypto.randomUUID()) => {
     const next = { id, name, definition: copyDefinition(definition) };
+    draftSafeColorsRef.current = { ...definition.colors };
     setDraft(next);
-    onThemePreview(next.definition);
   };
 
   const updateDraft = (update: (current: CustomTheme) => CustomTheme) => {
     setDraft((current) => {
       if (!current) return current;
-      const next = update(current);
-      onThemePreview(next.definition);
-      return next;
+      return update(current);
     });
   };
 
@@ -295,7 +303,6 @@ export function SettingsWindow({
     try {
       await onThemeSelect(themeId);
       setDraft(null);
-      onThemePreview(null);
     } catch {
       // The app-level error banner reports synchronization failures.
     } finally {
@@ -309,7 +316,6 @@ export function SettingsWindow({
     setSaving(true);
     try {
       await onThemeSave(saved);
-      onThemePreview(null);
       setDraft(null);
     } catch {
       // Keep the draft and preview available for retry.
@@ -325,7 +331,6 @@ export function SettingsWindow({
       await onThemeDelete(theme.id);
       if (draft?.id === theme.id) {
         setDraft(null);
-        onThemePreview(null);
       }
     } catch {
       // Keep the draft available if deletion fails.
@@ -336,7 +341,6 @@ export function SettingsWindow({
 
   const cancelDraft = () => {
     setDraft(null);
-    onThemePreview(null);
   };
 
   const openThemes = () => {
@@ -376,9 +380,12 @@ export function SettingsWindow({
         mobileHeaderElements.leading,
       )}
       <div className="settings-window__content" ref={contentRef}>
-        {page === "main" ? (
-          <>
-            <section className="settings-section" aria-labelledby="themes-link-heading">
+         {page === "main" ? (
+           <>
+             <header className="settings-ia-header"><div><h2>Settings</h2><span className="status-badge">This desktop + this device</span></div><p>Shared desktop choices and browser-local preferences are labeled at the point of use.</p>{!canMutate && <p className="settings-window__offline" role="status">Restricted: {restrictionReason}</p>}</header>
+              <nav className="settings-ia-categories" aria-label="Settings categories">{SETTINGS_CATEGORIES.map((category) => <button type="button" aria-pressed={category.id === settingsCategory} key={category.id} onClick={() => { setSettingsCategory(category.id); contentRef.current?.scrollTo({ top: 0 }); }}>{category.label}</button>)}</nav>
+              <div className="settings-scope-summary" role="status"><strong>{activeSettingsCategory.label}</strong><span>Scope: {activeSettingsCategory.scope}</span></div>
+              <section className="settings-section" aria-labelledby="themes-link-heading" hidden={settingsCategory !== "desktop"}>
               <button className="settings-row settings-row--navigation" type="button" ref={mainThemesButtonRef} onClick={openThemes}>
                 <span className="settings-row__icon"><PaintBrush size={17} /></span>
                 <span className="settings-row__copy">
@@ -389,7 +396,7 @@ export function SettingsWindow({
               </button>
             </section>
 
-            {canViewActivity && <section className="settings-section" aria-labelledby="activity-link-heading">
+            {canViewActivity && <section className="settings-section" aria-labelledby="activity-link-heading" hidden={settingsCategory !== "data"}>
               <button className="settings-row settings-row--navigation" type="button" ref={mainActivityButtonRef} onClick={openActivity}>
                 <span className="settings-row__icon"><ClockCounterClockwise size={17} /></span>
                 <span className="settings-row__copy">
@@ -400,19 +407,19 @@ export function SettingsWindow({
               </button>
             </section>}
 
-            <section className="settings-section" aria-labelledby="apps-link-heading">
+            <section className="settings-section" aria-labelledby="apps-link-heading" hidden={settingsCategory !== "apps"}>
               <button className="settings-row settings-row--navigation" type="button" ref={mainAppsButtonRef} onClick={openApps}>
                 <span className="settings-row__icon"><Package size={17} /></span><span className="settings-row__copy"><strong id="apps-link-heading">Apps</strong><small>{installedApps.length ? `${installedApps.length} approved ${installedApps.length === 1 ? "app" : "apps"} on this device.` : "Manage approved app packages."}</small></span><CaretRight className="settings-row__chevron" size={17} aria-hidden="true" />
               </button>
             </section>
 
-            <section className="settings-section" aria-labelledby="offline-storage-link-heading">
+            <section className="settings-section" aria-labelledby="offline-storage-link-heading" hidden={settingsCategory !== "connection"}>
               <button className="settings-row settings-row--navigation" type="button" onClick={onOpenOfflineStorage}>
-                <span className="settings-row__icon"><CloudCheck size={17} /></span><span className="settings-row__copy"><strong id="offline-storage-link-heading">Offline Storage</strong><small>Pin folders and selections, inspect downloaded bytes, or safely release cache.</small></span><CaretRight className="settings-row__chevron" size={17} aria-hidden="true" />
+                <span className="settings-row__icon"><CloudCheck size={17} /></span><span className="settings-row__copy"><strong id="offline-storage-link-heading">Connection &amp; Offline</strong><small>Review sync, pending work, pins, downloaded bytes, and browser storage.</small></span><CaretRight className="settings-row__chevron" size={17} aria-hidden="true" />
               </button>
             </section>
 
-            <section className="settings-section" aria-labelledby="desktop-heading">
+            <section className="settings-section" aria-labelledby="desktop-heading" hidden={settingsCategory !== "desktop"}>
               <div className="settings-section__heading">
                 <ArrowsOut size={18} />
                 <div><h3 id="desktop-heading">Desktop</h3><p>Adjust icon placement and the viewing area.</p></div>
@@ -433,7 +440,7 @@ export function SettingsWindow({
               </div>
             </section>
 
-            <section className="settings-section" aria-labelledby="external-content-heading">
+            <section className="settings-section" aria-labelledby="external-content-heading" hidden={settingsCategory !== "files"}>
               <div className="settings-section__heading">
                 <GlobeSimple size={18} />
                 <div><h3 id="external-content-heading">External content</h3><p>Control network content shown inside text files.</p></div>
@@ -447,27 +454,27 @@ export function SettingsWindow({
               </div>
             </section>
 
-            <section className="settings-section" aria-labelledby="search-heading">
+            <section className="settings-section" aria-labelledby="search-heading" hidden={settingsCategory !== "files"}>
               <div className="settings-section__heading"><MagnifyingGlass size={18} /><div><h3 id="search-heading">Search</h3><p>Choose how broadly file search runs.</p></div></div>
               <div className="settings-list"><label className="settings-row"><span className="settings-row__icon"><MagnifyingGlass size={17} /></span><span className="settings-row__copy"><strong>All accessible desktops</strong><small>{desktopSearchAvailable ? "Use authoritative server results online and cached browser results offline." : "This server does not advertise accessible-desktop search."}</small></span><input type="checkbox" checked={searchAllDesktops} disabled={!desktopSearchAvailable || !localPreferencesLoaded} onChange={(event) => onSearchAllDesktopsChange(event.target.checked)} /></label></div>
             </section>
 
-            <section className="settings-section" aria-labelledby="getting-started-heading">
-              <div className="settings-section__heading"><Info size={18} /><div><h3 id="getting-started-heading">Help and installation</h3><p>Device-local guidance and app installation.</p></div></div>
+            <section className="settings-section" aria-labelledby="getting-started-heading" hidden={settingsCategory !== "help"}>
+              <div className="settings-section__heading"><Info size={18} /><div><h3 id="getting-started-heading">Help</h3><p>Bundled guidance for using and troubleshooting Hiraya.</p></div></div>
               <div className="settings-list">
                 <div className="settings-row"><span className="settings-row__icon"><BookOpenText size={17} /></span><span className="settings-row__copy"><strong>User Guide</strong><small>Read about files, desktops, areas, sharing, offline use, apps, backup, and troubleshooting.</small></span><button className="button button--quiet" type="button" onClick={() => onOpenHelp("start-here")}>Open</button></div>
                 <div className="settings-row"><span className="settings-row__icon"><Info size={17} /></span><span className="settings-row__copy"><strong>Getting Started</strong><small>Review storage, offline use, export, backup, and desktop areas.</small></span><button className="button button--quiet" type="button" onClick={onOpenGettingStarted}>Open</button></div>
-                <div className="settings-row"><span className="settings-row__icon"><DownloadSimple size={17} /></span><span className="settings-row__copy"><strong>Install Hiraya</strong><small>{installState === "standalone" ? "Running as an installed app." : installState === "installed" ? "Installed on this device." : installState === "promptable" ? "Ready to install from Hiraya." : "Use your browser's Install app or Add to Home Screen menu."}</small></span>{installState === "promptable" && <button className="button button--quiet" type="button" onClick={onInstall}>Install</button>}</div>
               </div>
               <button className="inline-help-link" type="button" onClick={() => onOpenHelp("installation-and-updates")}>Installation requirements and alternatives</button>
             </section>
 
-            <section className="settings-section" aria-labelledby="updates-heading">
+            <section className="settings-section" aria-labelledby="updates-heading" hidden={settingsCategory !== "device"}>
               <div className="settings-section__heading">
                 <ArrowClockwise size={18} />
                 <div><h3 id="updates-heading">Updates</h3><p>Keep this installed app current.</p></div>
               </div>
               <div className="settings-list">
+                <div className="settings-row"><span className="settings-row__icon"><DownloadSimple size={17} /></span><span className="settings-row__copy"><strong>Install Hiraya</strong><small>{installState === "standalone" ? "Running as an installed app." : installState === "installed" ? "Installed on this device." : installState === "promptable" ? "Ready to install from Hiraya." : "Use your browser's Install app or Add to Home Screen menu."}</small></span>{installState === "promptable" && <button className="button button--quiet" type="button" onClick={onInstall}>Install</button>}</div>
                 <div className="settings-row">
                   <span className="settings-row__icon"><ArrowClockwise size={17} weight={updateReady ? "bold" : "regular"} /></span>
                   <span className="settings-row__copy"><strong>Update to latest version</strong><small>{!updateSupported ? "Available in production PWA builds." : updateReady ? "A new version is ready to install." : "Check for a newer app release."}</small></span>
@@ -490,7 +497,7 @@ export function SettingsWindow({
               <button className="inline-help-link" type="button" onClick={() => onOpenHelp("installation-and-updates")}>How Hiraya updates work</button>
             </section>
 
-            <section className="settings-section" aria-labelledby="export-heading">
+            <section className="settings-section" aria-labelledby="export-heading" hidden={settingsCategory !== "data"}>
               <div className="settings-section__heading">
                 <ExportIcon size={18} />
                 <div><h3 id="export-heading">Export</h3><p>Create a seeded ZIP for a fresh frontend-only deployment.</p></div>
@@ -502,7 +509,6 @@ export function SettingsWindow({
               <button className="inline-help-link" type="button" onClick={() => onOpenHelp("export-backup-and-recovery")}>Export versus server backup and recovery</button>
             </section>
 
-            {!canMutate && <p className="settings-window__offline" role="status">{restrictionReason}</p>}
           </>
         ) : page === "themes" ? (
           <div className="settings-page">
@@ -569,8 +575,17 @@ export function SettingsWindow({
             <form className="theme-editor" onSubmit={(event) => { event.preventDefault(); void saveDraft(); }}>
               <div className="theme-editor__heading">
                 <h4>Theme editor</h4>
-                <span className="theme-swatch" style={{ background: `linear-gradient(135deg, ${activeTheme.colors.chrome} 0 50%, ${activeTheme.colors.accent} 50%)` }} aria-hidden="true" />
+                <span className="theme-swatch" style={{ background: `linear-gradient(135deg, ${draft.definition.colors.chrome} 0 50%, ${draft.definition.colors.accent} 50%)` }} aria-hidden="true" />
               </div>
+              <section className="theme-preview-canvas desktop-shell" style={themeStyle(draft.definition)} role="region" aria-label="Isolated custom theme component preview">
+                <div className="theme-preview-canvas__illustration" inert>
+                  <div className="theme-preview-canvas__chrome"><span>Hiraya</span><StatusBadge tone="success" surface="chrome">Synced</StatusBadge></div>
+                  <div className="theme-preview-canvas__window">
+                    <strong>Preview window</strong><small>Muted metadata remains readable.</small>
+                    <div><button className="button button--primary" type="button" tabIndex={-1}>Primary</button><button className="button button--quiet" type="button" tabIndex={-1}>Secondary</button><RoleBadge>Reader</RoleBadge></div>
+                  </div>
+                </div>
+              </section>
               <label className="theme-field">Name<input type="text" value={draft.name} maxLength={60} required disabled={mutationsDisabled} onChange={(event) => updateDraft((current) => ({ ...current, name: event.target.value }))} /></label>
 
               <fieldset className="theme-group">
@@ -608,7 +623,10 @@ export function SettingsWindow({
                 <NumberControl label="Icon size" value={draft.definition.iconSize} min={48} max={72} step={1} disabled={mutationsDisabled} onChange={(iconSize) => updateDraft((current) => ({ ...current, definition: { ...current.definition, iconSize } }))} />
               </fieldset>
 
-              {contrastIssues.length > 0 && <p className="theme-editor__warning" role="alert">Increase contrast for {contrastIssues.join(", ")} before saving.</p>}
+              {contrastIssues.length > 0 && <div className="theme-editor__warning" role="alert"><span>Increase contrast for {contrastIssues.join(", ")} before saving.</span><button className="button button--quiet" type="button" onClick={() => {
+                const safeColors = draftSafeColorsRef.current;
+                if (safeColors) updateDraft((current) => ({ ...current, definition: { ...current.definition, colors: { ...safeColors } } }));
+              }}>Reset unsafe colors</button></div>}
 
               <div className="theme-editor__actions">
                 <button className="button button--quiet" type="button" disabled={saving} onClick={cancelDraft}>Cancel</button>

@@ -18,6 +18,15 @@ export function isHelpSectionId(value: string): value is HelpSectionId {
   return HELP_SECTIONS.some((section) => section.id === value);
 }
 
+export function guideSectionMarkdown(markdown: string, section: HelpSectionId) {
+  const heading = new RegExp(`^##\\s+.+?\\s+\\{#${section}\\}\\s*$`, "m");
+  const match = heading.exec(markdown);
+  if (!match) return "";
+  const rest = markdown.slice(match.index);
+  const next = rest.slice(match[0].length).search(/^##\s+/m);
+  return next < 0 ? rest.trim() : rest.slice(0, match[0].length + next).trim();
+}
+
 export function validateGuideLinks(markdown: string, headingIds: ReadonlySet<string>) {
   if (/!\[[^\]]*\]\(/.test(markdown)) throw new Error("The user guide must not contain images.");
   if (/\[[^\]\n]+\]\[[^\]\n]*\]/.test(markdown) || /^\[[^\]\n]+\]:\s*/m.test(markdown)) throw new Error("The user guide must use inline fragment links.");

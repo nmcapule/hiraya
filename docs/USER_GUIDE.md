@@ -8,7 +8,7 @@ Hiraya is a self-hosted, local-first workspace that presents files on a spatial 
 
 In a synchronized installation, the server is the authoritative home of desktops and files. The browser keeps a projected desktop, downloaded file copies, and queued changes so supported work can continue through a short outage. In browser-local mode, this browser is authoritative and clearing its site data removes your Hiraya content.
 
-Use the desktop switcher for **named desktops**. Use [Areas](#desktops-and-areas) to move around within one desktop. Open Search to find files, folders, windows, commands, or the command that opens this guide.
+Use the workspace switcher for **named desktops**. Use [Workspace Overview](#desktops-and-areas) to move around within one desktop and focus its windows. Open Search to find files, folders, windows, commands, or the command that opens this guide.
 
 ## Files, folders, and hierarchy import {#files-and-folders}
 
@@ -24,7 +24,7 @@ A **desktop** is a named workspace with its own files, folders, appearance, shar
 
 An **area** is a viewport-sized region derived from item and window coordinates on one continuous desktop. Areas are not named containers, folders, or separately saved records. Moving the last contents out of an area can make that derived area disappear.
 
-Open **Areas** from the toolbar, navigation and tools menu, or command palette. There you can create an adjacent area, go to an area, move selected root items or the focused window, move an area's contents back to the current area, and arrange occupied areas. These explicit controls avoid relying on edge dragging, swiping, or long presses.
+Open **Workspace Overview** from the system menu, minimap, mobile window sheet, or Search. Its spatial and window views let you add an adjacent region, navigate, focus windows, move selected root items or the focused window, move a region's contents back to the current region, and arrange occupied regions. Swiping navigates among occupied regions only; use Add adjacent to enter an empty region explicitly.
 
 ## Sharing, roles, and public links {#sharing}
 
@@ -41,7 +41,7 @@ A public link is different from membership: anyone who has its opaque URL can br
 
 ## Offline cache and pins {#offline}
 
-In synchronized mode, the server remains authoritative. Opening a file may download a validated browser copy. Pin a file, folder, or selection with **Make available offline**; folder pins include current and new descendants. Open **Offline Storage** to inspect downloaded bytes, retry downloads, unpin roots, and release unpinned copies without deleting server files.
+In synchronized mode, the server remains authoritative. Opening a file may download a validated browser copy. Pin a file, folder, or selection with **Make available offline**; folder pins include current and new descendants. Open **Connection & Offline** to review connection state, pending or blocked work, downloaded bytes, pins, and storage without deleting server files.
 
 Offline availability is not a backup. Browser storage is origin-scoped: clearing site data, resetting the browser profile, uninstalling with data removal, private-browsing cleanup, or browser eviction can remove cached copies and queued changes. The origin-wide storage estimate may include Hiraya databases, app data, and other data for this origin, not only downloaded files.
 
@@ -73,7 +73,7 @@ Full synchronized recovery requires a server operator to use Hiraya's supported 
 
 ### Sync blocked {#sync-blocked}
 
-Open **Sync status** from the status button. A blocked queued change needs a decision before replay can continue. Read the affected item names and error, then retry after fixing the cause or discard only if you accept restoring the server version. Do not clear site data to fix sync; that can erase the queued change.
+Open **Connection & Offline** from the summarized status button. A blocked queued change needs a decision before replay can continue. Read the affected item names and error, then retry after fixing the cause or discard only if you accept restoring the server version. Do not clear site data to fix sync; that can erase the queued change.
 
 ### Offline file unavailable {#offline-unavailable}
 
@@ -81,7 +81,7 @@ The file was not downloaded, its revision changed, or your shared access cannot 
 
 ### Browser storage full {#storage-full}
 
-Open **Offline Storage** and release unpinned downloaded copies. Its origin-wide estimate includes all storage reported for this Hiraya origin, not all browser profiles or sites. Remove other origin data only if you understand what it belongs to. Pending uploads, pinned copies, and authoritative browser-local files are protected by Hiraya; download important files individually before making broad storage changes.
+Open **Connection & Offline** and release unpinned downloaded copies. Its origin-wide estimate includes all storage reported for this Hiraya origin, not all browser profiles or sites. Remove other origin data only if you understand what it belongs to. Pending uploads, pinned copies, and authoritative browser-local files are protected by Hiraya; download important files individually before making broad storage changes.
 
 ### Permission denied or controls unavailable {#permissions}
 

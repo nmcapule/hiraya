@@ -79,12 +79,10 @@ describe("app command contributions", () => {
       APP_COMMAND_IDS.upload,
       APP_COMMAND_IDS.importFolder,
       APP_COMMAND_IDS.trash,
-      APP_COMMAND_IDS.areas,
-      APP_COMMAND_IDS.offline,
-      APP_COMMAND_IDS.windows,
+      APP_COMMAND_IDS.workspaceOverview,
+      APP_COMMAND_IDS.connection,
       APP_COMMAND_IDS.help,
       APP_COMMAND_IDS.shortcuts,
-      APP_COMMAND_IDS.sync,
     ]);
     expect(await service.execute(APP_COMMAND_IDS.newFile, context)).toBe(false);
     expect(await service.execute(APP_COMMAND_IDS.trash, context)).toBe(false);

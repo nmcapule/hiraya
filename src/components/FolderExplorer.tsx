@@ -3,7 +3,6 @@ import { createPortal } from "react-dom";
 import {
   ArrowLeft,
   DotsThreeVertical,
-  File as FileGlyph,
   FilePlus,
   Folder,
   FolderOpen,
@@ -21,6 +20,7 @@ import { filterAndSortEntries, formatEntrySize, type FolderSortKey, type SortDir
 import type { AppWindowHeaderElements } from "./AppWindow";
 import { MobileHeaderMenu } from "./MobileHeaderMenu";
 import { offlineStatusLabel, type OfflineEntryAvailability } from "../lib/offline-availability";
+import { AvailabilityBadge, EntryIcon } from "./VisualPrimitives";
 
 export interface FolderExplorerProps {
   folder: FolderEntry | null;
@@ -305,7 +305,7 @@ export function FolderExplorer({
                   onPointerUp={(event) => finishPointer(event)}
                   onPointerCancel={(event) => finishPointer(event, true)}
                 >
-                  {entry.kind === "folder" ? <Folder size={24} weight="duotone" /> : <FileGlyph size={24} weight="duotone" />}
+                  <span className="folder-explorer__entry-icon"><EntryIcon entry={entry} size={24} />{offlineAvailability[entry.id] && <AvailabilityBadge availability={offlineAvailability[entry.id]} />}</span>
                   <span className="folder-explorer__name">{entry.name}</span>
                   <span className="folder-explorer__kind">{entry.kind === "folder" ? "Folder" : entry.mimeType || "File"}{offlineAvailability[entry.id] && <small data-offline-status={offlineAvailability[entry.id].status}>{offlineStatusLabel(offlineAvailability[entry.id])}</small>}</span>
                   <time className="folder-explorer__date" dateTime={new Date(entry.modifiedAt).toISOString()}>{dateFormatter.format(entry.modifiedAt)}</time>

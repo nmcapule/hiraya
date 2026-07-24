@@ -14,9 +14,9 @@ describe("responsive desktop geometry", () => {
       { segment: { column: -1, row: 0 }, rootItemCount: 1, windowCount: 0 },
     ], { column: 1, row: 0 });
     expect(areas).toEqual([
-      { segment: { column: -1, row: 0 }, rootItemCount: 1, windowCount: 0, current: false, occupied: true, key: "0:-1", label: "Area 1", coordinateLabel: "Column -1, row 0" },
-      { segment: { column: 0, row: 0 }, rootItemCount: 2, windowCount: 1, current: false, occupied: true, key: "0:0", label: "Area 2", coordinateLabel: "Column 0, row 0" },
-      { segment: { column: 1, row: 0 }, rootItemCount: 0, windowCount: 0, current: true, occupied: false, key: "0:1", label: "Area 3", coordinateLabel: "Column 1, row 0" },
+      { segment: { column: -1, row: 0 }, rootItemCount: 1, windowCount: 0, current: false, occupied: true, key: "0:-1", label: "Left", coordinateLabel: "Column -1, row 0" },
+      { segment: { column: 0, row: 0 }, rootItemCount: 2, windowCount: 1, current: false, occupied: true, key: "0:0", label: "Home", coordinateLabel: "Column 0, row 0" },
+      { segment: { column: 1, row: 0 }, rootItemCount: 0, windowCount: 0, current: true, occupied: false, key: "0:1", label: "Current", coordinateLabel: "Column 1, row 0" },
     ]);
     expect(arrangeableAreaItems(areas).map((area) => area.key)).toEqual(["0:-1", "0:0"]);
   });

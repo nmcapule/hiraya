@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { OutboxRecord } from "../src/lib/outbox";
-import { filterAndGroupSearchItems, filterAndGroupShortcuts, groupWindowsByArea, outboxRecordLabel, partitionSyncRecords } from "../src/ui/panel-data";
+import { filterAndGroupSearchItems, filterAndGroupShortcuts, groupWindowsByArea, outboxRecordLabel, partitionSyncRecords, selectedRenderedItem } from "../src/ui/panel-data";
 
 describe("panel data helpers", () => {
   test("filters search items across metadata and preserves category order", () => {
@@ -16,6 +16,22 @@ describe("panel data helpers", () => {
       { id: "command", category: "commands", label: "Create folder", keywords: ["new directory"] },
       { id: "file", category: "files", label: "Roadmap.md" },
     ], "new directory").map((group) => group.category)).toEqual(["commands"]);
+  });
+
+  test("ranks exact and prefix labels before broader metadata matches", () => {
+    const groups = filterAndGroupSearchItems([
+      { id: "metadata", category: "files", label: "Notes", detail: "Roadmap archive" },
+      { id: "prefix", category: "files", label: "Roadmap draft" },
+      { id: "exact", category: "files", label: "Roadmap" },
+    ], "roadmap");
+    expect(groups[0].items.map((item) => item.id)).toEqual(["exact", "prefix", "metadata"]);
+  });
+
+  test("selects exactly the rendered search item without recomputing results", () => {
+    const rendered = [{ id: "stale-but-visible" }, { id: "current-selection" }];
+    expect(selectedRenderedItem(rendered, 1)).toBe(rendered[1]);
+    expect(selectedRenderedItem(rendered, 99)).toBe(rendered[1]);
+    expect(selectedRenderedItem([], 0)).toBeUndefined();
   });
 
   test("filters shortcuts by group, action, and keys", () => {

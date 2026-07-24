@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
-import { ArrowsOut, CaretDown, Minus, X } from "@phosphor-icons/react";
+import { ArrowLeft, ArrowsOut, CaretDown, Minus, SquaresFour, X } from "@phosphor-icons/react";
 import {
   clampWindowBounds,
   resizeWindowBounds,
@@ -23,12 +23,16 @@ export type AppWindowProps = {
   onBoundsChange: (id: string, bounds: WindowBounds) => void;
   onDragAtEdge?: (id: string, clientX: number, clientY: number, bounds: WindowBounds) => WindowBounds | null;
   onDragEnd?: (id: string, cancelled: boolean) => void;
-  onMinimize: (id: string) => void;
-  onClose: (id: string) => void;
+  onMinimize?: (id: string) => void;
+  onClose?: (id: string) => void;
   maximized?: boolean;
   canMoveArea?: boolean;
   onToggleMaximize?: (id: string) => void;
   onMoveArea?: (id: string, direction: "left" | "right" | "up" | "down") => void;
+  onShowDesktop?: () => void;
+  onSwitchWindow?: () => void;
+  mobileBackLabel?: string;
+  hideMobileHeader?: boolean;
   children: ReactNode | ((headerElements: AppWindowHeaderElements) => ReactNode);
   titleArea?: ReactNode;
   headerContent?: ReactNode;
@@ -74,6 +78,10 @@ export function AppWindow({
   canMoveArea = false,
   onToggleMaximize,
   onMoveArea,
+  onShowDesktop,
+  onSwitchWindow,
+  mobileBackLabel = "Back to Desktop",
+  hideMobileHeader = false,
   children,
   titleArea,
   headerContent,
@@ -207,7 +215,7 @@ export function AppWindow({
       style={style}
       onPointerDown={() => { if (!focused) onFocus(id); }}
     >
-      <header
+      {(!mobile || !hideMobileHeader) && <header
         className="app-window__header"
         data-window-drag-handle
         onPointerDown={beginInteraction}
@@ -222,7 +230,11 @@ export function AppWindow({
         </div>
         {(headerContent || typeof children === "function") && <div ref={setHeaderActionsElement} className="app-window__header-content" data-window-no-drag>{headerContent}</div>}
         <div className="app-window__controls" data-window-no-drag>
-          {onToggleMaximize && <div className="app-window__menu-wrap">
+          {mobile ? <>
+            {onShowDesktop && <button className="app-window__control app-window__mobile-action" type="button" onClick={onShowDesktop}><ArrowLeft /> <span>{mobileBackLabel}</span></button>}
+            {onSwitchWindow && <button className="app-window__control app-window__mobile-action" type="button" onClick={onSwitchWindow}><SquaresFour /> <span>Switch Window</span></button>}
+            {onClose && <button className="app-window__control app-window__mobile-action app-window__control--close" type="button" onClick={() => onClose(id)}><X /> <span>Close</span></button>}
+          </> : <>{onToggleMaximize && <div className="app-window__menu-wrap">
             <button ref={windowMenuButtonRef} className="app-window__control" type="button" aria-label={`Window actions for ${title}`} aria-haspopup="menu" aria-expanded={windowMenuOpen} onClick={() => setWindowMenuOpen((open) => !open)}><CaretDown size={15} /></button>
             {windowMenuOpen && <div ref={windowMenuRef} className="app-window__menu" role="menu" onKeyDown={(event) => {
               const items = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>("[role='menuitem']:not(:disabled)"));
@@ -240,14 +252,15 @@ export function AppWindow({
               {canMoveArea && onMoveArea && (["left", "right", "up", "down"] as const).map((direction) => <button type="button" role="menuitem" key={direction} onClick={() => { onMoveArea(id, direction); setWindowMenuOpen(false); }}>Move to area {direction}<kbd>Alt {direction}</kbd></button>)}
             </div>}
           </div>}
-          <button className="app-window__control app-window__control--minimize" type="button" onClick={() => onMinimize(id)} aria-label={`Minimize ${title}`}>
+          {onMinimize && <button className="app-window__control app-window__control--minimize" type="button" onClick={() => onMinimize(id)} aria-label={`Minimize ${title}`}>
             <Minus size={16} />
-          </button>
-          <button className="app-window__control app-window__control--close" type="button" onClick={() => onClose(id)} aria-label={`Close ${title}`}>
+          </button>}
+          {onClose && <button className="app-window__control app-window__control--close" type="button" onClick={() => onClose(id)} aria-label={`Close ${title}`}>
             <X size={16} />
-          </button>
+          </button>}
+          </>}
         </div>
-      </header>
+      </header>}
       <div className="app-window__content">{typeof children === "function" ? children({ leading: headerLeadingElement, actions: headerActionsElement }) : children}</div>
       {!mobile && RESIZE_DIRECTIONS.map((direction) => (
         <div

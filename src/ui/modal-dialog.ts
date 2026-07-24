@@ -1,6 +1,35 @@
 import { useEffect, useRef, type RefObject } from "react";
+import { linearNavigationIndex } from "./keyboard-navigation";
 
 const FOCUSABLE = "button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex='-1'])";
+type ModalEntry = { backdrop: HTMLElement; dialog: HTMLElement; previousFocus: HTMLElement | null };
+const modalStack: ModalEntry[] = [];
+const originalInert = new Map<HTMLElement, boolean>();
+let modalObserver: MutationObserver | null = null;
+
+function refreshModalIsolation() {
+  for (const [element, inert] of originalInert) element.inert = inert;
+  originalInert.clear();
+  const top = modalStack.at(-1);
+  if (!top) return;
+  const siblings = Array.from(top.backdrop.parentElement?.children ?? []).filter((element) => element !== top.backdrop) as HTMLElement[];
+  for (const sibling of siblings) {
+    originalInert.set(sibling, sibling.inert);
+    sibling.inert = true;
+  }
+}
+
+function observeModalSiblings() {
+  if (modalObserver || !document.body) return;
+  modalObserver = new MutationObserver(() => refreshModalIsolation());
+  modalObserver.observe(document.body, { childList: true, subtree: true });
+}
+
+function stopObservingModalSiblings() {
+  if (modalStack.length) return;
+  modalObserver?.disconnect();
+  modalObserver = null;
+}
 
 export function useModalDialog(
   backdropRef: RefObject<HTMLElement | null>,
@@ -13,24 +42,22 @@ export function useModalDialog(
   onCloseRef.current = onClose;
   dismissDisabledRef.current = dismissDisabled;
   useEffect(() => {
-    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const backdrop = backdropRef.current;
     const dialog = dialogRef.current;
     if (!backdrop || !dialog) return;
-
-    const siblings = Array.from(backdrop.parentElement?.children ?? []).filter((element) => element !== backdrop) as HTMLElement[];
-    const previousInert = siblings.map((element) => element.inert);
-    siblings.forEach((element) => { element.inert = true; });
+    const entry: ModalEntry = { backdrop, dialog, previousFocus: document.activeElement instanceof HTMLElement ? document.activeElement : null };
+    modalStack.push(entry);
+    observeModalSiblings();
+    refreshModalIsolation();
 
     requestAnimationFrame(() => {
-      if (!dialog.contains(document.activeElement)) {
+      if (modalStack.at(-1) === entry && !dialog.contains(document.activeElement)) {
         (dialog.querySelector<HTMLElement>("[autofocus]") ?? dialog).focus();
       }
     });
 
     function onKeyDown(event: KeyboardEvent) {
-      const topDialog = Array.from(document.querySelectorAll<HTMLElement>("[aria-modal='true']")).at(-1);
-      if (topDialog !== dialog) return;
+      if (modalStack.at(-1) !== entry) return;
       if (event.key === "Escape") {
         event.preventDefault();
         event.stopPropagation();
@@ -48,18 +75,26 @@ export function useModalDialog(
       const last = focusable.at(-1)!;
       if (event.shiftKey && document.activeElement === first) {
         event.preventDefault();
-        last.focus();
+        focusable[linearNavigationIndex(0, focusable.length, "ArrowUp", "vertical")]?.focus();
       } else if (!event.shiftKey && document.activeElement === last) {
         event.preventDefault();
-        first.focus();
+        focusable[linearNavigationIndex(focusable.length - 1, focusable.length, "ArrowDown", "vertical")]?.focus();
       }
     }
 
     document.addEventListener("keydown", onKeyDown, true);
     return () => {
       document.removeEventListener("keydown", onKeyDown, true);
-      siblings.forEach((element, index) => { element.inert = previousInert[index]; });
-      requestAnimationFrame(() => previousFocus?.focus());
+      const wasTop = modalStack.at(-1) === entry;
+      const index = modalStack.indexOf(entry);
+      if (index >= 0) modalStack.splice(index, 1);
+      refreshModalIsolation();
+      stopObservingModalSiblings();
+      if (wasTop) requestAnimationFrame(() => {
+        const next = modalStack.at(-1);
+        if (entry.previousFocus?.isConnected && (!next || next.dialog.contains(entry.previousFocus))) entry.previousFocus.focus();
+        else next?.dialog.focus();
+      });
     };
   }, [backdropRef, dialogRef]);
 }

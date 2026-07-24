@@ -17,16 +17,28 @@ export type SearchGroup<T extends SearchItem = SearchItem> = {
 };
 
 export function filterAndGroupSearchItems<T extends SearchItem>(items: readonly T[], query: string): SearchGroup<T>[] {
-  const terms = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+  const normalized = query.trim().toLocaleLowerCase();
+  const terms = normalized.split(/\s+/).filter(Boolean);
   const matching = terms.length === 0 ? items : items.filter((item) => {
     const searchable = [item.label, item.detail, ...(item.keywords ?? [])].filter(Boolean).join(" ").toLocaleLowerCase();
     return terms.every((term) => searchable.includes(term));
   });
 
   return SEARCH_CATEGORIES.flatMap((category) => {
-    const categoryItems = matching.filter((item) => item.category === category);
+    const categoryItems = matching.filter((item) => item.category === category).sort((left, right) => {
+      if (!normalized) return 0;
+      const rank = (item: SearchItem) => {
+        const label = item.label.toLocaleLowerCase();
+        return label === normalized ? 0 : label.startsWith(normalized) ? 1 : 2;
+      };
+      return rank(left) - rank(right);
+    });
     return categoryItems.length > 0 ? [{ category, items: categoryItems }] : [];
   });
+}
+
+export function selectedRenderedItem<T>(items: readonly T[], activeIndex: number) {
+  return items.length ? items[Math.min(Math.max(0, activeIndex), items.length - 1)] : undefined;
 }
 
 export type KeyboardShortcut = {

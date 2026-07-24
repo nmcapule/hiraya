@@ -141,31 +141,156 @@ function relativeLuminance(color: string) {
   return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
 }
 
-function contrastRatio(foreground: string, background: string) {
+export function themeContrastRatio(foreground: string, background: string) {
   const first = relativeLuminance(foreground);
   const second = relativeLuminance(background);
   return (Math.max(first, second) + 0.05) / (Math.min(first, second) + 0.05);
 }
 
-export function themeContrastIssues(definition: ThemeDefinition) {
+function colorChannels(color: string) {
+  return [1, 3, 5].map((offset) => Number.parseInt(color.slice(offset, offset + 2), 16));
+}
+
+export function mixThemeColors(foreground: string, background: string, foregroundRatio: number) {
+  const first = colorChannels(foreground);
+  const second = colorChannels(background);
+  return `#${first.map((channel, index) => Math.round(channel * foregroundRatio + second[index] * (1 - foregroundRatio)).toString(16).padStart(2, "0")).join("")}`;
+}
+
+export type ThemeSemanticRoles = {
+  chrome: string;
+  chromeForeground: string;
+  window: string;
+  windowMuted: string;
+  elevated: string;
+  foreground: string;
+  mutedForeground: string;
+  accentFill: string;
+  accentForeground: string;
+  accentOnWindow: string;
+  accentOnChrome: string;
+  accentSurface: string;
+  dangerFill: string;
+  dangerForeground: string;
+  dangerSurface: string;
+  dangerSurfaceForeground: string;
+  status: string;
+  statusForeground: string;
+  statusSurface: string;
+  readOnlyForeground: string;
+  readOnlySurface: string;
+  focusWindow: string;
+  focusMuted: string;
+  focusChrome: string;
+};
+
+function strongestContrast(background: string, candidates: readonly string[]) {
+  return candidates.reduce((best, candidate) => themeContrastRatio(candidate, background) > themeContrastRatio(best, background) ? candidate : best);
+}
+
+function strongestMinimumContrast(backgrounds: readonly string[], candidates: readonly string[]) {
+  const minimum = (candidate: string) => Math.min(...backgrounds.map((background) => themeContrastRatio(candidate, background)));
+  return candidates.reduce((best, candidate) => minimum(candidate) > minimum(best) ? candidate : best);
+}
+
+/** Derives rendered roles without extending the persisted version-1 theme schema. */
+export function themeSemanticRoles(definition: ThemeDefinition): ThemeSemanticRoles {
   const { colors } = definition;
-  const textPairs = [
-    ["window text", colors.text, colors.window],
-    ["muted window text", colors.textMuted, colors.window],
-    ["muted surface text", colors.textMuted, colors.windowMuted],
-    ["chrome text", colors.chromeText, colors.chrome],
-    ["accent text", colors.accentText, colors.accent],
+  const windowCandidates = [colors.accent, colors.selection, colors.text, colors.chromeText];
+  const chromeCandidates = [colors.accent, colors.selection, colors.chromeText, colors.text];
+  const minimumWindow = mixThemeColors(colors.window, colors.shell, 0.65);
+  const minimumMuted = mixThemeColors(colors.windowMuted, colors.shell, 0.65);
+  const minimumChrome = mixThemeColors(colors.chrome, colors.shell, 0.65);
+  const accentOnWindow = strongestMinimumContrast([colors.window, minimumWindow], windowCandidates);
+  const accentOnChrome = strongestMinimumContrast([colors.chrome, minimumChrome], chromeCandidates);
+  const accentSurface = mixThemeColors(accentOnWindow, colors.window, 0.1);
+  const status = strongestMinimumContrast([colors.window, minimumWindow], [colors.accent, colors.selection, colors.text, colors.chromeText]);
+  const statusSurface = mixThemeColors(status, colors.window, 0.12);
+  const readOnlySurface = mixThemeColors(accentOnChrome, colors.chrome, 0.12);
+  return {
+    chrome: colors.chrome,
+    chromeForeground: colors.chromeText,
+    window: colors.window,
+    windowMuted: colors.windowMuted,
+    elevated: colors.window,
+    foreground: colors.text,
+    mutedForeground: colors.textMuted,
+    accentFill: colors.accent,
+    accentForeground: colors.accentText,
+    accentOnWindow,
+    accentOnChrome,
+    accentSurface,
+    dangerFill: colors.danger,
+    dangerForeground: strongestContrast(colors.danger, [colors.accentText, colors.chromeText, colors.text]),
+    dangerSurface: colors.dangerSurface,
+    dangerSurfaceForeground: strongestContrast(colors.dangerSurface, [colors.danger, colors.text, colors.chromeText]),
+    status,
+    statusForeground: strongestContrast(statusSurface, [status, colors.text, colors.chromeText]),
+    statusSurface,
+    readOnlyForeground: strongestContrast(readOnlySurface, [accentOnChrome, colors.chromeText, colors.text]),
+    readOnlySurface,
+    focusWindow: strongestMinimumContrast([colors.window, minimumWindow], windowCandidates),
+    focusMuted: strongestMinimumContrast([colors.windowMuted, minimumMuted], windowCandidates),
+    focusChrome: strongestMinimumContrast([colors.chrome, minimumChrome], chromeCandidates),
+  };
+}
+
+export type ThemeContrastCheck = { label: string; foreground: string; background: string; ratio: number; minimum: 3 | 4.5 };
+
+export function themeContrastChecks(definition: ThemeDefinition): ThemeContrastCheck[] {
+  const { colors } = definition;
+  const roles = themeSemanticRoles(definition);
+  const minimumWindow = mixThemeColors(colors.window, colors.shell, 0.65);
+  const minimumMuted = mixThemeColors(colors.windowMuted, colors.shell, 0.65);
+  const minimumChrome = mixThemeColors(colors.chrome, colors.shell, 0.65);
+  const selectedSurface = mixThemeColors(colors.selection, colors.window, 0.23);
+  const hoverSurface = mixThemeColors(colors.accent, colors.window, 0.13);
+  const subtleChromeSurface = mixThemeColors(colors.chromeText, colors.chrome, 0.09);
+  const textPairs: Array<[string, string, string]> = [
+    ["text / window", roles.foreground, roles.window],
+    ["text / minimum-opacity window", roles.foreground, minimumWindow],
+    ["text / window muted", roles.foreground, roles.windowMuted],
+    ["text / minimum-opacity window muted", roles.foreground, minimumMuted],
+    ["muted text / window", roles.mutedForeground, roles.window],
+    ["muted text / window muted", roles.mutedForeground, roles.windowMuted],
+    ["text / blended selection", roles.foreground, selectedSurface],
+    ["text / blended hover", roles.foreground, hoverSurface],
+    ["text / chrome", roles.chromeForeground, roles.chrome],
+    ["text / minimum-opacity chrome", roles.chromeForeground, minimumChrome],
+    ["text / blended chrome control", roles.chromeForeground, subtleChromeSurface],
+    ["accent foreground / accent fill", roles.accentForeground, roles.accentFill],
+    ["accent badge text / blended surface", roles.accentOnWindow, roles.accentSurface],
+    ["status badge text / blended surface", roles.statusForeground, roles.statusSurface],
+    ["read-only badge text / blended chrome", roles.readOnlyForeground, roles.readOnlySurface],
+    ["danger foreground / danger fill", roles.dangerForeground, roles.dangerFill],
+    ["danger text / danger surface", roles.dangerSurfaceForeground, roles.dangerSurface],
+    ["disabled text / public surface", roles.mutedForeground, roles.elevated],
     ["editor text", colors.editorText, colors.editorBackground],
     ["editor comment", colors.editorComment, colors.editorBackground],
     ["editor gutter text", colors.editorComment, colors.editorGutter],
     ["editor keyword", colors.editorKeyword, colors.editorBackground],
     ["editor string", colors.editorString, colors.editorBackground],
-  ].filter(([, foreground, background]) => contrastRatio(foreground, background) < 4.5).map(([label]) => label);
-  const indicatorPairs = [
-    ["accent indicator", colors.accent, colors.chrome],
-    ["selection and focus", colors.selection, colors.window],
-  ].filter(([, foreground, background]) => contrastRatio(foreground, background) < 3).map(([label]) => label);
-  return [...textPairs, ...indicatorPairs];
+  ];
+  const indicatorPairs: Array<[string, string, string]> = [
+    ["accent indicator / window", roles.accentOnWindow, roles.window],
+    ["accent indicator / minimum-opacity window", roles.accentOnWindow, minimumWindow],
+    ["accent indicator / chrome", roles.accentOnChrome, roles.chrome],
+    ["accent indicator / minimum-opacity chrome", roles.accentOnChrome, minimumChrome],
+    ["focus / window", roles.focusWindow, roles.window],
+    ["focus / minimum-opacity window", roles.focusWindow, minimumWindow],
+    ["focus / window muted", roles.focusMuted, roles.windowMuted],
+    ["focus / minimum-opacity window muted", roles.focusMuted, minimumMuted],
+    ["focus / chrome", roles.focusChrome, roles.chrome],
+    ["focus / minimum-opacity chrome", roles.focusChrome, minimumChrome],
+  ];
+  return [
+    ...textPairs.map(([label, foreground, background]) => ({ label, foreground, background, ratio: themeContrastRatio(foreground, background), minimum: 4.5 as const })),
+    ...indicatorPairs.map(([label, foreground, background]) => ({ label, foreground, background, ratio: themeContrastRatio(foreground, background), minimum: 3 as const })),
+  ];
+}
+
+export function themeContrastIssues(definition: ThemeDefinition) {
+  return themeContrastChecks(definition).filter((check) => check.ratio < check.minimum).map((check) => check.label);
 }
 
 function boundedNumber(value: unknown, min: number, max: number, integer = false) {
@@ -260,6 +385,7 @@ function hexToRgb(hex: string) {
 
 export function themeStyle(definition: ThemeDefinition): CSSProperties {
   const { colors, shape, effects, typography, density, motion, iconSize } = definition;
+  const roles = themeSemanticRoles(definition);
   const iconFootprintWidth = Math.round(iconSize + 38);
   const iconFootprintHeight = Math.round(iconSize + 42);
   return {
@@ -301,6 +427,20 @@ export function themeStyle(definition: ThemeDefinition): CSSProperties {
     "--theme-icon-size": `${iconSize}px`,
     "--theme-icon-footprint-width": `${iconFootprintWidth}px`,
     "--theme-icon-footprint-height": `${iconFootprintHeight}px`,
+    "--theme-elevated": roles.elevated,
+    "--theme-accent-on-window": roles.accentOnWindow,
+    "--theme-accent-on-chrome": roles.accentOnChrome,
+    "--theme-accent-surface": roles.accentSurface,
+    "--theme-danger-foreground": roles.dangerForeground,
+    "--theme-danger-surface-foreground": roles.dangerSurfaceForeground,
+    "--theme-status": roles.status,
+    "--theme-status-foreground": roles.statusForeground,
+    "--theme-status-surface": roles.statusSurface,
+    "--theme-readonly-foreground": roles.readOnlyForeground,
+    "--theme-readonly-surface": roles.readOnlySurface,
+    "--theme-focus-window": roles.focusWindow,
+    "--theme-focus-muted": roles.focusMuted,
+    "--theme-focus-chrome": roles.focusChrome,
   } as CSSProperties;
 }
 

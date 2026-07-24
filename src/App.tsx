@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { BookOpenText, Check, CloudCheck, CloudSlash, Desktop, File as FileGlyph, Folder, FolderOpen, FolderPlus, GearSix, HardDrive, Info, Keyboard, LinkSimple, MagnifyingGlass, Plus, ShareNetwork, SpinnerGap, SquaresFour, Trash, UploadSimple, WarningCircle, X } from "@phosphor-icons/react";
+import { ArrowLeft, BookOpenText, CaretDown, CloudCheck, CloudSlash, Desktop, DotsThree, File as FileGlyph, FolderOpen, FolderPlus, GearSix, HardDrive, IdentificationCard, Keyboard, MagnifyingGlass, Plus, ShareNetwork, SignOut, SpinnerGap, SquaresFour, Trash, UploadSimple, WarningCircle, X } from "@phosphor-icons/react";
 import seededDesktop from "virtual:hiraya-seeded";
 import { ContextMenu, DesktopContextMenu } from "./components/ContextMenu";
 import { AppWindow } from "./components/AppWindow";
@@ -70,7 +70,7 @@ import { createPwaUpdater, type PwaUpdater } from "./lib/pwa-update";
 import { exportSeededDesktop } from "./lib/seeded";
 import { CLIPBOARD_ARCHIVE_WEB_MIME_TYPE, decodeClipboardArchiveItem, encodeClipboardArchive, snapshotFromClipboardItems, type ClipboardEntrySnapshot } from "./lib/clipboard";
 import { formatDesktopRoute, normalizeDesktopRoute, parseDesktopRoute, resolveOpenFilePath, type DesktopRoute } from "./lib/routes";
-import { DEFAULT_THEME_STATE, isBuiltinThemeId, resolveTheme, themeIconMetrics, themeStyle, type CustomTheme, type ThemeDefinition, type ThemeState } from "./lib/themes";
+import { DEFAULT_THEME_STATE, isBuiltinThemeId, resolveTheme, themeIconMetrics, themeStyle, type CustomTheme, type ThemeState } from "./lib/themes";
 import { DEFAULT_WALLPAPER, type ContextMenuState, type DesktopEntry, type DesktopIdentity, type DesktopLayout, type DialogState, type EditorSettings, type EntryPosition, type FileEntry } from "./types";
 import { GRID_ORIGIN, nextAvailableDesktopSlot, nextRootEntryPosition, projectLogicalPosition, reorderSurfaceSegments, responsiveDesktop, restoreLogicalPosition, segmentKey, snapAxis, type SurfaceSegment } from "./ui/desktop-geometry";
 import { fileCapabilities } from "./ui/file-capabilities";
@@ -82,16 +82,12 @@ import { createWindowSession, parseWindowTargets, restoreWindowSession, type Win
 import { parseInternetShortcut } from "./lib/internet-shortcut";
 import { createSerialTaskQueue } from "./lib/serial-task";
 import { validateWallpaperImage } from "./lib/wallpaper-image";
-import { AccountMenu } from "./components/AccountMenu";
 import { MobileHeaderMenu } from "./components/MobileHeaderMenu";
 import type { AuthSession } from "./lib/auth";
 import { SearchCommandPalette } from "./components/SearchCommandPalette";
-import { SyncIssuesPanel } from "./components/SyncIssuesPanel";
-import { AllWindowsPanel } from "./components/AllWindowsPanel";
 import { KeyboardShortcutsPanel } from "./components/KeyboardShortcutsPanel";
 import { TrashWindow } from "./components/TrashWindow";
 import { PanelDialog } from "./components/PanelDialog";
-import { AreasPanel } from "./components/AreasPanel";
 import { ConfirmationDialog, type ConfirmationRequest } from "./components/ConfirmationDialog";
 import { SharingDialog } from "./components/SharingDialog";
 import { canOpenActivity } from "./ui/activity-navigation";
@@ -114,9 +110,15 @@ import { isStandalone, pwaInstallState, type InstallPromptEvent } from "./lib/pw
 import { adjacentArea, areaCoordinateLabel, desktopAreaItems, moveLogicalPositionToArea, persistAreaPositionUpdates } from "./ui/desktop-areas";
 import { assertImportOperationCurrent, buildImportPlan, sourcesFromDirectoryHandle, sourcesFromDirectoryPicker, sourcesFromDrop, supportsDirectoryHandlePicker, supportsDirectoryPicker, type ImportOperationContext, type ImportSource } from "./lib/directory-import";
 import { buildOfflineAvailability, type OfflineStorageInventory } from "./lib/offline-availability";
-import { OfflineStoragePanel } from "./components/OfflineStoragePanel";
 import { HelpPanel } from "./components/HelpPanel";
 import type { HelpSectionId } from "./lib/help";
+import { AppIcon, StatusBadge, type StatusTone } from "./components/VisualPrimitives";
+import { boundedNotificationVisibility } from "./ui/notifications";
+import { WorkspaceOverview } from "./components/WorkspaceOverview";
+import { ConnectionPanel } from "./components/ConnectionPanel";
+import { SystemMenu } from "./components/SystemMenu";
+import { areaDirectionalLabel, nextOccupiedArea, taskbarCapacity, taskbarWindows } from "./ui/shell";
+import { SERVER_ROUTES } from "./lib/api-routes";
 
 type BaseRunningApp = { id: string; bounds: WindowBounds; minimized: boolean; zIndex: number };
 type FileApp = BaseRunningApp & { kind: "file"; fileId: string; file?: FileEntry; blob?: File; editable?: boolean; loadError?: string; editMode: boolean; contentRevision: number; remoteChanged: boolean };
@@ -127,7 +129,6 @@ type SandboxApp = BaseRunningApp & { kind: "sandbox"; fileId: string; title: str
 type RunningApp = FileApp | ExplorerApp | PropertiesApp | SettingsApp | SandboxApp;
 type RouteHistoryState = { hiraya: true; schemaVersion: 1; parentHash?: string; apps: WindowTarget[] };
 type PendingPaste = { snapshot: ClipboardEntrySnapshot; parentId: string | null; position?: EntryPosition };
-const MINIMAP_LONG_PRESS_MS = 500;
 const DESKTOP_LONG_PRESS_MS = 500;
 const ONBOARDING_VERSION = 1;
 
@@ -190,12 +191,10 @@ function App({ session }: { session: AuthSession | null }) {
   const [wallpaperAsset, setWallpaperAsset] = useState<{ key: string; url: string } | null>(null);
   const [editorSettings, setEditorSettings] = useState<EditorSettings>(DEFAULT_EDITOR_SETTINGS);
   const [appearance, setAppearance] = useState<ThemeState>(DEFAULT_THEME_STATE);
-  const [themePreview, setThemePreview] = useState<ThemeDefinition | null>(null);
   const [exporting, setExporting] = useState(false);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("connecting");
   const [isSyncing, setIsSyncing] = useState(false);
   const [editingAreas, setEditingAreas] = useState(false);
-  const [draggedSegmentKey, setDraggedSegmentKey] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(() => Boolean(document.fullscreenElement));
   const isMobile = useMediaQuery(MOBILE_WINDOW_QUERY);
   const compactChrome = useMediaQuery(COMPACT_CHROME_QUERY);
@@ -240,16 +239,6 @@ function App({ session }: { session: AuthSession | null }) {
   const uploadPositionRef = useRef<EntryPosition | undefined>(undefined);
   const importOperationRef = useRef<ImportOperationContext | null>(null);
   const swipeRef = useRef<{ axis: "x" | "y" | null; pointerId: number; startSegment: { column: number; row: number }; startTime: number; startX: number; startY: number; x: number; y: number } | null>(null);
-  const minimapPointerRef = useRef<{
-    activated: boolean;
-    pointerId: number;
-    startX: number;
-    startY: number;
-    timer: number;
-    segmentKey: string;
-    initialPositions: Array<{ entryId: string; position: EntryPosition }>;
-    initialAppBounds: Array<{ appId: string; bounds: WindowBounds }>;
-  } | null>(null);
   const desktopPressRef = useRef<{
     activated: boolean;
     pointerId: number;
@@ -345,7 +334,7 @@ function App({ session }: { session: AuthSession | null }) {
     releasableBytes: 0,
     browserStorage: null,
   }, { updatingIds: offlineProgress?.updatingIds, errors: offlineProgress?.errors }), [activeDesktopId, entries, offlineInventory, offlineProgress]);
-  const activeTheme = useMemo(() => themePreview ?? resolveTheme(appearance), [appearance, themePreview]);
+  const activeTheme = useMemo(() => resolveTheme(appearance), [appearance]);
   const iconMetrics = useMemo(() => themeIconMetrics(activeTheme), [activeTheme]);
   const rootEntries = entryIndex.roots;
   const responsive = useMemo(() => responsiveDesktop(entries, desktopSize, iconMetrics), [desktopSize, entries, iconMetrics]);
@@ -1075,7 +1064,6 @@ function App({ session }: { session: AuthSession | null }) {
       setContextMenu(null);
       setMoveDialogEntryIds([]);
       setEditingAreas(false);
-      setDraggedSegmentKey(null);
       const requestedRoute = parseDesktopRoute(window.location.hash);
       const requestedDesktopId = requestedRoute?.desktopId;
       if (requestedDesktopId && requestedDesktopId !== activeDesktopIdRef.current && desktopsRef.current.some((desktop) => desktop.id === requestedDesktopId)) {
@@ -1210,7 +1198,6 @@ function App({ session }: { session: AuthSession | null }) {
     function onPointerDown(event: PointerEvent) {
       if (editingAreas && !(event.target as Element).closest?.(".desktop-minimap")) {
         setEditingAreas(false);
-        setDraggedSegmentKey(null);
       }
     }
     window.addEventListener("pointerdown", onPointerDown);
@@ -1332,7 +1319,7 @@ function App({ session }: { session: AuthSession | null }) {
       if (owner === "dialog") setDialog(null);
        else if (owner === "moveDialog") setMoveDialogEntryIds([]);
       else if (owner === "contextMenu") setContextMenu(null);
-      else if (owner === "areaEditor") { setEditingAreas(false); setDraggedSegmentKey(null); }
+      else if (owner === "areaEditor") setEditingAreas(false);
       else if (focusedAppIdRef.current) closeAppRef.current(focusedAppIdRef.current);
     }
     window.addEventListener("keydown", onKeyDown);
@@ -1513,7 +1500,6 @@ function App({ session }: { session: AuthSession | null }) {
 
   async function changeTheme(themeId: string) {
     if (!canSettings) return;
-    setThemePreview(null);
     try {
       setAppearance(await selectTheme(themeId));
     } catch (themeError) {
@@ -1527,7 +1513,6 @@ function App({ session }: { session: AuthSession | null }) {
     try {
       const saved = await saveCustomTheme(theme);
       setAppearance(await selectTheme(saved.id));
-      setThemePreview(null);
       setNotice(`${saved.name} saved`);
     } catch (themeError) {
       setError(themeError instanceof Error ? themeError.message : "The custom theme could not be saved.");
@@ -1539,7 +1524,6 @@ function App({ session }: { session: AuthSession | null }) {
     if (!canSettings) return;
     try {
       setAppearance(await deleteCustomTheme(themeId));
-      setThemePreview(null);
       setNotice("Custom theme deleted");
     } catch (themeError) {
       setError(themeError instanceof Error ? themeError.message : "The custom theme could not be deleted.");
@@ -2692,9 +2676,12 @@ function App({ session }: { session: AuthSession | null }) {
     const distance = swipe.axis === "x" ? desktopSize.width : desktopSize.height;
     const velocity = Math.abs(delta) / Math.max(1, performance.now() - swipe.startTime);
     const advance = swipe.axis && (Math.abs(delta) > distance * 0.16 || velocity > 0.45) ? (delta < 0 ? 1 : -1) : 0;
-    const nextSegment = { ...swipe.startSegment };
-    if (swipe.axis === "x") nextSegment.column += advance;
-    if (swipe.axis === "y") nextSegment.row += advance;
+    const nextSegment = !swipe.axis || advance === 0 ? swipe.startSegment : nextOccupiedArea(
+      occupiedSegments.map((area) => area.segment),
+      swipe.startSegment,
+      swipe.axis,
+      advance as -1 | 1,
+    );
     suppressClickRef.current = swipe.axis !== null;
     window.setTimeout(() => { suppressClickRef.current = false; }, 0);
     swipeRef.current = null;
@@ -2755,74 +2742,6 @@ function App({ session }: { session: AuthSession | null }) {
     });
   }
 
-  function startMinimapPress(event: React.PointerEvent<HTMLButtonElement>, pressedSegmentKey: string) {
-    if (event.button !== 0) return;
-    const press = {
-      activated: canMutate && editingAreas,
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startY: event.clientY,
-      timer: 0,
-      segmentKey: pressedSegmentKey,
-      initialPositions: entriesRef.current
-        .filter((entry) => entry.parentId === null)
-        .map((entry) => ({ entryId: entry.id, position: { ...entry.position } })),
-      initialAppBounds: runningAppsRef.current.map((app) => ({ appId: app.id, bounds: { ...app.bounds } })),
-    };
-    press.timer = canMutate ? window.setTimeout(() => {
-      press.activated = true;
-      setEditingAreas(true);
-      setDraggedSegmentKey(pressedSegmentKey);
-      suppressClickRef.current = true;
-    }, editingAreas ? 0 : MINIMAP_LONG_PRESS_MS) : 0;
-    minimapPointerRef.current = press;
-    event.currentTarget.setPointerCapture(event.pointerId);
-  }
-
-  function moveMinimapPress(event: React.PointerEvent<HTMLButtonElement>) {
-    const press = minimapPointerRef.current;
-    if (!press || press.pointerId !== event.pointerId) return;
-    if (!press.activated && Math.hypot(event.clientX - press.startX, event.clientY - press.startY) > 7) {
-      window.clearTimeout(press.timer);
-      minimapPointerRef.current = null;
-      if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
-      return;
-    }
-    if (!press.activated) return;
-    const target = document.elementsFromPoint(event.clientX, event.clientY)
-      .map((element) => element.closest<HTMLElement>("[data-segment-key]"))
-      .find(Boolean);
-    if (!target?.dataset.segmentKey) return;
-    const targetIndex = occupiedSegments.findIndex((candidate) => candidate.key === target.dataset.segmentKey);
-    const targetKey = previewSegmentMove(press.segmentKey, targetIndex);
-    if (targetKey) {
-      press.segmentKey = targetKey;
-      setDraggedSegmentKey(targetKey);
-    }
-  }
-
-  function finishMinimapPress(event: React.PointerEvent<HTMLButtonElement>, cancelled = false) {
-    const press = minimapPointerRef.current;
-    if (!press || press.pointerId !== event.pointerId) return;
-    window.clearTimeout(press.timer);
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
-    minimapPointerRef.current = null;
-    if (press.activated && cancelled) {
-      restoreArrangement(press.initialPositions, press.initialAppBounds);
-      setDraggedSegmentKey(null);
-      goToSegment(activeSegment, "replace");
-    } else if (press.activated) {
-      setDraggedSegmentKey(null);
-      suppressClickRef.current = true;
-      window.setTimeout(() => { suppressClickRef.current = false; }, 0);
-      persistArrangement(press.initialPositions, press.initialAppBounds);
-      goToSegment(activeSegment, "replace");
-    } else if (!cancelled) {
-      const selectedSegment = occupiedSegments.find((candidate) => candidate.key === press.segmentKey);
-      if (selectedSegment) goToSegment(selectedSegment.segment);
-    }
-  }
-
   function invalidMoveIds(items: readonly DesktopEntry[]) {
     return new Set(items.flatMap((entry) => [entry.id, ...entryIndex.descendants(entry.id).map((descendant) => descendant.id)]));
   }
@@ -2844,9 +2763,9 @@ function App({ session }: { session: AuthSession | null }) {
 
   const windowItems: WindowListItem[] = runningApps.map((app) => {
     const area = segmentForApp(app);
-    const areaIndex = visibleSegments.findIndex((candidate) => candidate.key === segmentKey(area));
-    return { id: app.id, title: runningAppLabel(app), areaId: segmentKey(area), areaLabel: `Area ${areaIndex >= 0 ? areaIndex + 1 : "outside current list"} · ${areaCoordinateLabel(area)}`, minimized: app.minimized };
+    return { id: app.id, title: runningAppLabel(app), areaId: segmentKey(area), areaLabel: `${areaDirectionalLabel(area, activeSegment)} · ${areaCoordinateLabel(area)}`, minimized: app.minimized };
   });
+  const taskbarModel = taskbarWindows(runningApps.map((app) => ({ app, id: app.id, areaId: segmentKey(segmentForApp(app)), focused: focusedAppId === app.id })), activeSegmentKey, taskbarCapacity(desktopSize.width, compactChrome));
   const areaItems = desktopAreaItems(occupiedSegments.map((area) => ({
     segment: area.segment,
     rootItemCount: area.entries.length,
@@ -2888,20 +2807,44 @@ function App({ session }: { session: AuthSession | null }) {
     setActivePanel("help");
   }
 
+  function outboxAffectedLabels(record: OutboxRecord) {
+    const operation = record.operation;
+    const ids = operation.kind === "delete" ? [operation.entryId]
+      : operation.kind === "delete-entries" || operation.kind === "move-entries" || operation.kind === "entry-transfer" ? operation.entryIds
+        : operation.kind === "update-entry" || operation.kind === "save-content" ? [operation.entry.id]
+          : operation.kind === "create" ? operation.entries.map((entry) => entry.id) : [];
+    return ids.map((id) => entriesRef.current.find((entry) => entry.id === id)?.name).filter((name): name is string => Boolean(name));
+  }
+
+  const notificationVisibility = boundedNotificationVisibility({ error: Boolean(error), notice: Boolean(notice), trash: trashNotifications.length, apps: appNotifications.length });
+  const notificationTotal = notificationVisibility.total;
+  const showErrorNotification = notificationVisibility.showError;
+  const visibleTrashNotifications = trashNotifications.slice(0, notificationVisibility.visibleTrash);
+  const showNoticeNotification = notificationVisibility.showNotice;
+  const visibleAppNotifications = appNotifications.slice(0, notificationVisibility.visibleApps);
+  const hiddenNotificationCount = notificationVisibility.hidden;
+  const hiddenTrashNotifications = trashNotifications.slice(visibleTrashNotifications.length);
+  const hiddenAppNotifications = appNotifications.slice(visibleAppNotifications.length);
+  const syncTone: StatusTone = syncIndicatorStatus === "online" || syncIndicatorStatus === "local" ? "success" : syncIndicatorStatus === "connecting" || syncIndicatorStatus === "syncing" ? "progress" : "danger";
+  const shellAnnouncement = error ? "" : importProgress
+    ? `Import in progress. ${importProgress.folderCount} folders and ${importProgress.fileCount} files.`
+    : notice || (trashNotifications.at(-1) ? `${trashNotifications.at(-1)!.label} moved to Trash` : appNotifications.at(-1)?.title ?? "");
+
   return (
     <main className="desktop-shell" data-theme={isBuiltinThemeId(appearance.selectedThemeId) ? appearance.selectedThemeId : "custom"} style={themeStyle(activeTheme)}>
       <header className="menu-bar">
-        {activeDesktopId && <DesktopSwitcher desktops={desktops} activeDesktopId={activeDesktopId} disabled={loading} quota={catalogQuota} quotaStale={syncStatus === "offline"} onSwitch={(id) => void activateDesktop(id)} onCreate={createDesktop} onRename={renameDesktop} onDelete={deleteDesktop} canManageDesktop={(desktop) => desktop.ownership === "owned" || syncStatus === "online"} />}
-        {!isMobile ? <nav className="taskbar" aria-label="Open windows">
-          {runningApps.map((app) => {
+        {!isMobile && activeDesktopId && <DesktopSwitcher desktops={desktops} activeDesktopId={activeDesktopId} disabled={loading} quota={catalogQuota} quotaStale={syncStatus === "offline"} onSwitch={(id) => void activateDesktop(id)} onCreate={createDesktop} onRename={renameDesktop} onDelete={deleteDesktop} canManageDesktop={(desktop) => desktop.ownership === "owned" || syncStatus === "online"} />}
+        {!isMobile ? <nav className="taskbar" data-has-overflow={taskbarModel.overflow.length > 0 || undefined} style={{ "--taskbar-visible": taskbarModel.visible.length } as React.CSSProperties} aria-label="Open windows">
+          {taskbarModel.visible.map(({ app }) => {
             const entry = app.kind === "file" ? entryIndex.byId.get(app.fileId) : app.kind === "properties" ? entryIndex.byId.get(app.entryId) : app.kind === "explorer" && app.folderId ? entryIndex.byId.get(app.folderId) : null;
             const label = runningAppLabel(app);
             return (
               <button
                 className="taskbar__entry"
                 data-active={focusedAppId === app.id && !app.minimized || undefined}
-                data-minimized={app.minimized || undefined}
-                data-dirty={dirtyAppIds.has(app.id) || undefined}
+                 data-minimized={app.minimized || undefined}
+                 data-dirty={dirtyAppIds.has(app.id) || undefined}
+                 data-other-area={segmentKey(segmentForApp(app)) !== activeSegmentKey || undefined}
                 type="button"
                 key={app.id}
                 title={label}
@@ -2909,64 +2852,33 @@ function App({ session }: { session: AuthSession | null }) {
                 aria-pressed={focusedAppId === app.id && !app.minimized}
                 onClick={() => focusedAppId === app.id && !app.minimized && !isMobile ? minimizeApp(app.id) : focusApp(app.id)}
               >
-                {app.kind === "file" ? entry?.kind === "file" && fileCapabilities(entry).icon === "url" ? <LinkSimple size={15} /> : <FileGlyph size={15} /> : app.kind === "explorer" ? <Folder size={15} /> : app.kind === "properties" ? <Info size={15} /> : <GearSix size={15} />}
+                <AppIcon kind={app.kind} entry={entry} size={15} />
                 <span>{label}</span>
               </button>
             );
           })}
-        </nav> : <nav className="mobile-window-nav" aria-label="Desktop and open windows">
-          <button type="button" className="mobile-window-nav__desktop" aria-label="Show Desktop without closing open windows" onClick={showDesktop}><Desktop size={18} /><span>Desktop</span></button>
-          <span className="mobile-window-nav__title" aria-live="polite">{focusedApp ? runningAppLabel(focusedApp) : "Desktop"}</span>
-          <MobileHeaderMenu label={`Switch windows, ${runningApps.length} open`} icon={<span className="mobile-window-nav__count"><SquaresFour size={18} /><b>{runningApps.length}</b></span>}>
-            {(dismiss) => <>
-              <button type="button" aria-current={!focusedAppId ? "page" : undefined} onClick={() => { dismiss(); showDesktop(); }}><Desktop size={18} /> Desktop <small>{areaItems.find((area) => area.current)?.label}</small></button>
-              {windowItems.map((window) => <button type="button" key={window.id} aria-current={window.id === focusedAppId ? "page" : undefined} onClick={() => { dismiss(); focusApp(window.id); }}><SquaresFour size={18} /><span>{window.title}</span><small>{window.areaLabel}{window.minimized ? " · Minimized" : ""}</small></button>)}
-              <span className="mobile-header-menu__separator" />
-              <button type="button" onClick={() => { dismiss(); setActivePanel("areas"); }}><Desktop size={18} /> Areas</button>
-            </>}
-          </MobileHeaderMenu>
+          {taskbarModel.overflow.length > 0 && <button className="taskbar__overflow" type="button" onClick={() => setActivePanel("windows")} aria-label={`${taskbarModel.overflow.length} more open windows`}>+{taskbarModel.overflow.length}</button>}
+        </nav> : <nav className="mobile-window-nav" aria-label="Workspace navigation">
+          <div className="mobile-window-nav__leading">{focusedApp?.kind === "settings" && settingsPage !== "main" ? <button type="button" className="mobile-window-nav__desktop" aria-label="Back to Settings" onClick={() => setSettingsPage("main")}><ArrowLeft size={18} /><span>Settings</span></button> : focusedApp ? <button type="button" className="mobile-window-nav__desktop" aria-label="Back to Desktop" onClick={showDesktop}><Desktop size={18} /><span>Desktop</span></button> : activeDesktopId && <DesktopSwitcher desktops={desktops} activeDesktopId={activeDesktopId} disabled={loading} quota={catalogQuota} quotaStale={syncStatus === "offline"} onSwitch={(id) => void activateDesktop(id)} onCreate={createDesktop} onRename={renameDesktop} onDelete={deleteDesktop} canManageDesktop={(desktop) => desktop.ownership === "owned" || syncStatus === "online"} />}</div>
+          <span className="mobile-window-nav__title">{focusedApp ? runningAppLabel(focusedApp) : `${activeDesktopName} · ${areaItems.find((area) => area.current)?.label ?? "Home"}`}</span>
         </nav>}
         <div className="menu-bar__actions">
-          {compactChrome ? (
-            <MobileHeaderMenu label="Create or upload" icon={<Plus size={18} weight="bold" />}>
-              {(dismiss) => <>
-                <button type="button" disabled={!canMutate} onClick={() => { dismiss(); setDialog({ type: "create-file", parentId: null }); }}><FileGlyph size={17} /> New text file</button>
+          {(!isMobile || !focusedApp) && <MobileHeaderMenu label="New" icon={<><Plus size={16} weight="bold" /><span>New</span><CaretDown size={12} /></>}>
+               {(dismiss) => <>
+                 <button type="button" disabled={!canMutate} onClick={() => { dismiss(); setDialog({ type: "create-file", parentId: null }); }}><FileGlyph size={17} /> New text file</button>
                 <button type="button" disabled={!canMutate} onClick={() => { dismiss(); setDialog({ type: "create-folder", parentId: null }); }}><FolderPlus size={17} /> New folder</button>
                  <button type="button" disabled={!canMutate} onClick={() => { dismiss(); chooseUpload(null); }}><UploadSimple size={17} /> Upload files</button>
                  <button type="button" disabled={!canMutate} onClick={() => { dismiss(); chooseFolderImport(null); }}><FolderOpen size={17} /> Import folder</button>
-              </>}
-            </MobileHeaderMenu>
-          ) : <>
-            <button type="button" aria-label="New text file" disabled={!canMutate} onClick={() => setDialog({ type: "create-file", parentId: null })}><Plus size={15} weight="bold" /> <span>New text file</span></button>
-            <button type="button" aria-label="New folder" disabled={!canMutate} onClick={() => setDialog({ type: "create-folder", parentId: null })}><FolderPlus size={16} /> <span>New folder</span></button>
-             <button type="button" aria-label="Upload files" disabled={!canMutate} onClick={() => chooseUpload(null)}><UploadSimple size={16} /> <span>Upload files</span></button>
-             <button type="button" aria-label="Import folder" disabled={!canMutate} onClick={() => chooseFolderImport(null)}><FolderOpen size={16} /> <span>Import folder</span></button>
-            <button type="button" aria-label="Search files, windows, and commands" title="Search (Ctrl/Command K)" onClick={() => setActivePanel("search")}><MagnifyingGlass size={16} /></button>
-            <button type="button" aria-label="Open Areas" title="Areas" onClick={() => setActivePanel("areas")}><Desktop size={16} /></button>
-            <button type="button" aria-label="Open Offline Storage" title="Offline Storage" onClick={() => setActivePanel("offline")}><CloudCheck size={16} /></button>
-            <button type="button" aria-label="Open User Guide" title="User Guide" onClick={() => openHelp()}><BookOpenText size={16} /></button>
-            <button type="button" aria-label="Show all windows" title="All windows" onClick={() => setActivePanel("windows")}><SquaresFour size={16} /></button>
-            {canOpenTrash && <button type="button" aria-label="Open Trash" title="Trash" onClick={() => setActivePanel("trash")}><Trash size={16} /></button>}
-          </>}
-          {compactChrome ? <MobileHeaderMenu label="Navigation and tools" icon={<GearSix size={18} />}>
-            {(dismiss) => <>
-              <button type="button" onClick={() => { dismiss(); setActivePanel("search"); }}><MagnifyingGlass size={17} /> Search</button>
-              <button type="button" onClick={() => { dismiss(); setActivePanel("areas"); }}><Desktop size={17} /> Areas</button>
-              <button type="button" onClick={() => { dismiss(); setActivePanel("offline"); }}><CloudCheck size={17} /> Offline Storage</button>
-              <button type="button" onClick={() => { dismiss(); openHelp(); }}><BookOpenText size={17} /> User Guide</button>
-              <button type="button" onClick={() => { dismiss(); setActivePanel("windows"); }}><SquaresFour size={17} /> All windows</button>
-              {canOpenTrash && <button type="button" onClick={() => { dismiss(); setActivePanel("trash"); }}><Trash size={17} /> Trash</button>}
-              <button type="button" onClick={() => { dismiss(); setActivePanel("shortcuts"); }}><Keyboard size={17} /> Keyboard shortcuts</button>
-              <button type="button" onClick={() => { dismiss(); openSettingsWindow(); }}><GearSix size={17} /> Settings</button>
-              {session && activeDesktop?.capabilities.manage && <button type="button" disabled={!canManage} onClick={() => { dismiss(); setSharingOpen(true); }}><ShareNetwork size={17} /> Share desktop</button>}
-            </>}
-          </MobileHeaderMenu> : <button type="button" aria-label="Open settings" title="Settings" onClick={() => openSettingsWindow()}><GearSix size={16} /> <span>Settings</span></button>}
-          {!compactChrome && session && activeDesktop?.capabilities.manage && <button type="button" aria-label="Share desktop" title="Share desktop" disabled={!canManage} onClick={() => setSharingOpen(true)}><ShareNetwork size={16} /> <span>Share</span></button>}
-          {session && <AccountMenu session={session} />}
-          <button className="menu-bar__sync" data-status={syncIndicatorStatus} type="button" aria-label="Open sync status" title={syncIndicatorStatus === "local" ? "Changes are saved only in this browser" : syncIndicatorStatus === "syncing" ? "Synchronizing saved changes" : syncIndicatorStatus === "online" ? "Changes are saved and synchronized" : syncIndicatorStatus === "connecting" ? "Connecting to the Hiraya server" : syncIndicatorStatus === "blocked" ? "A queued change needs attention before synchronization can continue" : "Offline changes are saved and will synchronize after reconnecting"} onClick={() => setActivePanel("sync")}>
-            {syncIndicatorStatus === "local" ? <HardDrive size={15} /> : syncIndicatorStatus === "online" ? <CloudCheck size={15} /> : syncIndicatorStatus === "blocked" ? <WarningCircle size={15} weight="fill" /> : syncIndicatorStatus === "connecting" || syncIndicatorStatus === "syncing" ? <SpinnerGap size={15} /> : <CloudSlash size={15} />}
-            <span>{syncIndicatorStatus === "local" ? "Saved locally" : syncIndicatorStatus === "syncing" ? "Syncing" : syncIndicatorStatus === "online" ? "Synced" : syncIndicatorStatus === "connecting" ? "Connecting" : syncIndicatorStatus === "blocked" ? "Sync blocked" : "Offline"}</span>
-          </button>
+               </>}
+            </MobileHeaderMenu>}
+          <button type="button" aria-label="Search files, windows, and commands" title="Search (Ctrl/Command K)" onClick={() => setActivePanel("search")}><MagnifyingGlass size={17} /><span className="desktop-action-label">Search</span></button>
+          {!isMobile && <button className="menu-bar__sync" data-status={syncIndicatorStatus} type="button" aria-label="Open Connection and Offline" onClick={() => setActivePanel("sync")}>
+            <StatusBadge tone={syncTone} surface="chrome">{syncIndicatorStatus === "local" ? <HardDrive size={15} /> : syncIndicatorStatus === "online" ? <CloudCheck size={15} /> : syncIndicatorStatus === "blocked" ? <WarningCircle size={15} weight="fill" /> : syncIndicatorStatus === "connecting" || syncIndicatorStatus === "syncing" ? <SpinnerGap size={15} /> : <CloudSlash size={15} />}<span>{syncIndicatorStatus === "local" ? "Saved locally" : syncIndicatorStatus === "syncing" ? "Syncing" : syncIndicatorStatus === "online" ? "Synced" : syncIndicatorStatus === "connecting" ? "Connecting" : syncIndicatorStatus === "blocked" ? "Sync blocked" : "Offline"}</span></StatusBadge>
+          </button>}
+          {isMobile && <MobileHeaderMenu label={`Account, system, and windows; ${runningApps.length} open`} icon={<span className="mobile-window-nav__count"><DotsThree size={20} /><b>{runningApps.length}</b></span>}>
+             {(dismiss) => <>{session && <div className="account-menu__identity"><strong>{session.user.displayName}</strong>{session.user.email && <span>{session.user.email}</span>}</div>}<button type="button" onClick={() => { dismiss(); showDesktop(); }}><Desktop /> Back to Desktop</button>{focusedAppId && <><button type="button" onClick={() => { dismiss(); setActivePanel("windows"); }}><SquaresFour /> Switch Window</button><button type="button" onClick={() => { const id = focusedAppId; dismiss(); requestCloseApp(id); }}><X /> Close Window</button></>}{windowItems.map((window) => <button type="button" key={window.id} aria-current={window.id === focusedAppId ? "page" : undefined} title={window.title} onClick={() => { dismiss(); focusApp(window.id); }}><SquaresFour /><span>{window.title}</span><small>{window.areaLabel}</small></button>)}<span className="mobile-header-menu__separator" /><button type="button" onClick={() => { dismiss(); setActivePanel("areas"); }}><Desktop /> Workspace Overview</button><button type="button" onClick={() => { dismiss(); setActivePanel("sync"); }}><CloudCheck /> Connection &amp; Offline</button><button type="button" onClick={() => { dismiss(); openSettingsWindow(); }}><GearSix /> Settings</button><button type="button" onClick={() => { dismiss(); openHelp(); }}><BookOpenText /> Help</button><button type="button" onClick={() => { dismiss(); setActivePanel("shortcuts"); }}><Keyboard /> Keyboard shortcuts</button>{canOpenTrash && <button type="button" onClick={() => { dismiss(); setActivePanel("trash"); }}><Trash /> Trash</button>}{session && activeDesktop?.capabilities.manage && <button type="button" disabled={!canManage} title={!canManage ? "Connect to manage sharing." : undefined} onClick={() => { dismiss(); setSharingOpen(true); }}><ShareNetwork /> Share workspace</button>}{session && <><span className="mobile-header-menu__separator" /><a className="account-menu__action" href={SERVER_ROUTES.profile} onClick={dismiss}><IdentificationCard /> Profile</a><form action={SERVER_ROUTES.logout} method="post"><button className="account-menu__action" type="submit"><SignOut /> Log out</button></form></>}</>}
+          </MobileHeaderMenu>}
+          {!isMobile && <SystemMenu session={session} canOpenTrash={canOpenTrash} canShare={Boolean(session && activeDesktop?.capabilities.manage && canManage)} onWorkspace={() => setActivePanel("areas")} onSettings={() => openSettingsWindow()} onHelp={() => openHelp()} onShortcuts={() => setActivePanel("shortcuts")} onTrash={() => setActivePanel("trash")} onShare={() => setSharingOpen(true)} />}
           <span className="menu-bar__clock">{formatClock(clock)}</span>
         </div>
       </header>
@@ -3083,8 +2995,10 @@ function App({ session }: { session: AuthSession | null }) {
                <button className="button button--primary" type="button" disabled={!canMutate} onClick={() => setDialog({ type: "create-folder", parentId: null })}><FolderPlus size={17} /> Create folder here</button>
                <button className="button button--quiet" type="button" disabled={!canMutate} onClick={() => chooseUpload(null)}><UploadSimple size={17} /> Upload files here</button>
                <button className="button button--quiet" type="button" disabled={!canMutate} onClick={() => chooseFolderImport(null)}><FolderOpen size={17} /> Import folder here</button>
-              <button className="button button--quiet" type="button" disabled={!canMutate || selectedRootIds.length === 0} onClick={() => void moveRootItemsToSegment(selectedRootIds, activeSegment)}>Move selected root items here</button>
-              <button className="button button--quiet" type="button" disabled={runningApps.length === 0} onClick={() => setActivePanel("windows")}><SquaresFour size={17} /> Move a window here</button>
+               <button className="button button--quiet" type="button" disabled={!canMutate || selectedRootIds.length === 0} onClick={() => void moveRootItemsToSegment(selectedRootIds, activeSegment)}>Move selected root items here</button>
+               <button className="button button--quiet" type="button" disabled={runningApps.length === 0} onClick={() => setActivePanel("windows")}><SquaresFour size={17} /> Move a window here</button>
+               <button className="button button--quiet" type="button" onClick={() => goToSegment({ column: 0, row: 0 })}><Desktop size={17} /> Return to Home</button>
+               <button className="button button--quiet" type="button" onClick={() => setActivePanel("areas")}><SquaresFour size={17} /> Workspace Overview</button>
             </div>
           </div>
         )}
@@ -3116,7 +3030,8 @@ function App({ session }: { session: AuthSession | null }) {
                 focused={focusedAppId === app.id}
                 minimized={app.minimized}
                 segmentActive={segmentActive}
-                mobile={isMobile}
+                 mobile={isMobile}
+                 hideMobileHeader
                 onFocus={focusApp}
                 onBoundsChange={updateAppBounds}
                 onDragAtEdge={handleWindowDragAtEdge}
@@ -3126,7 +3041,9 @@ function App({ session }: { session: AuthSession | null }) {
                 maximized={appIsMaximized(app)}
                 canMoveArea={!isMobile}
                 onToggleMaximize={toggleMaximizeApp}
-                onMoveArea={moveAppToArea}
+                 onMoveArea={moveAppToArea}
+                 onShowDesktop={showDesktop}
+                 onSwitchWindow={() => setActivePanel("windows")}
                  titleArea={<div><span className="window-kicker">{app.kind === "sandbox" ? "Session app" : app.kind === "file" ? app.editMode || file && ["text", "url"].includes(fileCapabilities(file).preview) ? "Text editor" : file && fileCapabilities(file).preview === "markdown" ? "Markdown" : "Preview" : app.kind === "explorer" ? "Folder" : app.kind === "properties" ? "Properties" : "Hiraya desktop"}</span><h2 id={titleId}>{title}</h2></div>}
               >
                 {(headerElements) => <>
@@ -3219,7 +3136,6 @@ function App({ session }: { session: AuthSession | null }) {
                     entries={entries}
                     wallpaperUrl={wallpaperUrl}
                     appearance={appearance}
-                    activeTheme={activeTheme}
                     canMutate={canSettings}
                     canViewActivity={canViewActivity}
                     restrictionReason={settingsRestrictionReason(activeDesktop, syncStatus)}
@@ -3263,7 +3179,6 @@ function App({ session }: { session: AuthSession | null }) {
                     onWallpaperUpload={handleWallpaperUpload}
                     onWallpaperSelect={handleWallpaperSelect}
                     onThemeSelect={changeTheme}
-                    onThemePreview={setThemePreview}
                     onThemeSave={persistCustomTheme}
                     onThemeDelete={removeCustomTheme}
                     onExport={() => void handleExport()}
@@ -3286,51 +3201,27 @@ function App({ session }: { session: AuthSession | null }) {
       </section>
 
       {(segmentColumns > 1 || segmentRows > 1 || occupiedSegments.length > 1) && (
-        <nav className="desktop-minimap" data-editing={editingAreas || undefined} data-obscured={minimapObscured || undefined} aria-label={`${activeDesktopName} desktop areas`}>
+        <nav className="desktop-minimap" data-obscured={minimapObscured || undefined} aria-label={`${activeDesktopName} workspace regions`}>
           <div className="desktop-minimap__toolbar">
-            <span>{editingAreas ? "Arrange desktop areas" : "Desktop areas"}</span>
-            <button type="button" disabled={!canMutate || !editingAreas && occupiedSegments.length < 2} aria-pressed={editingAreas} onClick={() => { setEditingAreas((current) => !current); setDraggedSegmentKey(null); }}>{editingAreas ? <><Check size={12} /> Done</> : "Arrange"}</button>
+            <span>Workspace map</span>
+            <button type="button" aria-label={`Open Workspace Overview, ${occupiedSegments.length} occupied ${occupiedSegments.length === 1 ? "region" : "regions"}`} onClick={() => setActivePanel("areas")}><SquaresFour aria-hidden="true" /><span>Regions</span><b>{occupiedSegments.length}</b></button>
           </div>
-          <span className="desktop-minimap__summary">Area {Math.max(1, visibleSegments.findIndex((candidate) => candidate.key === activeSegmentKey) + 1)} of {visibleSegments.length}</span>
+          <span className="desktop-minimap__summary">{areaDirectionalLabel(activeSegment, activeSegment)} · {occupiedSegments.length} occupied</span>
           <div className="desktop-minimap__grid" style={{ "--minimap-columns": segmentColumns, "--minimap-rows": segmentRows } as React.CSSProperties}>
             {visibleSegments.map((desktopSegment, visibleIndex) => {
               const column = desktopSegment.segment.column - minColumn;
               const row = desktopSegment.segment.row - minRow;
               const currentSegmentKey = desktopSegment.key;
-              const actualIndex = occupiedSegments.findIndex((candidate) => candidate.key === currentSegmentKey);
-              const isOccupiedSegment = actualIndex >= 0;
+              const isOccupiedSegment = occupiedSegments.some((candidate) => candidate.key === currentSegmentKey);
               return (
-                <div className="desktop-minimap__slot" data-segment-key={isOccupiedSegment ? currentSegmentKey : undefined} data-dragging={draggedSegmentKey === currentSegmentKey || undefined} key={currentSegmentKey} style={{ gridColumn: column + 1, gridRow: row + 1 }}>
+                <div className="desktop-minimap__slot" data-segment-key={isOccupiedSegment ? currentSegmentKey : undefined} key={currentSegmentKey} style={{ gridColumn: column + 1, gridRow: row + 1 }}>
                   <button
                     className="desktop-minimap__area"
                     data-active={currentSegmentKey === activeSegmentKey || undefined}
                     type="button"
-                    aria-label={`${activeDesktopName}, area ${visibleIndex + 1} of ${visibleSegments.length}${currentSegmentKey === activeSegmentKey ? ", current area" : ""}${canMutate && editingAreas && isOccupiedSegment ? ", use arrow keys to move" : canMutate && isOccupiedSegment ? ", long press to arrange" : ""}`}
+                    aria-label={`${areaDirectionalLabel(desktopSegment.segment, activeSegment)}, region ${visibleIndex + 1} of ${visibleSegments.length}${currentSegmentKey === activeSegmentKey ? ", current region" : ""}`}
                     aria-current={currentSegmentKey === activeSegmentKey ? "true" : undefined}
-                    onClick={(event) => { if (event.detail === 0 && !editingAreas) goToSegment(desktopSegment.segment); }}
-                    onContextMenu={isOccupiedSegment && canMutate ? (event) => { event.preventDefault(); setEditingAreas(true); } : undefined}
-                    onPointerDown={isOccupiedSegment ? (event) => startMinimapPress(event, currentSegmentKey) : undefined}
-                    onPointerMove={moveMinimapPress}
-                    onPointerUp={(event) => finishMinimapPress(event)}
-                    onPointerCancel={(event) => finishMinimapPress(event, true)}
-                    onKeyDown={(event) => {
-                      if (canMutate && ((event.shiftKey && event.key === "F10") || event.key === "ContextMenu")) {
-                        event.preventDefault();
-                        setEditingAreas(true);
-                      } else if (editingAreas && isOccupiedSegment && (event.key === "ArrowLeft" || event.key === "ArrowUp")) {
-                        event.preventDefault();
-                        const initial = entriesRef.current.filter((entry) => entry.parentId === null).map((entry) => ({ entryId: entry.id, position: { ...entry.position } }));
-                        const initialApps = runningAppsRef.current.map((app) => ({ appId: app.id, bounds: { ...app.bounds } }));
-                        const targetKey = previewSegmentMove(currentSegmentKey, actualIndex - 1);
-                        if (targetKey) { setDraggedSegmentKey(targetKey); persistArrangement(initial, initialApps); goToSegment(activeSegment, "replace"); }
-                      } else if (editingAreas && isOccupiedSegment && (event.key === "ArrowRight" || event.key === "ArrowDown")) {
-                        event.preventDefault();
-                        const initial = entriesRef.current.filter((entry) => entry.parentId === null).map((entry) => ({ entryId: entry.id, position: { ...entry.position } }));
-                        const initialApps = runningAppsRef.current.map((app) => ({ appId: app.id, bounds: { ...app.bounds } }));
-                        const targetKey = previewSegmentMove(currentSegmentKey, actualIndex + 1);
-                        if (targetKey) { setDraggedSegmentKey(targetKey); persistArrangement(initial, initialApps); goToSegment(activeSegment, "replace"); }
-                      }
-                    }}
+                    onClick={() => isOccupiedSegment ? goToSegment(desktopSegment.segment) : setActivePanel("areas")}
                   >
                     {desktopSegment.entries.map((entry) => {
                       const position = responsive.positions.get(entry.id) ?? entry.position;
@@ -3341,7 +3232,7 @@ function App({ session }: { session: AuthSession | null }) {
               );
             })}
           </div>
-          <span className="visually-hidden" aria-live="polite">{activeDesktopName}, area {Math.max(1, visibleSegments.findIndex((candidate) => candidate.key === activeSegmentKey) + 1)} of {visibleSegments.length}</span>
+          <span className="visually-hidden">{activeDesktopName}, area {Math.max(1, visibleSegments.findIndex((candidate) => candidate.key === activeSegmentKey) + 1)} of {visibleSegments.length}</span>
         </nav>
       )}
 
@@ -3361,21 +3252,19 @@ function App({ session }: { session: AuthSession | null }) {
         event.target.value = "";
       }} />
 
-      {(error || notice || trashNotifications.length > 0 || appNotifications.length > 0) && <div className="notification-stack">
-        {error && <div className="error-banner" role="alert"><WarningCircle size={19} weight="fill" /><span>{error}</span>{error === folderImportError && <button type="button" onClick={() => openHelp("files-and-folders")}>Folder import help</button>}<button type="button" onClick={() => { setError(""); setFolderImportError(""); }} aria-label="Dismiss error">Dismiss</button></div>}
-        {notice && <div className="notice" role="status"><span>{notice}</span><button type="button" aria-label="Dismiss notice" onClick={() => setNotice("")}><X size={14} /></button></div>}
-        {trashNotifications.map((notification) => <div className="notice notice--actionable" role={notification.state === "failed" ? "alert" : "status"} key={notification.id}><span><strong>{notification.label} moved to Trash</strong>{notification.state === "running" ? " Restoring..." : notification.error ? ` ${notification.error}` : " Undo remains available until dismissed."}</span><button type="button" disabled={notification.state === "running"} onClick={() => void undoMoveToTrash(notification)}>{notification.state === "failed" ? "Retry Undo" : "Undo"}</button><button type="button" disabled={notification.state === "running"} onClick={() => void openTrashNotification(notification)}>View Trash</button><button type="button" disabled={notification.state === "running"} aria-label={`Dismiss Trash notification for ${notification.label}`} onClick={() => setTrashNotifications((current) => dismissTrashNotification(current, notification.id))}>Dismiss</button></div>)}
-        {appNotifications.map((notification) => <div className="notice" role="status" key={notification.id}><span>{[notification.title, notification.body].filter(Boolean).join(": ")}</span><button type="button" aria-label="Dismiss app notification" onClick={() => appHostServices.notifications.dismiss(notification.owner, notification.id)}><X size={14} /></button></div>)}
-      </div>}
-      {importProgress && <div className="import-progress" role="status" aria-live="polite"><SpinnerGap size={18} /><div><strong>{importProgress.phase === "preparing" ? "Preparing import" : importProgress.phase === "saving" ? "Staging and saving import" : "Staging and synchronizing import"}</strong><span>{importProgress.folderCount} {importProgress.folderCount === 1 ? "folder" : "folders"}, {importProgress.fileCount} {importProgress.fileCount === 1 ? "file" : "files"}, {formatImportBytes(importProgress.totalBytes)}</span></div></div>}
-      {showUpdateToast && (
-        <UpdateToast
-          applying={updateApplying}
-          blocked={updateBlocked}
-          onConfirm={() => void activateUpdate()}
-          onDismiss={() => { setShowUpdateToast(false); setUpdateBlocked(false); }}
-        />
-      )}
+      {(isMobile && selectedEntries.length > 0 && !contextMenu || notificationTotal > 0 || importProgress || showUpdateToast) && <aside className="shell-status-region" aria-label="Selection, notifications, and progress">
+        {isMobile && selectedEntries.length > 0 && !contextMenu && <div className="mobile-selection-toolbar" role="toolbar" aria-label={`${selectedEntries.length} selected`}><strong>{selectedEntries.length} selected</strong><button type="button" aria-label="More actions for selection" onClick={(event) => openEntryContextMenu(selectedEntries[0].id, event.currentTarget.getBoundingClientRect().right, event.currentTarget.getBoundingClientRect().top)}><DotsThree size={22} /> Actions</button></div>}
+        {notificationTotal > 0 && <div className="notification-stack">
+          {showErrorNotification && <div className="error-banner" role="alert"><StatusBadge tone="danger">Error</StatusBadge><WarningCircle size={19} weight="fill" aria-hidden="true" /><span>{error}</span>{error === folderImportError && <button type="button" onClick={() => openHelp("files-and-folders")}>Folder import help</button>}<button className="notification-dismiss" type="button" onClick={() => { setError(""); setFolderImportError(""); }} aria-label="Dismiss error"><X size={14} /></button></div>}
+          {visibleTrashNotifications.map((notification) => <div className="notice notice--actionable" data-tone={notification.state === "failed" ? "danger" : "neutral"} key={notification.id}><StatusBadge tone={notification.state === "failed" ? "danger" : notification.state === "running" ? "progress" : "neutral"}>{notification.state === "failed" ? "Restore failed" : notification.state === "running" ? "Restoring" : "Undo available"}</StatusBadge><span><strong>{notification.label} moved to Trash</strong>{notification.state === "running" ? " Restoring..." : notification.error ? ` ${notification.error}` : " Undo remains available until dismissed."}</span><button className="notification-action notification-action--primary" type="button" disabled={notification.state === "running"} onClick={() => void undoMoveToTrash(notification)}>{notification.state === "failed" ? "Retry Undo" : "Undo"}</button><button className="notification-action" type="button" disabled={notification.state === "running"} onClick={() => void openTrashNotification(notification)}>View Trash</button><button className="notification-dismiss" type="button" disabled={notification.state === "running"} aria-label={`Dismiss Trash notification for ${notification.label}`} onClick={() => setTrashNotifications((current) => dismissTrashNotification(current, notification.id))}><X size={14} /></button></div>)}
+          {showNoticeNotification && <div className="notice"><StatusBadge>Saved</StatusBadge><span>{notice}</span><button className="notification-dismiss" type="button" aria-label="Dismiss notice" onClick={() => setNotice("")}><X size={14} /></button></div>}
+          {visibleAppNotifications.map((notification) => <div className="notice" key={notification.id}><StatusBadge>App</StatusBadge><span>{[notification.title, notification.body].filter(Boolean).join(": ")}</span><button className="notification-dismiss" type="button" aria-label="Dismiss app notification" onClick={() => appHostServices.notifications.dismiss(notification.owner, notification.id)}><X size={14} /></button></div>)}
+          {hiddenNotificationCount > 0 && <details className="notice notification-drawer"><summary>{hiddenNotificationCount} more {hiddenNotificationCount === 1 ? "notification" : "notifications"}</summary><div className="notification-drawer__list" aria-label="Notification history">{!showNoticeNotification && notice && <div><StatusBadge>Saved</StatusBadge><span>{notice}</span></div>}{hiddenTrashNotifications.map((notification) => <div key={notification.id}><StatusBadge tone={notification.state === "failed" ? "danger" : "neutral"}>Trash</StatusBadge><span>{notification.label}</span><button type="button" disabled={notification.state === "running"} onClick={() => void undoMoveToTrash(notification)}>{notification.state === "failed" ? "Retry Undo" : "Undo"}</button><button type="button" onClick={() => void openTrashNotification(notification)}>View</button><button className="notification-dismiss" type="button" disabled={notification.state === "running"} aria-label={`Dismiss notification for ${notification.label}`} onClick={() => setTrashNotifications((current) => dismissTrashNotification(current, notification.id))}><X size={14} /></button></div>)}{hiddenAppNotifications.map((notification) => <div key={notification.id}><StatusBadge>App</StatusBadge><span>{[notification.title, notification.body].filter(Boolean).join(": ")}</span><button className="notification-dismiss" type="button" aria-label="Dismiss app notification" onClick={() => appHostServices.notifications.dismiss(notification.owner, notification.id)}><X size={14} /></button></div>)}</div></details>}
+        </div>}
+        {importProgress && <div className="import-progress"><SpinnerGap size={18} aria-hidden="true" /><div><StatusBadge tone="progress" surface="chrome">Importing</StatusBadge><strong>{importProgress.phase === "preparing" ? "Preparing import" : importProgress.phase === "saving" ? "Staging and saving import" : "Staging and synchronizing import"}</strong><span>{importProgress.folderCount} {importProgress.folderCount === 1 ? "folder" : "folders"}, {importProgress.fileCount} {importProgress.fileCount === 1 ? "file" : "files"}, {formatImportBytes(importProgress.totalBytes)}</span></div></div>}
+        {showUpdateToast && <UpdateToast applying={updateApplying} blocked={updateBlocked} onConfirm={() => void activateUpdate()} onDismiss={() => { setShowUpdateToast(false); setUpdateBlocked(false); }} />}
+        <span className="visually-hidden" role="status" aria-live="polite" aria-atomic="true">{shellAnnouncement}</span>
+      </aside>}
 
       {contextMenu?.type === "entry" && contextMenuEntry && (
         <ContextMenu
@@ -3497,21 +3386,12 @@ function App({ session }: { session: AuthSession | null }) {
       )}
       {pendingPaste && <PasteConflictDialog roots={pendingPaste.snapshot.selectedRootIds.map((id) => pendingPaste.snapshot.entries.find((entry) => entry.id === id)!)} existingNames={entries.filter((entry) => entry.parentId === pendingPaste.parentId).map((entry) => entry.name)} onClose={() => setPendingPaste(null)} onPaste={(names) => commitPaste(pendingPaste.snapshot, pendingPaste.parentId, pendingPaste.position, names)} />}
       {activePanel === "search" && <SearchCommandPalette entries={entries} activeDesktopId={activeDesktopId} activeDesktopName={activeDesktopName} activeAuthorityCatalogId={activeDesktop?.authorityCatalogId ?? null} cachedDesktopResults={cachedSearchResults} searchAllDesktops={searchAllDesktops} allDesktopsAvailable={desktopSearchAvailable} online={syncStatus === "online"} onSearchAllDesktops={searchAccessibleDesktops} onSearchAllDesktopsChange={(enabled) => void changeSearchAllDesktops(enabled)} windows={windowItems.map((window) => ({ id: window.id, title: window.title, detail: window.areaLabel }))} commands={searchCommands} onOpenEntry={(result) => void openSearchResult(result)} onFocusWindow={focusApp} onRunCommand={runSearchCommand} onClose={() => setActivePanel(null)} />}
-      {activePanel === "sync" && <PanelDialog title="Sync status" onClose={() => setActivePanel(null)}><SyncIssuesPanel status={syncStatus} records={outboxRecords} lastSyncedAt={lastSyncedAt} affectedLabels={(record) => {
-        const operation = record.operation;
-        const ids = operation.kind === "delete" ? [operation.entryId]
-          : operation.kind === "delete-entries" || operation.kind === "move-entries" || operation.kind === "entry-transfer" ? operation.entryIds
-            : operation.kind === "update-entry" || operation.kind === "save-content" ? [operation.entry.id]
-              : operation.kind === "create" ? operation.entries.map((entry) => entry.id) : [];
-        return ids.map((id) => entriesRef.current.find((entry) => entry.id === id)?.name).filter((name): name is string => Boolean(name));
-      }} onOpenHelp={() => openHelp("troubleshooting")} onRetry={(record) => void retryBlockedOutboxRecord(record.operationId).catch((reason) => setError(reason instanceof Error ? reason.message : "The queued change could not be retried."))} onDiscard={(record) => void requestConfirmation({ title: "Discard queued change?", message: "Discard this blocked local change and restore the server version? This cannot be undone.", confirmLabel: "Discard change", danger: true }).then(async (confirmed) => {
+      {(activePanel === "sync" || activePanel === "offline") && <PanelDialog title="Connection and Offline" onClose={() => setActivePanel(null)}><ConnectionPanel status={syncStatus} records={outboxRecords} lastSyncedAt={lastSyncedAt} affectedLabels={outboxAffectedLabels} entries={entries} inventory={offlineInventory} model={offlineModel} progress={offlineProgress} online={syncStatus === "online"} onRetryRecord={(record) => void retryBlockedOutboxRecord(record.operationId).catch((reason) => setError(reason instanceof Error ? reason.message : "The queued change could not be retried."))} onDiscardRecord={(record) => void requestConfirmation({ title: "Discard queued change?", message: "Discard this blocked local change and restore the server version? This cannot be undone.", confirmLabel: "Discard change", danger: true }).then(async (confirmed) => {
         if (!confirmed) return;
         try { setOutboxRecords(await discardBlockedOutboxRecord(record.operationId)); }
         catch (reason) { setError(reason instanceof Error ? reason.message : "The queued change could not be discarded."); }
-      })} /></PanelDialog>}
-      {activePanel === "offline" && <PanelDialog title="Offline Storage" onClose={() => setActivePanel(null)}><OfflineStoragePanel entries={entries} inventory={offlineInventory} model={offlineModel} progress={offlineProgress} online={syncStatus === "online"} onRetry={() => void refreshPinnedContent()} onUnpin={(ids) => void unpinOffline(ids)} onReleaseAll={() => void removeDownloadedCopies()} onOpenHelp={() => openHelp("offline")} /></PanelDialog>}
-      {activePanel === "windows" && <PanelDialog title="All windows" onClose={() => setActivePanel(null)}><AllWindowsPanel windows={windowItems} activeAreaId={activeSegmentKey} focusedWindowId={focusedAppId ?? undefined} onFocusWindow={(id) => { focusApp(id); setActivePanel(null); }} onNavigateArea={(id) => { const [row, column] = id.split(":").map(Number); if (Number.isSafeInteger(row) && Number.isSafeInteger(column)) goToSegment({ row, column }); }} /></PanelDialog>}
-      {activePanel === "areas" && <PanelDialog title="Areas" onClose={() => setActivePanel(null)}><AreasPanel areas={areaItems} canMutate={canMutate} selectedRootCount={selectedRootIds.length} focusedWindowTitle={focusedApp ? runningAppLabel(focusedApp) : undefined} arranging={editingAreas} onArrangeChange={setEditingAreas} onCreateAdjacent={(direction) => { goToSegment(adjacentArea(activeSegment, direction)); setActivePanel(null); }} onGo={(segment) => { goToSegment(segment); setActivePanel(null); }} onMoveSelected={(segment) => void moveRootItemsToSegment(selectedRootIds, segment)} onMoveFocusedWindow={(segment) => { if (focusedAppId) moveAppToSegment(focusedAppId, segment); setActivePanel(null); }} onMoveContentsAndRemove={(segment) => void moveAreaContentsToCurrent(segment)} onArrange={(key, offset) => { const index = occupiedSegments.findIndex((area) => area.key === key); if (index < 0) return; const initial = entriesRef.current.filter((entry) => entry.parentId === null).map((entry) => ({ entryId: entry.id, position: { ...entry.position } })); const initialApps = runningAppsRef.current.map((app) => ({ appId: app.id, bounds: { ...app.bounds } })); if (previewSegmentMove(key, index + offset)) persistArrangement(initial, initialApps); }} onOpenHelp={() => openHelp("desktops-and-areas")} /></PanelDialog>}
+      })} onRetryDownloads={() => void refreshPinnedContent()} onUnpin={(ids) => void unpinOffline(ids)} onReleaseAll={() => void removeDownloadedCopies()} onOpenHelp={() => openHelp("offline")} /></PanelDialog>}
+      {(activePanel === "windows" || activePanel === "areas") && <PanelDialog title="Workspace Overview" onClose={() => setActivePanel(null)}><WorkspaceOverview initialView={activePanel === "windows" ? "windows" : "spatial"} areas={areaItems} windows={windowItems} canMutate={canMutate} selectedRootCount={selectedRootIds.length} focusedWindowId={focusedAppId ?? undefined} focusedWindowTitle={focusedApp ? runningAppLabel(focusedApp) : undefined} arranging={editingAreas} onArrangeChange={setEditingAreas} onCreateAdjacent={(direction) => { goToSegment(adjacentArea(activeSegment, direction)); setActivePanel(null); }} onGo={(segment) => { goToSegment(segment); setActivePanel(null); }} onFocusWindow={(id) => { focusApp(id); setActivePanel(null); }} onMoveSelected={(segment) => void moveRootItemsToSegment(selectedRootIds, segment)} onMoveFocusedWindow={(segment) => { if (focusedAppId) moveAppToSegment(focusedAppId, segment); setActivePanel(null); }} onMoveContentsAndRemove={(segment) => { const area = areaItems.find((candidate) => candidate.key === segmentKey(segment)); if (!area) return; void requestConfirmation({ title: `Move contents from ${area.label}?`, message: `Move ${area.rootItemCount} root ${area.rootItemCount === 1 ? "item" : "items"} and ${area.windowCount} ${area.windowCount === 1 ? "window" : "windows"} to the current region? The empty derived region will disappear.`, confirmLabel: "Move contents" }).then((confirmed) => { if (confirmed) void moveAreaContentsToCurrent(segment); }); }} onArrange={(key, offset) => { const index = occupiedSegments.findIndex((area) => area.key === key); if (index < 0) return; const initial = entriesRef.current.filter((entry) => entry.parentId === null).map((entry) => ({ entryId: entry.id, position: { ...entry.position } })); const initialApps = runningAppsRef.current.map((app) => ({ appId: app.id, bounds: { ...app.bounds } })); if (previewSegmentMove(key, index + offset)) persistArrangement(initial, initialApps); }} onOpenHelp={() => openHelp("desktops-and-areas")} /></PanelDialog>}
       {activePanel === "help" && <PanelDialog title="User Guide" onClose={() => setActivePanel(null)}><HelpPanel section={helpSection} onSectionChange={setHelpSection} /></PanelDialog>}
       {activePanel === "shortcuts" && <PanelDialog title="Keyboard shortcuts" onClose={() => setActivePanel(null)}><KeyboardShortcutsPanel shortcuts={keyboardShortcuts} /></PanelDialog>}
       {activePanel === "trash" && activeDesktop?.capabilities.read && syncStatus !== "local" && <PanelDialog title="Trash" onClose={() => setActivePanel(null)}><TrashWindow readOnly={!canMutate} onListTrash={() => listTrash(activeDesktopId)} onRestore={async (item, destination) => { await restoreTrash(activeDesktopId, item.entry.id, destination); setNotice(`${item.entry.name} restored`); }} onPermanentlyDelete={async (item) => { await permanentlyDeleteTrash(activeDesktopId, item.entry.id); setNotice(`${item.entry.name} permanently deleted`); }} onRequestPermanentDelete={(item: TrashItem, confirmedDelete) => { void requestConfirmation({ title: `Delete ${item.entry.name} permanently?`, message: "This item and everything inside it will be permanently deleted. This cannot be undone.", confirmLabel: "Delete permanently", danger: true }).then((confirmed) => { if (confirmed) void confirmedDelete().catch(() => undefined); }); }} /></PanelDialog>}

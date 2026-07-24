@@ -1,5 +1,6 @@
 import type { EntryPosition } from "../types";
 import { projectLogicalPosition, restoreLogicalPosition, segmentKey, type RootEntryPositionUpdate, type SurfaceSegment } from "./desktop-geometry";
+import { areaDirectionalLabel } from "./shell";
 
 export type AreaOccupancy = {
   segment: SurfaceSegment;
@@ -32,12 +33,12 @@ export function desktopAreaItems(occupied: readonly AreaOccupancy[], current: Su
   if (!byKey.has(currentKey)) byKey.set(currentKey, { segment: current, rootItemCount: 0, windowCount: 0 });
   return [...byKey.values()]
     .sort((left, right) => left.segment.row - right.segment.row || left.segment.column - right.segment.column)
-    .map((area, index) => ({
+    .map((area) => ({
       ...area,
       current: segmentKey(area.segment) === currentKey,
       occupied: area.rootItemCount > 0 || area.windowCount > 0,
       key: segmentKey(area.segment),
-      label: `Area ${index + 1}`,
+      label: areaDirectionalLabel(area.segment, current),
       coordinateLabel: areaCoordinateLabel(area.segment),
     }));
 }

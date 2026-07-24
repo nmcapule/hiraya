@@ -1,7 +1,7 @@
 import { useDeferredValue, useEffect, useId, useRef, useState } from "react";
 import { File, Folder, MagnifyingGlass, SquaresFour, TerminalWindow, X } from "@phosphor-icons/react";
 import type { DesktopEntry } from "../types";
-import { filterAndGroupSearchItems, type SearchCategory, type SearchItem } from "../ui/panel-data";
+import { filterAndGroupSearchItems, selectedRenderedItem, type SearchCategory, type SearchItem } from "../ui/panel-data";
 import { useModalDialog } from "../ui/modal-dialog";
 import type { CommandId, CommandItem } from "../apps/commands";
 import type { DesktopSearchResponse, DesktopSearchResult } from "../lib/search";
@@ -54,6 +54,7 @@ export function SearchCommandPalette<Id extends CommandId>({ entries, activeDesk
   const dialogRef = useRef<HTMLElement>(null);
   const titleId = useId();
   const listId = useId();
+  const scopeStatusId = useId();
   useModalDialog(backdropRef, dialogRef, onClose);
 
   useEffect(() => {
@@ -85,9 +86,14 @@ export function SearchCommandPalette<Id extends CommandId>({ entries, activeDesk
       action: () => onOpenEntry(result),
     })),
     ...windows.map((window): PaletteItem => ({ id: `window:${window.id}`, category: "windows", label: window.title, detail: window.detail, action: () => onFocusWindow(window.id) })),
-    ...commands.map((command): PaletteItem => ({ id: `command:${command.id}`, category: "commands", label: command.label, detail: command.detail, keywords: command.keywords, disabled: !command.enabled, action: () => onRunCommand(command.id) })),
+    ...commands.map((command): PaletteItem => ({ id: `command:${command.id}`, category: "commands", label: command.label, detail: command.enabled ? command.detail : [command.detail, "Unavailable in the current workspace state."].filter(Boolean).join(" "), keywords: command.keywords, disabled: !command.enabled, action: () => onRunCommand(command.id) })),
   ];
-  const groups = filterAndGroupSearchItems(items, deferredQuery);
+  const suggestedItems = deferredQuery ? items : [
+    ...items.filter((item) => item.category === "windows"),
+    ...items.filter((item) => item.category === "files" || item.category === "folders").slice(0, 5),
+    ...items.filter((item) => item.category === "commands").slice(0, 5),
+  ];
+  const groups = filterAndGroupSearchItems(suggestedItems, deferredQuery);
   const results = groups.flatMap((group) => group.items);
   const selectedIndex = results.length === 0 ? -1 : Math.min(activeIndex, results.length - 1);
   const selectedId = selectedIndex >= 0 ? `${listId}-option-${selectedIndex}` : undefined;
@@ -99,25 +105,23 @@ export function SearchCommandPalette<Id extends CommandId>({ entries, activeDesk
   }
 
   function handleKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
-    const currentResults = event.key === "Enter"
-      ? filterAndGroupSearchItems(items, query).flatMap((group) => group.items) as PaletteItem[]
-      : results;
-    if (currentResults.length === 0) return;
+    if (results.length === 0) return;
     if (event.key === "ArrowDown") {
       event.preventDefault();
-      setActiveIndex((index) => (Math.min(index, currentResults.length - 1) + 1) % currentResults.length);
+      setActiveIndex((index) => (Math.min(index, results.length - 1) + 1) % results.length);
     } else if (event.key === "ArrowUp") {
       event.preventDefault();
-      setActiveIndex((index) => (Math.min(index, currentResults.length - 1) - 1 + currentResults.length) % currentResults.length);
+      setActiveIndex((index) => (Math.min(index, results.length - 1) - 1 + results.length) % results.length);
     } else if (event.key === "Home") {
       event.preventDefault();
       setActiveIndex(0);
     } else if (event.key === "End") {
       event.preventDefault();
-      setActiveIndex(currentResults.length - 1);
+      setActiveIndex(results.length - 1);
     } else if (event.key === "Enter") {
       event.preventDefault();
-      choose(currentResults[Math.min(activeIndex, currentResults.length - 1)]);
+      const selected = selectedRenderedItem(results, activeIndex);
+      if (selected) choose(selected);
     }
   }
 
@@ -130,23 +134,24 @@ export function SearchCommandPalette<Id extends CommandId>({ entries, activeDesk
         <input id={`${titleId}-query`} type="search" value={query} placeholder="Search Hiraya" autoComplete="off" autoFocus aria-controls={listId} aria-activedescendant={selectedId} onChange={(event) => { setQuery(event.target.value); setActiveIndex(0); }} onKeyDown={handleKeyDown} />
         <button className="icon-button" type="button" aria-label="Close search" onClick={onClose}><X size={18} /></button>
       </header>
-      <div className="command-palette__scope">
-        <label><input type="checkbox" checked={searchAllDesktops} disabled={!allDesktopsAvailable} onChange={(event) => onSearchAllDesktopsChange(event.target.checked)} /> Search all accessible desktops</label>
-        <span role="status">{!allDesktopsAvailable ? "Server search is not available." : searching ? "Searching server..." : searchAllDesktops && !online ? "Offline: cached results may be stale." : searchAllDesktops && remoteResponse?.truncated ? `Showing the first ${remoteResponse.limit} server results, merged with this live desktop.` : searchAllDesktops && remoteResponse ? "Server results, merged with this live desktop." : "This desktop is searched live."}</span>
+       <div className="command-palette__scope">
+         <div className="command-palette__segments" role="group" aria-label="Search scope"><button type="button" aria-pressed={!searchAllDesktops} onClick={() => onSearchAllDesktopsChange(false)}>Current</button><button type="button" aria-pressed={searchAllDesktops} disabled={!allDesktopsAvailable} aria-describedby={scopeStatusId} title={!allDesktopsAvailable ? "This server does not provide workspace-wide search." : undefined} onClick={() => onSearchAllDesktopsChange(true)}>All workspaces</button></div>
+         <span id={scopeStatusId} role="status">{!allDesktopsAvailable ? "All workspaces is unavailable because this server does not provide workspace-wide search." : searching ? "Searching server..." : searchAllDesktops && !online ? "Offline: cached results may be stale." : searchAllDesktops && remoteResponse?.truncated ? `Showing the first ${remoteResponse.limit} server results, merged with this live desktop.` : searchAllDesktops && remoteResponse ? "Server results, merged with this live desktop." : "This desktop is searched live."}</span>
       </div>
       {searchError && <p className="command-palette__warning" role="alert">{searchError} Showing cached results, which may be stale.</p>}
       <div id={listId} className="command-palette__results" role="listbox" aria-label="Search results">
         {groups.length === 0 ? <div className="command-palette__empty" role="status">
           <MagnifyingGlass size={28} weight="duotone" aria-hidden="true" />
-          <strong>No results found</strong>
-          <span>Try a file name, window, or command.</span>
+           <strong>{query ? "No results found" : "Nothing to suggest yet"}</strong>
+           <span>{query ? "Try a file name, window, or command." : "Current windows, recent files, and common commands appear here."}</span>
         </div> : groups.map((group) => <section className="command-palette__group" role="group" aria-labelledby={`${listId}-${group.category}`} key={group.category}>
           <h2 id={`${listId}-${group.category}`}>{CATEGORY_LABELS[group.category]}</h2>
           {group.items.map((item) => {
             const index = resultIndex++;
-            return <button id={`${listId}-option-${index}`} className="command-palette__result" type="button" role="option" aria-selected={index === selectedIndex} aria-disabled={item.disabled || undefined} disabled={item.disabled} data-active={index === selectedIndex || undefined} key={item.id} onPointerMove={() => setActiveIndex(index)} onClick={() => choose(item)}>
-              <ResultIcon category={item.category} />
-              <span><strong>{item.label}</strong>{item.detail && <small>{item.detail}</small>}</span>
+            const detailId = item.detail ? `${listId}-option-${index}-detail` : undefined;
+            return <button id={`${listId}-option-${index}`} className="command-palette__result" type="button" role="option" aria-selected={index === selectedIndex} aria-disabled={item.disabled || undefined} aria-describedby={detailId} disabled={item.disabled} data-active={index === selectedIndex || undefined} key={item.id} onPointerMove={() => setActiveIndex(index)} onClick={() => choose(item)}>
+               <ResultIcon category={item.category} />
+               <span><strong>{item.label}</strong>{item.detail && <small id={detailId}>{item.detail}</small>}</span>
             </button>;
           })}
         </section>)}

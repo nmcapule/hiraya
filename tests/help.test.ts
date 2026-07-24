@@ -1,9 +1,15 @@
 import { describe, expect, test } from "bun:test";
-import { HELP_SECTIONS, guideMarkdown, validateGuideLinks } from "../src/lib/help";
+import { guideSectionMarkdown, HELP_SECTIONS, guideMarkdown, validateGuideLinks } from "../src/lib/help";
 
 const headingIds = new Set(Array.from(guideMarkdown.matchAll(/^#{1,6}\s+.+?\s+\{#([a-z][a-z0-9-]*)\}\s*$/gm), (match) => match[1]));
 
 describe("bundled user guide", () => {
+  test("selects one article without duplicating the guide title", () => {
+    const article = guideSectionMarkdown(guideMarkdown, "offline");
+    expect(article).toStartWith("## Offline cache and pins");
+    expect(article).not.toContain("# Hiraya User Guide");
+    expect(article).not.toContain("## Installation and updates");
+  });
   test("imports the checked-in Markdown and exposes stable section metadata", () => {
     expect(guideMarkdown.startsWith("# Hiraya User Guide")).toBe(true);
     expect(HELP_SECTIONS.map((section) => section.id)).toEqual([
