@@ -4460,6 +4460,11 @@ a:focus-visible {
   text-align: center;
 }
 
+.folder-explorer__list[data-view="grid"] .folder-explorer__name,
+.folder-explorer__list[data-view="grid"] .folder-explorer__size {
+  width: 100%;
+}
+
 .folder-explorer__list[data-view="grid"] .folder-explorer__row > svg {
   width: 34px;
   height: 34px;
