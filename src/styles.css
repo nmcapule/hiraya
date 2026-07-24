@@ -69,7 +69,8 @@ a:focus-visible {
 .brand-mark,
 .taskbar,
 .menu-bar__actions,
-.menu-bar__actions button {
+.menu-bar__actions > button,
+.menu-bar__actions > .mobile-header-menu > .mobile-header-menu__trigger {
   display: flex;
   align-items: center;
 }
@@ -236,7 +237,8 @@ a:focus-visible {
   gap: 5px;
 }
 
-.menu-bar__actions button {
+.menu-bar__actions > button,
+.menu-bar__actions > .mobile-header-menu > .mobile-header-menu__trigger {
   height: 30px;
   gap: 6px;
   padding: 0 10px;
@@ -249,20 +251,24 @@ a:focus-visible {
   transition: background 160ms ease, transform 160ms ease;
 }
 
-.menu-bar__actions button:hover {
+.menu-bar__actions > button:hover,
+.menu-bar__actions > .mobile-header-menu > .mobile-header-menu__trigger:hover {
   background: rgba(255, 255, 255, 0.11);
 }
 
-.menu-bar__actions button[aria-pressed="true"] {
+.menu-bar__actions > button[aria-pressed="true"],
+.menu-bar__actions > .mobile-header-menu > .mobile-header-menu__trigger[aria-pressed="true"] {
   background: rgba(231, 185, 100, 0.2);
   color: #f6d79c;
 }
 
-.menu-bar__actions button:active {
+.menu-bar__actions > button:active,
+.menu-bar__actions > .mobile-header-menu > .mobile-header-menu__trigger:active {
   transform: scale(0.97);
 }
 
-.menu-bar__actions button:disabled {
+.menu-bar__actions > button:disabled,
+.menu-bar__actions > .mobile-header-menu > .mobile-header-menu__trigger:disabled {
   cursor: wait;
   opacity: 0.55;
 }
@@ -2959,7 +2965,8 @@ a:focus-visible {
     padding: 0 8px;
   }
 
-  .menu-bar__actions button {
+  .menu-bar__actions > button,
+  .menu-bar__actions > .mobile-header-menu > .mobile-header-menu__trigger {
     width: 44px;
     height: 44px;
     justify-content: center;
@@ -2983,7 +2990,8 @@ a:focus-visible {
     padding: 9px 10px;
   }
 
-  .menu-bar__actions button span,
+  .menu-bar__actions > button span,
+  .menu-bar__actions > .mobile-header-menu > .mobile-header-menu__trigger span,
   .menu-bar__clock,
   .menu-bar__sync span {
     display: none;
@@ -3410,7 +3418,8 @@ a:focus-visible {
   background: color-mix(in srgb, var(--theme-accent) 20%, transparent);
 }
 .menu-bar__actions { gap: calc(5px * var(--theme-density)); }
-.menu-bar__actions button {
+.menu-bar__actions > button,
+.menu-bar__actions > .mobile-header-menu > .mobile-header-menu__trigger {
   height: calc(30px * var(--theme-density));
   gap: calc(6px * var(--theme-density));
   padding-inline: calc(10px * var(--theme-density));
@@ -3420,8 +3429,10 @@ a:focus-visible {
   font-weight: var(--theme-weight);
   transition: background calc(160ms * var(--theme-motion)) ease, transform calc(160ms * var(--theme-motion)) ease;
 }
-.menu-bar__actions button:hover { background: color-mix(in srgb, var(--theme-chrome-text) 12%, transparent); }
-.menu-bar__actions button[aria-pressed="true"] { color: var(--theme-accent); background: color-mix(in srgb, var(--theme-accent) 21%, transparent); }
+.menu-bar__actions > button:hover,
+.menu-bar__actions > .mobile-header-menu > .mobile-header-menu__trigger:hover { background: color-mix(in srgb, var(--theme-chrome-text) 12%, transparent); }
+.menu-bar__actions > button[aria-pressed="true"],
+.menu-bar__actions > .mobile-header-menu > .mobile-header-menu__trigger[aria-pressed="true"] { color: var(--theme-accent); background: color-mix(in srgb, var(--theme-accent) 21%, transparent); }
 .menu-bar__clock,
 .menu-bar__sync { color: color-mix(in srgb, var(--theme-chrome-text) 76%, transparent); font-size: max(11px, calc(10px * var(--theme-type-scale))); }
 .menu-bar__sync[data-status="online"],
@@ -3807,7 +3818,8 @@ a:focus-visible {
   }
   .desktop { inset-block-start: calc(44px + env(safe-area-inset-top)); }
   .wallpaper-grain { inset-block-start: calc(44px + env(safe-area-inset-top)); }
-  .menu-bar__actions button,
+  .menu-bar__actions > button,
+  .menu-bar__actions > .mobile-header-menu > .mobile-header-menu__trigger,
   .desktop-switcher__trigger,
   .taskbar__entry,
   .app-window[data-mobile] .app-window__control,
@@ -4233,8 +4245,10 @@ a:focus-visible {
   .taskbar { margin-inline: 6px; gap: 3px; }
   .taskbar__entry { max-width: 112px; padding-inline: 8px; }
   .menu-bar__actions { flex: 0 0 auto; gap: 2px; }
-  .menu-bar__actions button { padding-inline: 7px; }
-  .menu-bar__actions button span,
+  .menu-bar__actions > button,
+  .menu-bar__actions > .mobile-header-menu > .mobile-header-menu__trigger { padding-inline: 7px; }
+  .menu-bar__actions > button span,
+  .menu-bar__actions > .mobile-header-menu > .mobile-header-menu__trigger span,
   .desktop-switcher__name,
   .menu-bar__clock,
   .menu-bar__sync { white-space: nowrap; }
@@ -4720,9 +4734,9 @@ a:focus-visible {
   display: grid;
   width: 245px;
   padding: 6px;
-  border: var(--theme-border-width) solid var(--theme-border);
+  border: var(--theme-border-width) solid color-mix(in srgb, var(--theme-chrome-text) 24%, transparent);
   border-radius: var(--theme-radius-small);
-  color: var(--theme-text);
+  color: var(--theme-chrome-text);
   background: var(--theme-chrome);
   box-shadow: var(--theme-shadow);
 }
@@ -4742,8 +4756,8 @@ a:focus-visible {
   cursor: pointer;
 }
 .app-window__menu button:hover,
-.app-window__menu button:focus-visible { background: var(--theme-selected); }
-.app-window__menu kbd { margin-left: auto; color: var(--theme-text-muted); font-size: 9px; }
+.app-window__menu button:focus-visible { background: color-mix(in srgb, var(--theme-chrome-text) 13%, transparent); }
+.app-window__menu kbd { margin-left: auto; color: color-mix(in srgb, var(--theme-chrome-text) 72%, transparent); font-size: 9px; }
 
 .properties-window__offline {
   display: flex;
@@ -5045,7 +5059,8 @@ a:focus-visible {
   .menu-bar__actions { min-width: 0; }
   .menu-bar__actions > button,
   .menu-bar__actions > .mobile-header-menu > .mobile-header-menu__trigger { width: var(--control-size); padding: 0; justify-content: center; }
-  .menu-bar__actions button span,
+  .menu-bar__actions > button span,
+  .menu-bar__actions > .mobile-header-menu > .mobile-header-menu__trigger span,
   .menu-bar__clock,
   .menu-bar__sync span { display: none; }
 }
