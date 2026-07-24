@@ -1,12 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { storageWorkerName } from "../src/lib/storage-worker";
+import { storageOwnerLockName, storageWorkerName } from "../src/lib/storage-worker";
 
 describe("storage worker identity", () => {
-  test("isolates storage routers by frontend build and account namespace", () => {
-    const first = storageWorkerName(false, "account-a", "2026-07-24T03:00:00Z");
-    expect(first).toBe("hiraya-storage-2026-07-24T03-00-00Z-account-a");
-    expect(storageWorkerName(false, "account-a", "2026-07-24T04:00:00Z")).not.toBe(first);
-    expect(storageWorkerName(false, "account-b", "2026-07-24T03:00:00Z")).not.toBe(first);
-    expect(storageWorkerName(true, "ignored", "2026-07-24T03:00:00Z")).toBe("hiraya-storage-2026-07-24T03-00-00Z");
+  test("versions routers and owner locks together while isolating accounts", () => {
+    expect(storageWorkerName(false, "account-a")).toBe("hiraya-storage-v2-account-a");
+    expect(storageWorkerName(false, "account-b")).not.toBe(storageWorkerName(false, "account-a"));
+    expect(storageWorkerName(true, "ignored")).toBe("hiraya-storage-v2");
+    expect(storageOwnerLockName(false, "account-a")).toBe("hiraya-sqlite-v2-owner-account-a");
+    expect(storageOwnerLockName(false, "account-b")).not.toBe(storageOwnerLockName(false, "account-a"));
+    expect(storageOwnerLockName(true, "ignored")).toBe("hiraya-sqlite-v2-owner");
   });
 });

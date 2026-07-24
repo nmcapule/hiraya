@@ -356,7 +356,7 @@ function openDatabasePort(): RpcPort {
   const key = namespaceKey();
   let port: RpcPort;
   if (typeof SharedWorker !== "undefined") {
-    const shared = new SharedWorker(new URL("./opfs-shared.worker.ts", import.meta.url), { type: "module", name: storageWorkerName(FRONTEND_ONLY, key, import.meta.env.HIRAYA_BUILD_TIMESTAMP) });
+    const shared = new SharedWorker(new URL("./opfs-shared.worker.ts", import.meta.url), { type: "module", name: storageWorkerName(FRONTEND_ONLY, key) });
     shared.port.addEventListener("message", (event) => {
       const message = event.data as { type?: string; requestId?: number };
       if (message.type !== "need-engine" || message.requestId === undefined) return;

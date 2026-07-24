@@ -11,6 +11,7 @@ import type { StorageDbMethod, StorageDbRequest, StorageDbRequests, StorageDbRes
 import { parseJsonValue } from "@hiraya/apps-contracts";
 import { parseInstalledApp, type InstalledApp } from "../apps/installed-apps";
 import { APP_STORAGE_SCHEMA_SQL, DATABASE_SCHEMA_VERSION, migrateSchema2To3Sql } from "./opfs-schema";
+import { storageOwnerLockName } from "./storage-worker";
 
 const FRONTEND_ONLY = import.meta.env.HIRAYA_FRONTEND_ONLY === "true";
 const HISTORY_LIMIT = Number(import.meta.env.HIRAYA_HISTORY_LIMIT);
@@ -402,7 +403,7 @@ const workerScope = self as typeof self & { onconnect?: ((event: MessageEvent & 
 if (!("onconnect" in workerScope)) {
   const owner = storageNamespace.then((namespace) => new Promise<void>((resolve, reject) => {
     if (!("locks" in navigator)) { reject(new Error("SharedWorker is unavailable and this browser cannot guarantee a single SQLite owner.")); return; }
-    void navigator.locks.request(FRONTEND_ONLY ? "hiraya-sqlite-v1-owner" : `hiraya-sqlite-v1-owner-${namespace}`, { mode: "exclusive", ifAvailable: true }, async (lock) => { if (!lock) { reject(new Error("Another Hiraya tab owns local storage. Close it before using this browser.")); return; } resolve(); await new Promise(() => undefined); }).catch(reject);
+    void navigator.locks.request(storageOwnerLockName(FRONTEND_ONLY, namespace), { mode: "exclusive", ifAvailable: true }, async (lock) => { if (!lock) { reject(new Error("Another Hiraya tab owns local storage. Close it before using this browser.")); return; } resolve(); await new Promise(() => undefined); }).catch(reject);
   }));
   workerScope.onmessage = (event: MessageEvent<StorageDbRequest | { type: "configure-storage"; storage: string } | { type: "attach"; storage: string; port: MessagePort }>) => {
     if ("type" in event.data && event.data.type === "configure-storage") { configureStorageNamespace(event.data.storage); return; }
