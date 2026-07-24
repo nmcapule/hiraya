@@ -100,8 +100,8 @@ export function SearchCommandPalette<Id extends CommandId>({ entries, activeDesk
 
   function choose(item: PaletteItem) {
     if (item.disabled) return;
-    item.action();
     onClose();
+    item.action();
   }
 
   function handleKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
