@@ -75,6 +75,33 @@ function remoteStorage() {
 }
 
 describe("canonical synchronization", () => {
+  test("saves binary content with MIME and revision options while preserving text saves", async () => {
+    const file = { kind: "file" as const, id: "binary", name: "binary.dat", parentId: null, createdAt: 1, modifiedAt: 1, position: { x: 0, y: 0 }, mimeType: "application/octet-stream", size: 0 };
+    let current = { ...desktopStateSnapshot(), entries: [file], sync: { ...desktopStateSnapshot().sync, contentRevisions: { binary: 4 } } };
+    const writes: Array<{ bytes: number[]; mimeType?: string; expectedContentRevision?: number }> = [];
+    const storage = {
+      loadDesktop: async () => current,
+      readCurrentDesktop: async () => current,
+      saveFile: async (_id: string, content: Blob, options: { mimeType?: string; expectedContentRevision?: number } = {}) => {
+        if (options.expectedContentRevision !== undefined && options.expectedContentRevision !== current.sync.contentRevisions.binary) throw new Error("revision conflict");
+        writes.push({ bytes: [...new Uint8Array(await content.arrayBuffer())], ...options });
+        const saved = { ...file, size: content.size, mimeType: options.mimeType ?? file.mimeType };
+        current = { ...current, entries: [saved] };
+        return saved;
+      },
+      saveTextFile: async (id: string, content: string) => storage.saveFile(id, new Blob([content], { type: file.mimeType })),
+    } as unknown as NonNullable<SyncEngineOptions["storage"]>;
+    const engine = new SyncEngine({ frontendOnly: true, storage });
+    await engine.start("desk", { x: 0, y: 0 });
+
+    await engine.saveFile("binary", new Blob([new Uint8Array([0, 128, 255])]), { mimeType: "image/png", expectedContentRevision: 4 });
+    await engine.saveTextFile("binary", "ok");
+
+    expect(writes[0]).toEqual({ bytes: [0, 128, 255], mimeType: "image/png", expectedContentRevision: 4 });
+    expect(new TextDecoder().decode(new Uint8Array(writes[1].bytes))).toBe("ok");
+    await engine.stop();
+  });
+
   test("converges a fresh browser on the server-created first desktop", async () => {
     const local: Array<{ id: string; name: string }> = [];
     const storage = {

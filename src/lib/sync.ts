@@ -29,10 +29,10 @@ export async function fetchServerBuildTimestamp(fetchImpl: typeof fetch = global
 }
 
 type StorageBoundary = Pick<typeof storage,
-  "applyRemoteDesktop" | "createEntries" | "createFolder" | "createTextFile" | "deleteEntries" | "deleteEntry" | "importFiles" | "loadDesktop" |
+  "applyRemoteDesktop" | "createEntries" | "createFile" | "createFolder" | "createTextFile" | "deleteEntries" | "deleteEntry" | "importFiles" | "loadDesktop" |
   "moveEntries" | "moveEntry" | "readCurrentDesktop" | "captureDesktopState" | "readFile" | "readCachedFile" | "cacheRemoteFile" | "removeCachedFile" | "resolveFileByRelativePath" |
   "readDesktopState" |
-  "renameEntry" | "saveDesktopLayout" | "saveEditorSettings" | "saveTextFile" | "updateEntryPosition"
+  "renameEntry" | "saveDesktopLayout" | "saveEditorSettings" | "saveFile" | "saveTextFile" | "updateEntryPosition"
   | "updateRootEntryPositions" | "enqueueMutation" | "readOutbox" | "bindOutboxCatalog" |
   "acknowledgeMutation" | "blockMutation" | "readPendingContent" |
   "selectTheme" | "saveCustomTheme" | "deleteCustomTheme"
@@ -675,8 +675,9 @@ export class SyncEngine {
     }
   }
 
-  private async mutate<T>(operation: OutboxOperationInput, select: (next: storage.DesktopStateSnapshot) => T, contents?: Map<string, Blob>) {
+  private async mutate<T>(operation: OutboxOperationInput, select: (next: storage.DesktopStateSnapshot) => T, contents?: Map<string, Blob>, validate?: () => void) {
     return this.queue(async () => {
+      validate?.();
       const queued = await this.storage.enqueueMutation({ ...operation, schemaVersion: 1 } as OutboxOperation, contents);
       this.publish(queued.desktop);
       await this.publishOutbox();
@@ -719,6 +720,21 @@ export class SyncEngine {
     const now = Date.now();
     const entry: FileEntry = { kind: "file", id: crypto.randomUUID(), name, parentId, mimeType: "text/plain", size: 0, createdAt: now, modifiedAt: now, position: parsedPosition };
     return this.mutate({ kind: "create", entries: [entry] }, (next) => next.entries.find((item) => item.id === entry.id) as FileEntry, new Map([[entry.id, new Blob([], { type: entry.mimeType })]]));
+  }
+
+  createFile(nameValue: string, parentId: string | null, position: EntryPosition, content: Blob, mimeType?: string) {
+    if (this.frontendOnly) return this.localMutation(() => this.storage.createFile(nameValue, parentId, position, content, mimeType));
+    const parsedPosition = parsePosition(position);
+    const name = validateEntryName(nameValue);
+    this.assertParent(parentId);
+    assertUniqueName(this.current().entries, name, parentId);
+    const now = Date.now();
+    const entry: FileEntry = {
+      kind: "file", id: crypto.randomUUID(), name, parentId,
+      mimeType: mimeType ?? (content.type || "application/octet-stream"), size: content.size,
+      createdAt: now, modifiedAt: now, position: parsedPosition,
+    };
+    return this.mutate({ kind: "create", entries: [entry] }, (next) => next.entries.find((item) => item.id === entry.id) as FileEntry, new Map([[entry.id, content.slice(0, content.size, entry.mimeType)]]));
   }
 
   createFolder(nameValue: string, parentId: string | null, position: EntryPosition) {
@@ -937,12 +953,29 @@ export class SyncEngine {
     return this.mutate({ kind: "root-entry-positions", positions }, (next) => positions.map(({ entryId }) => next.entries.find((entry) => entry.id === entryId) as DesktopEntry));
   }
 
+  saveFile(id: string, content: Blob, options: storage.SaveFileOptions = {}) {
+    if (this.frontendOnly) return this.localMutation(() => this.storage.saveFile(id, content, options));
+    const existing = this.current().entries.find((entry): entry is FileEntry => entry.id === id && entry.kind === "file");
+    if (!existing) throw new Error("That file no longer exists.");
+    const entry = { ...existing, mimeType: options.mimeType ?? existing.mimeType, size: content.size, modifiedAt: Date.now() };
+    return this.mutate(
+      { kind: "save-content", entry },
+      (next) => next.entries.find((item) => item.id === id) as FileEntry,
+      new Map([[id, content.slice(0, content.size, entry.mimeType)]]),
+      () => {
+        const actualRevision = this.current().sync.contentRevisions[id] ?? 0;
+        if (options.expectedContentRevision !== undefined && options.expectedContentRevision !== actualRevision) {
+          throw new storage.ContentRevisionConflictError(options.expectedContentRevision, actualRevision);
+        }
+      },
+    );
+  }
+
   saveTextFile(id: string, content: string) {
     if (this.frontendOnly) return this.localMutation(() => this.storage.saveTextFile(id, content));
     const existing = this.current().entries.find((entry): entry is FileEntry => entry.id === id && entry.kind === "file");
     if (!existing) throw new Error("That file no longer exists.");
-    const entry = { ...existing, size: new Blob([content]).size, modifiedAt: Date.now() };
-    return this.mutate({ kind: "save-content", entry }, (next) => next.entries.find((item) => item.id === id) as FileEntry, new Map([[id, new Blob([content], { type: existing.mimeType })]]));
+    return this.saveFile(id, new Blob([content], { type: existing.mimeType }));
   }
 
   saveDesktopLayout(layout: DesktopLayout) {
@@ -1225,6 +1258,7 @@ export const initializeDesktop = defaultEngine.start.bind(defaultEngine);
 export const stopDesktopSync = defaultEngine.stop.bind(defaultEngine);
 export const subscribeToSync = defaultEngine.subscribe.bind(defaultEngine);
 export const createTextFile = defaultEngine.createTextFile.bind(defaultEngine);
+export const createFile = defaultEngine.createFile.bind(defaultEngine);
 export const createFolder = defaultEngine.createFolder.bind(defaultEngine);
 export const importFiles = defaultEngine.importFiles.bind(defaultEngine);
 export const renameEntry = defaultEngine.renameEntry.bind(defaultEngine);
@@ -1243,6 +1277,7 @@ export const pasteEntries = defaultEngine.pasteEntries.bind(defaultEngine);
 export const updateRootEntryPositions = defaultEngine.updateRootEntryPositions.bind(defaultEngine);
 export const updateEntryPosition = defaultEngine.updateEntryPosition.bind(defaultEngine);
 export const saveTextFile = defaultEngine.saveTextFile.bind(defaultEngine);
+export const saveFile = defaultEngine.saveFile.bind(defaultEngine);
 export const saveDesktopLayout = defaultEngine.saveDesktopLayout.bind(defaultEngine);
 export const saveEditorSettings = defaultEngine.saveEditorSettings.bind(defaultEngine);
 export const selectTheme = defaultEngine.selectTheme.bind(defaultEngine);

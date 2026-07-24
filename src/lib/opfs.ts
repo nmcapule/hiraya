@@ -91,6 +91,18 @@ export class StorageUnavailableError extends Error {
   }
 }
 
+export class ContentRevisionConflictError extends Error {
+  constructor(readonly expectedRevision: number, readonly actualRevision: number) {
+    super("The file changed since it was last read.");
+    this.name = "ContentRevisionConflictError";
+  }
+}
+
+export type SaveFileOptions = {
+  mimeType?: string;
+  expectedContentRevision?: number;
+};
+
 async function getRoot() {
   if (!("storage" in navigator) || !("getDirectory" in navigator.storage)) {
     throw new StorageUnavailableError();
@@ -820,6 +832,35 @@ async function createTextFileUnsafe(nameValue: string, parentId: string | null, 
   return file;
 }
 
+async function createFileUnsafe(nameValue: string, parentId: string | null, position: EntryPosition, content: Blob, mimeType?: string) {
+  const name = validateEntryName(nameValue);
+  const manifest = await readManifest();
+  findParent(manifest.entries, parentId);
+  assertUniqueName(manifest.entries, name, parentId);
+  const now = Date.now();
+  const file: FileEntry = {
+    kind: "file",
+    id: crypto.randomUUID(),
+    name,
+    parentId,
+    mimeType: mimeType ?? (content.type || "application/octet-stream"),
+    size: content.size,
+    createdAt: now,
+    modifiedAt: now,
+    position: parsePosition(position),
+  };
+  const next = { ...manifest, entries: [...manifest.entries, file] };
+  assertValidManifest(next);
+  await writeContent(file.id, content.slice(0, content.size, file.mimeType));
+  try {
+    await writeManifest(next, activityRecord("Created file", [`File: ${file.name}`, `Size: ${file.size} bytes`, locationDetail(manifest.entries, parentId)]));
+  } catch (error) {
+    try { await (await getFilesDirectory()).removeEntry(file.id); } catch { /* best-effort rollback */ }
+    throw error;
+  }
+  return file;
+}
+
 async function createFolderUnsafe(nameValue: string, parentId: string | null, position: EntryPosition) {
   const name = validateEntryName(nameValue);
   const manifest = await readManifest();
@@ -1190,20 +1231,28 @@ async function readFileByRelativePathUnsafe(fromFileId: FileEntry["id"], relativ
   return { file, blob: await readFileUnsafe(file.id) };
 }
 
-async function saveTextFileUnsafe(id: FileEntry["id"], content: string): Promise<FileEntry> {
+async function saveFileUnsafe(id: FileEntry["id"], content: Blob, options: SaveFileOptions = {}): Promise<FileEntry> {
   const manifest = await readManifest();
   const existing = getFileEntry(manifest.entries, id);
-  await writeContent(id, content);
+  const actualRevision = manifest.sync.contentRevisions[id] ?? 0;
+  if (options.expectedContentRevision !== undefined && options.expectedContentRevision !== actualRevision) {
+    throw new ContentRevisionConflictError(options.expectedContentRevision, actualRevision);
+  }
   const saved: FileEntry = {
     ...existing,
-    size: new Blob([content]).size,
+    mimeType: options.mimeType ?? existing.mimeType,
+    size: content.size,
     modifiedAt: Date.now(),
   };
-  await writeManifest({
-    ...manifest,
-    entries: manifest.entries.map((entry) => (entry.id === id ? saved : entry)),
-  }, activityRecord("Edited file", [`File: ${saved.name}`, `Size: ${saved.size} bytes`]));
+  const next = { ...manifest, entries: manifest.entries.map((entry) => (entry.id === id ? saved : entry)) };
+  assertValidManifest(next);
+  await writeContent(id, content.slice(0, content.size, saved.mimeType));
+  await writeManifest(next, activityRecord("Edited file", [`File: ${saved.name}`, `Size: ${saved.size} bytes`]));
   return saved;
+}
+
+async function saveTextFileUnsafe(id: FileEntry["id"], content: string): Promise<FileEntry> {
+  return saveFileUnsafe(id, new Blob([content]));
 }
 
 export function loadDesktop(viewport: EntryPosition, seeded: SeededManifest | null = null) {
@@ -1227,6 +1276,7 @@ export function selectTheme(themeId: string) { return serializeStorage(() => sel
 export function saveCustomTheme(theme: CustomTheme) { return serializeStorage(() => saveCustomThemeUnsafe(theme)); }
 export function deleteCustomTheme(themeId: string) { return serializeStorage(() => deleteCustomThemeUnsafe(themeId)); }
 export function createTextFile(name: string, parentId: string | null, position: EntryPosition) { return serializeStorage(() => createTextFileUnsafe(name, parentId, position)); }
+export function createFile(name: string, parentId: string | null, position: EntryPosition, content: Blob, mimeType?: string) { return serializeStorage(() => createFileUnsafe(name, parentId, position, content, mimeType)); }
 export function createFolder(name: string, parentId: string | null, position: EntryPosition) { return serializeStorage(() => createFolderUnsafe(name, parentId, position)); }
 export function importFiles(files: File[], parentId: string | null, positions: EntryPosition[]) { return serializeStorage(() => importFilesUnsafe(files, parentId, positions)); }
 export function createEntries(entries: DesktopEntry[], contents: Map<string, Blob>) { return serializeStorage(() => createEntriesUnsafe(entries, contents)); }
@@ -1246,6 +1296,7 @@ export function readDesktopState(desktopId: string) { return serializeStorage(()
 export function readFileByRelativePath(fromFileId: FileEntry["id"], relativePath: string) { return serializeStorage(() => readFileByRelativePathUnsafe(fromFileId, relativePath)); }
 export function resolveFileByRelativePath(fromFileId: FileEntry["id"], relativePath: string) { return serializeStorage(() => resolveFileByRelativePathUnsafe(fromFileId, relativePath)); }
 export function saveTextFile(id: FileEntry["id"], content: string) { return serializeStorage(() => saveTextFileUnsafe(id, content)); }
+export function saveFile(id: FileEntry["id"], content: Blob, options?: SaveFileOptions) { return serializeStorage(() => saveFileUnsafe(id, content, options)); }
 export function readLocalPreferences() { return serializeStorage(() => readLocalPreferencesUnsafe()); }
 export function saveLocalPreferences(preferences: LocalPreferences) { return serializeStorage(() => saveLocalPreferencesUnsafe(preferences)); }
 export function listDesktops(seeded: SeededManifest | null = null) { return serializeStorage(() => listDesktopsUnsafe(seeded)); }
