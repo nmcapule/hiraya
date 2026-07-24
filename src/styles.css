@@ -4450,12 +4450,30 @@ a:focus-visible {
 .command-palette { width: min(680px, calc(100vw - 28px)); }
 .command-palette__header { display: flex; align-items: center; gap: 9px; padding: 12px; border-bottom: var(--theme-border-width) solid var(--theme-border); }
 .command-palette__header input { min-width: 0; flex: 1; border: 0; outline: 0; color: var(--theme-text); background: transparent; font: inherit; font-size: 15px; }
+.command-palette__scope { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 14px; border-bottom: var(--theme-border-width) solid var(--theme-border); color: var(--theme-text-muted); font-size: 11px; }
+.command-palette__scope label { display: flex; align-items: center; gap: 7px; color: var(--theme-text); }
+.command-palette__warning { margin: 0; padding: 8px 14px; color: var(--theme-danger); background: var(--theme-danger-surface); font-size: 11px; }
 .command-palette__results { max-height: min(580px, calc(100dvh - 130px)); overflow: auto; padding: 8px; }
 .command-palette__group h2 { margin: 10px 8px 5px; color: var(--theme-text-muted); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }
 .command-palette__result { display: flex; width: 100%; min-height: 48px; align-items: center; gap: 10px; padding: 8px 10px; border: 0; border-radius: var(--theme-radius-small); color: var(--theme-text); background: transparent; text-align: left; cursor: pointer; }
 .command-palette__result[data-active] { background: var(--theme-selected); }
 .command-palette__result > span { display: grid; min-width: 0; }
 .command-palette__result small { color: var(--theme-text-muted); }
+
+.onboarding-backdrop { z-index: 6250; }
+.onboarding-dialog { width: min(760px, calc(100vw - 28px)); max-height: calc(100dvh - 40px); overflow: auto; border: var(--theme-border-width) solid var(--theme-border); border-radius: var(--theme-radius); color: var(--theme-text); background: var(--theme-window); box-shadow: var(--theme-shadow); }
+.onboarding-dialog > header, .onboarding-dialog > footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px 20px; }
+.onboarding-dialog > header { border-bottom: var(--theme-border-width) solid var(--theme-border); }
+.onboarding-dialog h2, .onboarding-dialog h3, .onboarding-dialog p { margin: 0; }
+.onboarding-dialog h2 { margin-top: 3px; font-size: 21px; }
+.onboarding-dialog__grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 16px 20px; }
+.onboarding-dialog__grid article { display: flex; align-items: flex-start; gap: 11px; min-height: 150px; padding: 15px; border: var(--theme-border-width) solid var(--theme-border); border-radius: var(--theme-radius-small); background: var(--theme-window-muted); }
+.onboarding-dialog__grid article > svg { flex: 0 0 auto; color: var(--theme-accent); }
+.onboarding-dialog__grid article div { display: grid; gap: 7px; }
+.onboarding-dialog__grid p, .onboarding-dialog > footer span { color: var(--theme-text-muted); font-size: 12px; line-height: 1.5; }
+.onboarding-dialog > footer { border-top: var(--theme-border-width) solid var(--theme-border); }
+.notice--actionable { flex-wrap: wrap; }
+.notice--actionable > span { flex-basis: 100%; }
 
 .confirmation-dialog__body { display: flex; align-items: flex-start; gap: 10px; padding: 18px 18px 4px; }
 .confirmation-dialog > .dialog-actions { margin-top: 0; padding: 18px; }
@@ -4585,6 +4603,11 @@ a:focus-visible {
   }
   .command-palette__header input { font-size: 16px; }
   .command-palette__results { max-height: min(60dvh, 580px); }
+  .command-palette__scope { align-items: flex-start; flex-direction: column; }
+  .onboarding-dialog { width: 100%; max-height: calc(100dvh - var(--overlay-top)); border-radius: var(--theme-radius) var(--theme-radius) 0 0; }
+  .onboarding-dialog__grid { grid-template-columns: 1fr; padding: 12px; }
+  .onboarding-dialog__grid article { min-height: 0; }
+  .onboarding-dialog > footer { align-items: stretch; flex-direction: column; padding-bottom: max(18px, env(safe-area-inset-bottom)); }
   .sync-issues-panel__empty,
   .all-windows-panel__empty,
   .keyboard-shortcuts-panel__empty,

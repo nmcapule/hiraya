@@ -11,6 +11,7 @@ export type AuthSession = {
   user: SessionUser;
   capabilities: {
     blobTransfer: "direct-b2-v1";
+    desktopSearch?: "accessible-desktops-v1";
   };
 };
 
@@ -35,6 +36,8 @@ export function parseAuthSession(value: unknown): AuthSession {
   }
   const user = session.user as { displayName?: unknown; email?: unknown; avatarUrl?: unknown };
   const optionalString = (candidate: unknown, label: string) => candidate === undefined ? undefined : requiredString(candidate, label);
+  const desktopSearch = (session.capabilities as { desktopSearch?: unknown }).desktopSearch;
+  if (desktopSearch !== undefined && desktopSearch !== "accessible-desktops-v1") throw new Error("The session bootstrap contains unsupported desktop search capability metadata.");
   return {
     storageId: requiredString(session.storageId, "storage ID"),
     user: {
@@ -42,7 +45,7 @@ export function parseAuthSession(value: unknown): AuthSession {
       ...(user.email === undefined ? {} : { email: optionalString(user.email, "email address") }),
       ...(user.avatarUrl === undefined ? {} : { avatarUrl: optionalString(user.avatarUrl, "avatar URL") }),
     },
-    capabilities: { blobTransfer: "direct-b2-v1" },
+    capabilities: { blobTransfer: "direct-b2-v1", ...(desktopSearch ? { desktopSearch } : {}) },
   };
 }
 

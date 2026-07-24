@@ -6,7 +6,7 @@ import type { DesktopIdentity } from "../types";
 import type { InstalledApp } from "../apps/installed-apps";
 import type { JsonValue } from "@hiraya/apps-contracts";
 
-export type StoredPreferences = { autoUpdate: boolean; externalEmbeddedPreviews: boolean };
+export type StoredPreferences = { autoUpdate: boolean; externalEmbeddedPreviews: boolean; searchAllDesktops: boolean; onboardingVersion: number };
 
 export type StorageDbRequests = {
   ping: undefined;

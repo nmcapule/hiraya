@@ -7,6 +7,7 @@ export type TrashWindowProps = {
   onRestore: (item: TrashItem, destination: "original" | "root") => Promise<void>;
   onPermanentlyDelete: (item: TrashItem) => Promise<void>;
   onRequestPermanentDelete: (item: TrashItem, confirmedDelete: () => Promise<void>) => void;
+  readOnly?: boolean;
 };
 
 function deletedAt(timestamp: number) {
@@ -15,7 +16,7 @@ function deletedAt(timestamp: number) {
   return { label: new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date), iso: date.toISOString() };
 }
 
-export function TrashWindow({ onListTrash, onRestore, onPermanentlyDelete, onRequestPermanentDelete }: TrashWindowProps) {
+export function TrashWindow({ onListTrash, onRestore, onPermanentlyDelete, onRequestPermanentDelete, readOnly = false }: TrashWindowProps) {
   const [items, setItems] = useState<TrashItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -69,7 +70,7 @@ export function TrashWindow({ onListTrash, onRestore, onPermanentlyDelete, onReq
         return <li className="trash-window__item" key={item.entry.id}>
           <span className="trash-window__icon" aria-hidden="true">{item.entry.kind === "folder" ? <Folder size={28} weight="duotone" /> : <File size={28} weight="duotone" />}</span>
           <div className="trash-window__details"><strong>{item.entry.name}</strong><span>{item.entry.kind === "folder" ? "Folder" : item.entry.mimeType}{count > 0 ? ` · ${count} ${count === 1 ? "descendant" : "descendants"}` : ""}</span><time dateTime={timestamp.iso}>{timestamp.label}</time></div>
-          <div className="trash-window__actions">
+          {!readOnly && <div className="trash-window__actions">
             <button className="button button--quiet" type="button" disabled={busyId !== null} onClick={() => void run(item, () => onRestore(item, "original")).catch(() => undefined)}><ArrowCounterClockwise size={15} /> {busy ? "Restoring..." : "Restore original"}</button>
             <button className="button button--quiet" type="button" disabled={busyId !== null} onClick={() => void run(item, () => onRestore(item, "root")).catch(() => undefined)}>Restore to desktop</button>
             <button className="button trash-window__delete" type="button" disabled={busyId !== null} onClick={() => {
@@ -80,7 +81,7 @@ export function TrashWindow({ onListTrash, onRestore, onPermanentlyDelete, onReq
                 await run(item, () => onPermanentlyDelete(item));
               });
             }}><Trash size={15} /> Delete permanently</button>
-          </div>
+          </div>}
         </li>;
       })}</ul>}
   </section>;

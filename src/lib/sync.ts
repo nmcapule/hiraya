@@ -835,8 +835,13 @@ export class SyncEngine {
     let local = await this.storage.listDesktops(seeded);
     if (this.frontendOnly) {
       if (local.desktops.length === 0) {
-        const desktop = await this.storage.createDesktop("Desktop");
-        local = { desktops: [desktop], activeDesktopId: desktop.id };
+        try {
+          const desktop = await this.storage.createDesktop("Desktop");
+          local = { desktops: [desktop], activeDesktopId: desktop.id };
+        } catch (error) {
+          local = await this.storage.listDesktops();
+          if (local.desktops.length === 0) throw error;
+        }
       }
       return { schemaVersion: 1 as const, catalogId: null, catalogRevision: 0, quota: null, ...local };
     }
@@ -869,8 +874,13 @@ export class SyncEngine {
     } catch (error) {
       if (error instanceof AuthenticationRequiredError) throw error;
       if (local.desktops.length === 0) {
-        const created = await this.storage.createOfflineDesktop("Offline desktop");
-        local = { desktops: [created.desktop], activeDesktopId: created.desktop.id };
+        try {
+          const created = await this.storage.createOfflineDesktop("Offline desktop");
+          local = { desktops: [created.desktop], activeDesktopId: created.desktop.id };
+        } catch (creationError) {
+          local = await this.storage.listDesktops();
+          if (local.desktops.length === 0) throw creationError;
+        }
       }
       const quota = this.lastQuota?.catalogId === this.catalogId ? this.lastQuota.quota : null;
       return { schemaVersion: 1 as const, catalogId: null, catalogRevision: 0, quota, ...local };

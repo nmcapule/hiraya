@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { canMutateDesktop, localDesktopIdentity, OWNER_CAPABILITIES, READ_ONLY_CAPABILITIES, sharedOfflineMessage } from "../src/lib/permissions";
+import { canMutateDesktop, localDesktopIdentity, OWNER_CAPABILITIES, READ_ONLY_CAPABILITIES, settingsRestrictionReason, sharedOfflineMessage } from "../src/lib/permissions";
 import type { DesktopIdentity } from "../src/types";
 
 function shared(role: DesktopIdentity["role"], capabilities: DesktopIdentity["capabilities"]): DesktopIdentity {
@@ -22,5 +22,14 @@ describe("desktop permissions", () => {
   test("preserves owned offline queue behavior", () => {
     expect(canMutateDesktop(localDesktopIdentity("desk", "Desktop"), "offline")).toBe(true);
     expect(canMutateDesktop(localDesktopIdentity("desk", "Desktop"), "connecting")).toBe(false);
+  });
+
+  test("distinguishes role, offline, and connecting restrictions", () => {
+    const reader = shared("reader", READ_ONLY_CAPABILITIES);
+    const manager = shared("manager", { ...OWNER_CAPABILITIES, delete: false });
+    expect(settingsRestrictionReason(reader, "online")).toContain("role");
+    expect(settingsRestrictionReason(manager, "offline")).toContain("offline");
+    expect(settingsRestrictionReason(manager, "connecting")).toContain("Connecting");
+    expect(settingsRestrictionReason(manager, "blocked")).toContain("queued change");
   });
 });

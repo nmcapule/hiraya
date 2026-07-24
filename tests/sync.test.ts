@@ -118,6 +118,18 @@ describe("canonical synchronization", () => {
     expect(await engine.listDesktops()).toEqual({ schemaVersion: 1, catalogId: "catalog", catalogRevision: 1, activeDesktopId: "desk", desktops: [remoteDesktopIdentity()], quota: catalogQuota });
   });
 
+  test("recovers when concurrent first-run initialization creates the local desktop", async () => {
+    const local = [remoteDesktopIdentity("desk", "Desktop")];
+    let reads = 0;
+    const storage = {
+      listDesktops: async () => ({ desktops: reads++ === 0 ? [] : local, activeDesktopId: reads === 1 ? null : "desk" }),
+      createDesktop: async () => { throw new Error("A desktop with that name already exists."); },
+    } as unknown as NonNullable<SyncEngineOptions["storage"]>;
+    const engine = new SyncEngine({ frontendOnly: true, storage });
+
+    expect(await engine.listDesktops()).toMatchObject({ activeDesktopId: "desk", desktops: local });
+  });
+
   test("updates the catalog and falls back when the active desktop is deleted remotely", async () => {
     const local = [{ id: "one", name: "One" }, { id: "two", name: "Two" }];
     let catalogRead = 0;

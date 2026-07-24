@@ -13,6 +13,7 @@ import type { CatalogQuota } from "./lib/desktop-catalog";
 import { PasteConflictDialog } from "./components/PasteConflictDialog";
 import { PropertiesWindow } from "./components/PropertiesWindow";
 import { SettingsWindow } from "./components/SettingsWindow";
+import { GettingStartedDialog } from "./components/GettingStartedDialog";
 import { AppPickerDialog } from "./components/AppPickerDialog";
 import { UpdateToast } from "./components/UpdateToast";
 import {
@@ -91,7 +92,7 @@ import { canOpenActivity } from "./ui/activity-navigation";
 import type { OutboxRecord } from "./lib/outbox";
 import type { TrashItem } from "./lib/contracts";
 import type { KeyboardShortcut, WindowListItem } from "./ui/panel-data";
-import { canMutateDesktop, sharedOfflineMessage } from "./lib/permissions";
+import { canMutateDesktop, settingsRestrictionReason, sharedOfflineMessage } from "./lib/permissions";
 import { builtinAppEntryDependency, builtinAppMaximizeRestoreWindow, builtinAppTargetId, builtinAppWindow, extractBuiltinAppTarget } from "./apps/registry";
 import { createAppCommandService, RuntimeCommandContributions, type AppCommandContext, type CommandId } from "./apps/commands";
 import type { AppPackageInspection } from "@hiraya/app-cli";
@@ -101,6 +102,9 @@ import { AppHostServices, AppLifecycleService, AppPersistentStorageService, AppT
 import { createFile as createAppFile, deleteEntry as deleteAppEntry, moveEntry as moveAppEntry, saveFile as saveAppFile } from "./lib/sync";
 import { installedAppAcceptsFile, installedAppIsAvailable, packageMatchesInstall, type InstalledApp } from "./apps/installed-apps";
 import { COMPACT_CHROME_QUERY, MOBILE_WINDOW_QUERY, useMediaQuery } from "./ui/responsive";
+import { localSearchResults, searchAccessibleDesktops, type DesktopSearchResult } from "./lib/search";
+import { createTrashNotification, dismissTrashNotification, updateTrashNotification, type TrashNotification } from "./lib/trash-notifications";
+import { isStandalone, pwaInstallState, type InstallPromptEvent } from "./lib/pwa-install";
 
 type BaseRunningApp = { id: string; bounds: WindowBounds; minimized: boolean; zIndex: number };
 type FileApp = BaseRunningApp & { kind: "file"; fileId: string; file?: FileEntry; blob?: File; editable?: boolean; loadError?: string; editMode: boolean; contentRevision: number; remoteChanged: boolean };
@@ -113,6 +117,7 @@ type RouteHistoryState = { hiraya: true; schemaVersion: 1; parentHash?: string; 
 type PendingPaste = { snapshot: ClipboardEntrySnapshot; parentId: string | null; position?: EntryPosition };
 const MINIMAP_LONG_PRESS_MS = 500;
 const DESKTOP_LONG_PRESS_MS = 500;
+const ONBOARDING_VERSION = 1;
 
 function formatClock(date: Date) {
   return new Intl.DateTimeFormat(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" }).format(date);
@@ -196,7 +201,13 @@ function App({ session }: { session: AuthSession | null }) {
   const [offlineAvailability, setOfflineAvailability] = useState<Record<string, boolean | null>>({});
   const [offlineBusyId, setOfflineBusyId] = useState<string | null>(null);
   const [importProgress, setImportProgress] = useState<{ count: number; phase: "preparing" | "saving" | "syncing" } | null>(null);
-  const [undoTrash, setUndoTrash] = useState<{ desktopId: string; label: string; rootIds: string[] } | null>(null);
+  const [trashNotifications, setTrashNotifications] = useState<TrashNotification[]>([]);
+  const [cachedSearchResults, setCachedSearchResults] = useState<DesktopSearchResult[]>([]);
+  const [searchAllDesktops, setSearchAllDesktops] = useState(false);
+  const [showGettingStarted, setShowGettingStarted] = useState(false);
+  const [preferencesLoaded, setPreferencesLoaded] = useState(false);
+  const [installPrompt, setInstallPrompt] = useState<InstallPromptEvent | null>(null);
+  const [pwaInstalled, setPwaInstalled] = useState(false);
   const [sharingOpen, setSharingOpen] = useState(false);
   const desktopRef = useRef<HTMLElement>(null);
   const desktopSizeRef = useRef(desktopSize);
@@ -279,7 +290,7 @@ function App({ session }: { session: AuthSession | null }) {
   const restoredWindowBoundsRef = useRef(new Map<string, WindowBounds>());
   const windowCommandRef = useRef<{ maximize: (id: string) => void; move: (id: string, direction: "left" | "right" | "up" | "down") => void }>({ maximize: () => {}, move: () => {} });
   const autoUpdateRef = useRef(true);
-  const localPreferencesRef = useRef<LocalPreferences>({ autoUpdate: true, externalEmbeddedPreviews: true });
+  const localPreferencesRef = useRef<LocalPreferences>({ autoUpdate: true, externalEmbeddedPreviews: true, searchAllDesktops: false, onboardingVersion: 0 });
   const updatePreferenceLoadedRef = useRef(false);
   const manualUpdateCheckRef = useRef(false);
   const activeSegment = { column: route?.column ?? 0, row: route?.row ?? 0 };
@@ -294,6 +305,9 @@ function App({ session }: { session: AuthSession | null }) {
   const canManage = Boolean(activeDesktop?.capabilities.manage && syncStatus === "online");
   const canSettings = Boolean(activeDesktop?.capabilities.settings && canMutate);
   const canViewActivity = Boolean(activeDesktop?.capabilities.activity && syncStatus === "online");
+  const canOpenTrash = Boolean(activeDesktop?.capabilities.write && syncStatus !== "local");
+  const desktopSearchAvailable = session === null || session.capabilities.desktopSearch === "accessible-desktops-v1";
+  const installState = pwaInstallState(installPrompt, pwaInstalled, isStandalone());
   const offlineSharedNotice = sharedOfflineMessage(activeDesktop, syncStatus);
   const syncIndicatorStatus = syncStatus === "online" && isSyncing ? "syncing" : syncStatus;
   const activeDesktopName = desktops.find((desktop) => desktop.id === activeDesktopId)?.name ?? "Desktop";
@@ -375,6 +389,17 @@ function App({ session }: { session: AuthSession | null }) {
 
   useEffect(() => appHostServices.dialogs.subscribe(setAppDialogRequests), [appHostServices]);
   useEffect(() => appHostServices.notifications.subscribe(setAppNotifications), [appHostServices]);
+  useEffect(() => { if (!canViewActivity && settingsPage === "activity") setSettingsPage("main"); }, [canViewActivity, settingsPage]);
+  useEffect(() => {
+    if (!loading && preferencesLoaded && localPreferencesRef.current.onboardingVersion < ONBOARDING_VERSION) setShowGettingStarted(true);
+  }, [loading, preferencesLoaded]);
+  useEffect(() => {
+    const beforeInstall = (event: Event) => { event.preventDefault(); setInstallPrompt(event as InstallPromptEvent); };
+    const installed = () => { setPwaInstalled(true); setInstallPrompt(null); };
+    window.addEventListener("beforeinstallprompt", beforeInstall);
+    window.addEventListener("appinstalled", installed);
+    return () => { window.removeEventListener("beforeinstallprompt", beforeInstall); window.removeEventListener("appinstalled", installed); };
+  }, []);
   useEffect(() => {
     if (loading) return;
     void listInstalledApps().then(setInstalledApps).catch((loadError) => {
@@ -894,6 +919,15 @@ function App({ session }: { session: AuthSession | null }) {
   }, [activePanel]);
 
   useEffect(() => {
+    if (activePanel !== "search") return;
+    let active = true;
+    void Promise.all(desktops.map(async (desktop) => localSearchResults(desktop, desktop.id === activeDesktopId ? entriesRef.current : await readDesktopEntries(desktop.id), desktop.id !== activeDesktopId)))
+      .then((results) => { if (active) setCachedSearchResults(results.flat()); })
+      .catch(() => { if (active) setCachedSearchResults(activeDesktop ? localSearchResults(activeDesktop, entriesRef.current, false) : []); });
+    return () => { active = false; };
+  }, [activeDesktop, activeDesktopId, activePanel, desktops]);
+
+  useEffect(() => {
     if (!moveDialogEntryIds.length || !activeDesktopId) return;
     let active = true;
     setDesktopMoveFolders({});
@@ -977,11 +1011,14 @@ function App({ session }: { session: AuthSession | null }) {
         updatePreferenceLoadedRef.current = true;
         setAutoUpdate(preferences.autoUpdate);
         setExternalEmbeddedPreviews(preferences.externalEmbeddedPreviews);
+        setSearchAllDesktops(preferences.searchAllDesktops && desktopSearchAvailable);
+        setPreferencesLoaded(true);
         checkAutomatically();
       })
       .catch(() => {
         if (!active) return;
         updatePreferenceLoadedRef.current = true;
+        setPreferencesLoaded(true);
         setError("The local update preference could not be loaded.");
         checkAutomatically();
       });
@@ -993,7 +1030,7 @@ function App({ session }: { session: AuthSession | null }) {
       window.removeEventListener("online", checkAutomatically);
       document.removeEventListener("visibilitychange", checkWhenVisible);
     };
-  }, []);
+  }, [desktopSearchAvailable]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setClock(new Date()), 30_000);
@@ -1273,7 +1310,7 @@ function App({ session }: { session: AuthSession | null }) {
 
   useEffect(() => {
     if (!notice) return;
-    const timer = window.setTimeout(() => { setNotice(""); setUndoTrash(null); }, 6500);
+    const timer = window.setTimeout(() => setNotice(""), 6500);
     return () => window.clearTimeout(timer);
   }, [notice]);
 
@@ -1501,6 +1538,35 @@ function App({ session }: { session: AuthSession | null }) {
     }
   }
 
+  async function changeSearchAllDesktops(enabled: boolean) {
+    const previous = localPreferencesRef.current;
+    const next = { ...previous, searchAllDesktops: enabled };
+    localPreferencesRef.current = next;
+    setSearchAllDesktops(enabled);
+    try { await saveLocalPreferences(next); }
+    catch {
+      localPreferencesRef.current = previous;
+      setSearchAllDesktops(previous.searchAllDesktops);
+      setError("The search preference could not be saved.");
+    }
+  }
+
+  async function closeGettingStarted() {
+    setShowGettingStarted(false);
+    if (localPreferencesRef.current.onboardingVersion >= ONBOARDING_VERSION) return;
+    const next = { ...localPreferencesRef.current, onboardingVersion: ONBOARDING_VERSION };
+    localPreferencesRef.current = next;
+    try { await saveLocalPreferences(next); }
+    catch { setError("Getting Started completion could not be saved. The guide may appear again."); }
+  }
+
+  async function installPwa() {
+    if (!installPrompt) return;
+    await installPrompt.prompt();
+    const choice = await installPrompt.userChoice;
+    if (choice.outcome === "accepted") setInstallPrompt(null);
+  }
+
   async function applyActivatedDesktopState(desktopId: string, desktop: DesktopStateSnapshot) {
     activeDesktopIdRef.current = desktopId;
     setActiveDesktopId(desktopId);
@@ -1638,7 +1704,7 @@ function App({ session }: { session: AuthSession | null }) {
       replaceSelection(selectionScope, selectedIdsRef.current.filter((id) => !deletedIds.has(id)));
       const label = ids.length === 1 ? dialogEntry.name : `${ids.length} items`;
       setNotice(syncStatus === "local" ? `${label} deleted permanently` : `${label} moved to Trash`);
-      setUndoTrash(syncStatus === "online" ? { desktopId: activeDesktopIdRef.current, label, rootIds } : null);
+      if (syncStatus === "online") setTrashNotifications((current) => [...current, createTrashNotification(activeDesktopIdRef.current, label, rootIds)]);
     }
     setDialog(null);
   }
@@ -1801,7 +1867,6 @@ function App({ session }: { session: AuthSession | null }) {
   }
 
   function openSettingsWindow(syncRoute = true) {
-    if (!activeDesktop?.capabilities.settings && !activeDesktop?.capabilities.activity) return false;
     const id = builtinAppTargetId({ kind: "settings" });
     if (runningAppsRef.current.some((app) => app.id === id)) {
       focusApp(id, syncRoute);
@@ -2052,17 +2117,38 @@ function App({ session }: { session: AuthSession | null }) {
     }
   }
 
-  async function undoMoveToTrash() {
-    const pending = undoTrash;
-    if (!pending) return;
+  async function undoMoveToTrash(pending: TrashNotification) {
+    if (pending.state === "running") return;
+    setTrashNotifications((current) => updateTrashNotification(current, pending.id, "running"));
     try {
-      if (activeDesktopIdRef.current !== pending.desktopId && !await activateDesktop(pending.desktopId)) return;
+      if (!desktopsRef.current.some((desktop) => desktop.id === pending.desktopId)) throw new Error("That desktop is no longer accessible. Open Trash after access is restored.");
+      if (activeDesktopIdRef.current !== pending.desktopId && !await activateDesktop(pending.desktopId)) throw new Error("The desktop could not be opened.");
       for (const id of pending.rootIds) await restoreTrash(pending.desktopId, id, "original");
-      setUndoTrash(null);
+      setTrashNotifications((current) => dismissTrashNotification(current, pending.id));
       setNotice(`${pending.label} restored`);
     } catch (restoreError) {
-      setError(restoreError instanceof Error ? restoreError.message : "The Trash move could not be undone.");
+      const message = restoreError instanceof Error ? restoreError.message : "The Trash move could not be undone.";
+      setTrashNotifications((current) => updateTrashNotification(current, pending.id, "failed", message));
     }
+  }
+
+  async function openTrashNotification(pending: TrashNotification) {
+    if (!desktopsRef.current.some((desktop) => desktop.id === pending.desktopId)) {
+      setTrashNotifications((current) => updateTrashNotification(current, pending.id, "failed", "That desktop is no longer accessible."));
+      return;
+    }
+    if (activeDesktopIdRef.current !== pending.desktopId && !await activateDesktop(pending.desktopId)) return;
+    setActivePanel("trash");
+  }
+
+  async function openSearchResult(result: DesktopSearchResult) {
+    const destination = desktopsRef.current.find((desktop) => desktop.id === result.desktopId && desktop.capabilities.read && (result.authorityCatalogId === null || desktop.authorityCatalogId === result.authorityCatalogId));
+    if (!destination) { setError("That search result is no longer accessible."); return; }
+    if (result.desktopId !== activeDesktopIdRef.current && !await activateDesktop(result.desktopId)) return;
+    const current = entriesRef.current.find((entry) => entry.id === result.entry.id);
+    if (!current) { setError("That search result is stale. Search again after reconnecting."); return; }
+    if (current.parentId === null) goToSegment(projectLogicalPosition(current.position, desktopSizeRef.current).segment);
+    handleOpen(current);
   }
 
   async function copySelection() {
@@ -2588,8 +2674,8 @@ function App({ session }: { session: AuthSession | null }) {
   });
   const commandContext: AppCommandContext = {
     canMutate,
-    canOpenTrash: activeDesktop?.capabilities.write ?? false,
-    canOpenSettings: Boolean(activeDesktop?.capabilities.settings || activeDesktop?.capabilities.activity),
+    canOpenTrash,
+    canOpenSettings: true,
     createFile: () => setDialog({ type: "create-file", parentId: null }),
     createFolder: () => setDialog({ type: "create-folder", parentId: null }),
     uploadFiles: () => chooseUpload(null),
@@ -2656,18 +2742,18 @@ function App({ session }: { session: AuthSession | null }) {
             <button type="button" aria-label="Upload files" disabled={!canMutate} onClick={() => chooseUpload(null)}><UploadSimple size={16} /> <span>Upload files</span></button>
             <button type="button" aria-label="Search files, windows, and commands" title="Search (Ctrl/Command K)" onClick={() => setActivePanel("search")}><MagnifyingGlass size={16} /></button>
             <button type="button" aria-label="Show all windows" title="All windows" onClick={() => setActivePanel("windows")}><SquaresFour size={16} /></button>
-            {canMutate && <button type="button" aria-label="Open Trash" title="Trash" onClick={() => setActivePanel("trash")}><Trash size={16} /></button>}
+            {canOpenTrash && <button type="button" aria-label="Open Trash" title="Trash" onClick={() => setActivePanel("trash")}><Trash size={16} /></button>}
           </>}
           {compactChrome ? <MobileHeaderMenu label="Navigation and tools" icon={<GearSix size={18} />}>
             {(dismiss) => <>
               <button type="button" onClick={() => { dismiss(); setActivePanel("search"); }}><MagnifyingGlass size={17} /> Search</button>
               <button type="button" onClick={() => { dismiss(); setActivePanel("windows"); }}><SquaresFour size={17} /> All windows</button>
-              {canMutate && <button type="button" onClick={() => { dismiss(); setActivePanel("trash"); }}><Trash size={17} /> Trash</button>}
+              {canOpenTrash && <button type="button" onClick={() => { dismiss(); setActivePanel("trash"); }}><Trash size={17} /> Trash</button>}
               <button type="button" onClick={() => { dismiss(); setActivePanel("shortcuts"); }}><Keyboard size={17} /> Keyboard shortcuts</button>
-              {(activeDesktop?.capabilities.settings || activeDesktop?.capabilities.activity) && <button type="button" onClick={() => { dismiss(); openSettingsWindow(); }}><GearSix size={17} /> Settings</button>}
+              <button type="button" onClick={() => { dismiss(); openSettingsWindow(); }}><GearSix size={17} /> Settings</button>
               {session && activeDesktop?.capabilities.manage && <button type="button" disabled={!canManage} onClick={() => { dismiss(); setSharingOpen(true); }}><ShareNetwork size={17} /> Share desktop</button>}
             </>}
-          </MobileHeaderMenu> : (activeDesktop?.capabilities.settings || activeDesktop?.capabilities.activity) && <button type="button" aria-label="Open settings" title="Settings" onClick={() => openSettingsWindow()}><GearSix size={16} /> <span>Settings</span></button>}
+          </MobileHeaderMenu> : <button type="button" aria-label="Open settings" title="Settings" onClick={() => openSettingsWindow()}><GearSix size={16} /> <span>Settings</span></button>}
           {!compactChrome && session && activeDesktop?.capabilities.manage && <button type="button" aria-label="Share desktop" title="Share desktop" disabled={!canManage} onClick={() => setSharingOpen(true)}><ShareNetwork size={16} /> <span>Share</span></button>}
           {session && <AccountMenu session={session} />}
           <button className="menu-bar__sync" data-status={syncIndicatorStatus} type="button" aria-label="Open sync status" title={syncIndicatorStatus === "local" ? "Changes are saved only in this browser" : syncIndicatorStatus === "syncing" ? "Synchronizing saved changes" : syncIndicatorStatus === "online" ? "Changes are saved and synchronized" : syncIndicatorStatus === "connecting" ? "Connecting to the Hiraya server" : syncIndicatorStatus === "blocked" ? "A queued change needs attention before synchronization can continue" : "Offline changes are saved and will synchronize after reconnecting"} onClick={() => setActivePanel("sync")}>
@@ -2908,6 +2994,8 @@ function App({ session }: { session: AuthSession | null }) {
                     appearance={appearance}
                     activeTheme={activeTheme}
                     canMutate={canSettings}
+                    canViewActivity={canViewActivity}
+                    restrictionReason={settingsRestrictionReason(activeDesktop, syncStatus)}
                     exportDisabled={loading}
                     exporting={exporting}
                     fullscreenEnabled={document.fullscreenEnabled}
@@ -2918,6 +3006,9 @@ function App({ session }: { session: AuthSession | null }) {
                     autoUpdate={autoUpdate}
                     externalEmbeddedPreviews={externalEmbeddedPreviews === true}
                     localPreferencesLoaded={externalEmbeddedPreviews !== null}
+                    searchAllDesktops={searchAllDesktops}
+                    desktopSearchAvailable={desktopSearchAvailable}
+                    installState={installState}
                     serverBuildTimestamp={serverBuildTimestamp}
                     installedApps={installedApps}
                     onLaunchApp={(installed) => {
@@ -2953,6 +3044,9 @@ function App({ session }: { session: AuthSession | null }) {
                     onCheckForUpdate={() => void checkForUpdate()}
                     onAutoUpdateChange={(enabled) => void changeAutoUpdate(enabled)}
                     onExternalEmbeddedPreviewsChange={(enabled) => void changeExternalEmbeddedPreviews(enabled)}
+                    onSearchAllDesktopsChange={(enabled) => void changeSearchAllDesktops(enabled)}
+                    onOpenGettingStarted={() => setShowGettingStarted(true)}
+                    onInstall={() => void installPwa()}
                   />
                 )}
                 </>}
@@ -3031,9 +3125,10 @@ function App({ session }: { session: AuthSession | null }) {
         event.target.value = "";
       }} />
 
-      {(error || notice || appNotifications.length > 0) && <div className="notification-stack">
+      {(error || notice || trashNotifications.length > 0 || appNotifications.length > 0) && <div className="notification-stack">
         {error && <div className="error-banner" role="alert"><WarningCircle size={19} weight="fill" /><span>{error}</span><button type="button" onClick={() => setError("")} aria-label="Dismiss error">Dismiss</button></div>}
-        {notice && <div className="notice" role="status"><span>{notice}</span>{undoTrash && <button type="button" onClick={() => void undoMoveToTrash()}>Undo</button>}<button type="button" aria-label="Dismiss notice" onClick={() => { setNotice(""); setUndoTrash(null); }}><X size={14} /></button></div>}
+        {notice && <div className="notice" role="status"><span>{notice}</span><button type="button" aria-label="Dismiss notice" onClick={() => setNotice("")}><X size={14} /></button></div>}
+        {trashNotifications.map((notification) => <div className="notice notice--actionable" role={notification.state === "failed" ? "alert" : "status"} key={notification.id}><span><strong>{notification.label} moved to Trash</strong>{notification.state === "running" ? " Restoring..." : notification.error ? ` ${notification.error}` : " Undo remains available until dismissed."}</span><button type="button" disabled={notification.state === "running"} onClick={() => void undoMoveToTrash(notification)}>{notification.state === "failed" ? "Retry Undo" : "Undo"}</button><button type="button" disabled={notification.state === "running"} onClick={() => void openTrashNotification(notification)}>View Trash</button><button type="button" disabled={notification.state === "running"} aria-label={`Dismiss Trash notification for ${notification.label}`} onClick={() => setTrashNotifications((current) => dismissTrashNotification(current, notification.id))}>Dismiss</button></div>)}
         {appNotifications.map((notification) => <div className="notice" role="status" key={notification.id}><span>{[notification.title, notification.body].filter(Boolean).join(": ")}</span><button type="button" aria-label="Dismiss app notification" onClick={() => appHostServices.notifications.dismiss(notification.owner, notification.id)}><X size={14} /></button></div>)}
       </div>}
       {importProgress && <div className="import-progress" role="status" aria-live="polite"><SpinnerGap size={18} /><div><strong>{importProgress.phase === "preparing" ? "Preparing import" : importProgress.phase === "saving" ? "Saving files locally" : "Saving and synchronizing files"}</strong><span>{importProgress.count} {importProgress.count === 1 ? "file" : "files"}. This API does not support safe cancellation or byte-level progress.</span></div></div>}
@@ -3092,10 +3187,10 @@ function App({ session }: { session: AuthSession | null }) {
             chooseUpload(contextMenu.parentId, contextMenu.position);
             setContextMenu(null);
           }}
-          onSettings={activeDesktop?.capabilities.settings || activeDesktop?.capabilities.activity ? () => {
+          onSettings={() => {
             openSettingsWindow();
             setContextMenu(null);
-          } : undefined}
+          }}
           onPaste={clipboardRef.current ? () => void beginPaste(contextMenu.parentId, contextMenu.parentId === null ? contextMenu.position : undefined) : undefined}
           readOnly={!canMutate}
         />
@@ -3155,7 +3250,7 @@ function App({ session }: { session: AuthSession | null }) {
         />
       )}
       {pendingPaste && <PasteConflictDialog roots={pendingPaste.snapshot.selectedRootIds.map((id) => pendingPaste.snapshot.entries.find((entry) => entry.id === id)!)} existingNames={entries.filter((entry) => entry.parentId === pendingPaste.parentId).map((entry) => entry.name)} onClose={() => setPendingPaste(null)} onPaste={(names) => commitPaste(pendingPaste.snapshot, pendingPaste.parentId, pendingPaste.position, names)} />}
-      {activePanel === "search" && <SearchCommandPalette entries={entries} windows={windowItems.map((window) => ({ id: window.id, title: window.title, detail: window.areaLabel }))} commands={searchCommands} onOpenEntry={handleOpen} onFocusWindow={focusApp} onRunCommand={runSearchCommand} onClose={() => setActivePanel(null)} />}
+      {activePanel === "search" && <SearchCommandPalette entries={entries} activeDesktopId={activeDesktopId} activeDesktopName={activeDesktopName} activeAuthorityCatalogId={activeDesktop?.authorityCatalogId ?? null} cachedDesktopResults={cachedSearchResults} searchAllDesktops={searchAllDesktops} allDesktopsAvailable={desktopSearchAvailable} online={syncStatus === "online"} onSearchAllDesktops={searchAccessibleDesktops} onSearchAllDesktopsChange={(enabled) => void changeSearchAllDesktops(enabled)} windows={windowItems.map((window) => ({ id: window.id, title: window.title, detail: window.areaLabel }))} commands={searchCommands} onOpenEntry={(result) => void openSearchResult(result)} onFocusWindow={focusApp} onRunCommand={runSearchCommand} onClose={() => setActivePanel(null)} />}
       {activePanel === "sync" && <PanelDialog title="Sync status" onClose={() => setActivePanel(null)}><SyncIssuesPanel status={syncStatus} records={outboxRecords} lastSyncedAt={lastSyncedAt} affectedLabels={(record) => {
         const operation = record.operation;
         const ids = operation.kind === "delete" ? [operation.entryId]
@@ -3170,9 +3265,10 @@ function App({ session }: { session: AuthSession | null }) {
       })} /></PanelDialog>}
       {activePanel === "windows" && <PanelDialog title="All windows" onClose={() => setActivePanel(null)}><AllWindowsPanel windows={windowItems} activeAreaId={activeSegmentKey} focusedWindowId={focusedAppId ?? undefined} onFocusWindow={(id) => { focusApp(id); setActivePanel(null); }} onNavigateArea={(id) => { const [row, column] = id.split(":").map(Number); if (Number.isSafeInteger(row) && Number.isSafeInteger(column)) goToSegment({ row, column }); }} /></PanelDialog>}
       {activePanel === "shortcuts" && <PanelDialog title="Keyboard shortcuts" onClose={() => setActivePanel(null)}><KeyboardShortcutsPanel shortcuts={keyboardShortcuts} /></PanelDialog>}
-      {activePanel === "trash" && canMutate && <PanelDialog title="Trash" onClose={() => setActivePanel(null)}><TrashWindow onListTrash={() => listTrash(activeDesktopId)} onRestore={async (item, destination) => { await restoreTrash(activeDesktopId, item.entry.id, destination); setNotice(`${item.entry.name} restored`); }} onPermanentlyDelete={async (item) => { await permanentlyDeleteTrash(activeDesktopId, item.entry.id); setNotice(`${item.entry.name} permanently deleted`); }} onRequestPermanentDelete={(item: TrashItem, confirmedDelete) => { void requestConfirmation({ title: `Delete ${item.entry.name} permanently?`, message: "This item and everything inside it will be permanently deleted. This cannot be undone.", confirmLabel: "Delete permanently", danger: true }).then((confirmed) => { if (confirmed) void confirmedDelete().catch(() => undefined); }); }} /></PanelDialog>}
+      {activePanel === "trash" && activeDesktop?.capabilities.read && syncStatus !== "local" && <PanelDialog title="Trash" onClose={() => setActivePanel(null)}><TrashWindow readOnly={!canMutate} onListTrash={() => listTrash(activeDesktopId)} onRestore={async (item, destination) => { await restoreTrash(activeDesktopId, item.entry.id, destination); setNotice(`${item.entry.name} restored`); }} onPermanentlyDelete={async (item) => { await permanentlyDeleteTrash(activeDesktopId, item.entry.id); setNotice(`${item.entry.name} permanently deleted`); }} onRequestPermanentDelete={(item: TrashItem, confirmedDelete) => { void requestConfirmation({ title: `Delete ${item.entry.name} permanently?`, message: "This item and everything inside it will be permanently deleted. This cannot be undone.", confirmLabel: "Delete permanently", danger: true }).then((confirmed) => { if (confirmed) void confirmedDelete().catch(() => undefined); }); }} /></PanelDialog>}
       {sharingOpen && activeDesktop?.capabilities.manage && <SharingDialog desktop={activeDesktop} onClose={() => setSharingOpen(false)} />}
       {confirmation && <ConfirmationDialog {...confirmation} onClose={resolveConfirmation} />}
+      {showGettingStarted && <GettingStartedDialog local={syncStatus === "local"} installState={installState} onInstall={() => void installPwa()} onClose={() => void closeGettingStarted()} />}
     </main>
   );
 }

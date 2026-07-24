@@ -10,6 +10,8 @@ describe("session bootstrap", () => {
     });
     expect(() => parseAuthSession({ storageId: "", user: { displayName: "Ada" }, capabilities: { blobTransfer: "direct-b2-v1" } })).toThrow("storage ID");
     expect(() => parseAuthSession({ storageId: "opaque-account-1", user: { displayName: "Ada" }, capabilities: { blobTransfer: "proxy-v1" } })).toThrow("direct-b2-v1");
+    expect(parseAuthSession({ storageId: "opaque-account-1", user: { displayName: "Ada" }, capabilities: { blobTransfer: "direct-b2-v1", desktopSearch: "accessible-desktops-v1" } }).capabilities.desktopSearch).toBe("accessible-desktops-v1");
+    expect(() => parseAuthSession({ storageId: "opaque-account-1", user: { displayName: "Ada" }, capabilities: { blobTransfer: "direct-b2-v1", desktopSearch: "legacy" } })).toThrow("desktop search");
   });
 
   test("keeps login returns root-relative", () => {

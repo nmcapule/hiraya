@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowClockwise, ArrowLeft, ArrowsOut, CaretRight, ClockCounterClockwise, CornersIn, CornersOut, ExportIcon, GlobeSimple, GridFour, ImageSquare, PaintBrush, Package, Play, Trash, UploadSimple } from "@phosphor-icons/react";
+import { ArrowClockwise, ArrowLeft, ArrowsOut, CaretRight, ClockCounterClockwise, CornersIn, CornersOut, DownloadSimple, ExportIcon, GlobeSimple, GridFour, ImageSquare, Info, MagnifyingGlass, PaintBrush, Package, Play, Trash, UploadSimple } from "@phosphor-icons/react";
 import { ActivityLog } from "./ActivityLog";
 import type { ActivityPage, ActivityQuery } from "../lib/activity";
 import type { ActivityRecord } from "../lib/activity";
@@ -18,6 +18,7 @@ import { DEFAULT_WALLPAPER, WALLPAPERS, type DesktopEntry, type DesktopLayout, t
 import { WALLPAPER_IMAGE_ACCEPT } from "../lib/wallpaper-image";
 import type { AppWindowHeaderElements } from "./AppWindow";
 import { installedAppIsAvailable, type InstalledApp } from "../apps/installed-apps";
+import type { PwaInstallState } from "../lib/pwa-install";
 
 const WALLPAPER_LABELS: Record<WallpaperPreset, { name: string; description: string }> = {
   dusk: { name: "Dusk", description: "Misty green with a warm horizon" },
@@ -59,6 +60,8 @@ type Props = {
   appearance: ThemeState;
   activeTheme: ThemeDefinition;
   canMutate: boolean;
+  canViewActivity: boolean;
+  restrictionReason: string;
   exportDisabled: boolean;
   exporting: boolean;
   fullscreenEnabled: boolean;
@@ -69,6 +72,9 @@ type Props = {
   autoUpdate: boolean;
   externalEmbeddedPreviews: boolean;
   localPreferencesLoaded: boolean;
+  searchAllDesktops: boolean;
+  desktopSearchAvailable: boolean;
+  installState: PwaInstallState;
   serverBuildTimestamp: string | null;
   installedApps: InstalledApp[];
   onLaunchApp: (app: InstalledApp) => void;
@@ -91,6 +97,9 @@ type Props = {
   onCheckForUpdate: () => void;
   onAutoUpdateChange: (enabled: boolean) => void;
   onExternalEmbeddedPreviewsChange: (enabled: boolean) => void;
+  onSearchAllDesktopsChange: (enabled: boolean) => void;
+  onOpenGettingStarted: () => void;
+  onInstall: () => void;
 };
 
 type NumberControlProps = {
@@ -147,6 +156,8 @@ export function SettingsWindow({
   appearance,
   activeTheme,
   canMutate,
+  canViewActivity,
+  restrictionReason,
   exportDisabled,
   exporting,
   fullscreenEnabled,
@@ -157,6 +168,9 @@ export function SettingsWindow({
   autoUpdate,
   externalEmbeddedPreviews,
   localPreferencesLoaded,
+  searchAllDesktops,
+  desktopSearchAvailable,
+  installState,
   serverBuildTimestamp,
   installedApps,
   onLaunchApp,
@@ -179,6 +193,9 @@ export function SettingsWindow({
   onCheckForUpdate,
   onAutoUpdateChange,
   onExternalEmbeddedPreviewsChange,
+  onSearchAllDesktopsChange,
+  onOpenGettingStarted,
+  onInstall,
 }: Props) {
   const [draft, setDraft] = useState<CustomTheme | null>(null);
   const [saving, setSaving] = useState(false);
@@ -368,7 +385,7 @@ export function SettingsWindow({
               </button>
             </section>
 
-            <section className="settings-section" aria-labelledby="activity-link-heading">
+            {canViewActivity && <section className="settings-section" aria-labelledby="activity-link-heading">
               <button className="settings-row settings-row--navigation" type="button" ref={mainActivityButtonRef} onClick={openActivity}>
                 <span className="settings-row__icon"><ClockCounterClockwise size={17} /></span>
                 <span className="settings-row__copy">
@@ -377,7 +394,7 @@ export function SettingsWindow({
                 </span>
                 <CaretRight className="settings-row__chevron" size={17} aria-hidden="true" />
               </button>
-            </section>
+            </section>}
 
             <section className="settings-section" aria-labelledby="apps-link-heading">
               <button className="settings-row settings-row--navigation" type="button" ref={mainAppsButtonRef} onClick={openApps}>
@@ -420,6 +437,19 @@ export function SettingsWindow({
               </div>
             </section>
 
+            <section className="settings-section" aria-labelledby="search-heading">
+              <div className="settings-section__heading"><MagnifyingGlass size={18} /><div><h3 id="search-heading">Search</h3><p>Choose how broadly file search runs.</p></div></div>
+              <div className="settings-list"><label className="settings-row"><span className="settings-row__icon"><MagnifyingGlass size={17} /></span><span className="settings-row__copy"><strong>All accessible desktops</strong><small>{desktopSearchAvailable ? "Use authoritative server results online and cached browser results offline." : "This server does not advertise accessible-desktop search."}</small></span><input type="checkbox" checked={searchAllDesktops} disabled={!desktopSearchAvailable || !localPreferencesLoaded} onChange={(event) => onSearchAllDesktopsChange(event.target.checked)} /></label></div>
+            </section>
+
+            <section className="settings-section" aria-labelledby="getting-started-heading">
+              <div className="settings-section__heading"><Info size={18} /><div><h3 id="getting-started-heading">Help and installation</h3><p>Device-local guidance and app installation.</p></div></div>
+              <div className="settings-list">
+                <div className="settings-row"><span className="settings-row__icon"><Info size={17} /></span><span className="settings-row__copy"><strong>Getting Started</strong><small>Review storage, offline use, export, backup, and desktop areas.</small></span><button className="button button--quiet" type="button" onClick={onOpenGettingStarted}>Open</button></div>
+                <div className="settings-row"><span className="settings-row__icon"><DownloadSimple size={17} /></span><span className="settings-row__copy"><strong>Install Hiraya</strong><small>{installState === "standalone" ? "Running as an installed app." : installState === "installed" ? "Installed on this device." : installState === "promptable" ? "Ready to install from Hiraya." : "Use your browser's Install app or Add to Home Screen menu."}</small></span>{installState === "promptable" && <button className="button button--quiet" type="button" onClick={onInstall}>Install</button>}</div>
+              </div>
+            </section>
+
             <section className="settings-section" aria-labelledby="updates-heading">
               <div className="settings-section__heading">
                 <ArrowClockwise size={18} />
@@ -458,7 +488,7 @@ export function SettingsWindow({
               </div>
             </section>
 
-            {!canMutate && <p className="settings-window__offline" role="status">Connecting to the shared desktop. Settings will be available shortly.</p>}
+            {!canMutate && <p className="settings-window__offline" role="status">{restrictionReason}</p>}
           </>
         ) : page === "themes" ? (
           <div className="settings-page">
@@ -635,7 +665,7 @@ export function SettingsWindow({
             </fieldset>
           </div>
         </section>
-            {!canMutate && <p className="settings-window__offline" role="status">Connecting to the shared desktop. Appearance controls will be available shortly.</p>}
+            {!canMutate && <p className="settings-window__offline" role="status">{restrictionReason} Appearance remains visible for reference.</p>}
           </div>
         ) : page === "activity" ? (
           <div className="settings-page settings-page--activity">

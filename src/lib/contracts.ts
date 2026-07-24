@@ -359,7 +359,7 @@ function parseEntry(value: unknown, remote: boolean): ParsedEntry {
   return { ...base, kind: "file", mimeType, size: value.size as number, ...revisions };
 }
 
-function parseRemoteEntry(value: unknown): RemoteEntry {
+export function parseRemoteEntry(value: unknown): RemoteEntry {
   return parseEntry(value, true) as RemoteEntry;
 }
 

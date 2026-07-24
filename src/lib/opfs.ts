@@ -83,7 +83,7 @@ type Manifest = DesktopState;
 const parseManifestV13 = parseDesktopState;
 const manifestLayout = desktopStateLayout;
 
-export type LocalPreferences = { autoUpdate: boolean; externalEmbeddedPreviews: boolean };
+export type LocalPreferences = { autoUpdate: boolean; externalEmbeddedPreviews: boolean; searchAllDesktops: boolean; onboardingVersion: number };
 
 export { DEFAULT_EDITOR_SETTINGS } from "./desktop-state";
 

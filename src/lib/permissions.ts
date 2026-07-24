@@ -40,3 +40,12 @@ export function sharedOfflineMessage(desktop: DesktopIdentity | undefined, statu
     ? "Shared desktop editing is unavailable offline. Reconnect to make changes safely."
     : "";
 }
+
+export function settingsRestrictionReason(desktop: DesktopIdentity | undefined, status: string) {
+  if (!desktop) return "Desktop settings are unavailable while this desktop loads.";
+  if (!desktop.capabilities.settings) return "Your role can view this desktop's appearance, but cannot change shared settings.";
+  if (desktop.ownership === "shared" && status === "offline") return "Shared settings are unavailable offline. Reconnect to change them.";
+  if (status === "connecting") return "Connecting to check whether shared settings changed.";
+  if (status === "blocked") return "A queued change must be resolved before shared settings can be changed.";
+  return "Desktop settings are read-only right now.";
+}

@@ -10,12 +10,12 @@ import { activityRecord, parseActivityPage, parseActivityQuery, type ActivityPag
 import type { StorageDbMethod, StorageDbRequest, StorageDbRequests, StorageDbResponses, StoredPreferences } from "./opfs-db-protocol";
 import { parseJsonValue } from "@hiraya/apps-contracts";
 import { parseInstalledApp, type InstalledApp } from "../apps/installed-apps";
-import { APP_STORAGE_SCHEMA_SQL, DATABASE_SCHEMA_VERSION, migrateSchema2To3Sql } from "./opfs-schema";
+import { APP_STORAGE_SCHEMA_SQL, DATABASE_SCHEMA_VERSION, migrateSchema2To3Sql, migrateSchema3To4Sql, PREFERENCES_SCHEMA_SQL } from "./opfs-schema";
 import { storageOwnerLockName } from "./storage-worker";
 
 const FRONTEND_ONLY = import.meta.env.HIRAYA_FRONTEND_ONLY === "true";
 const HISTORY_LIMIT = Number(import.meta.env.HIRAYA_HISTORY_LIMIT);
-const DEFAULT_PREFERENCES: StoredPreferences = { autoUpdate: true, externalEmbeddedPreviews: true };
+const DEFAULT_PREFERENCES: StoredPreferences = { autoUpdate: true, externalEmbeddedPreviews: true, searchAllDesktops: false, onboardingVersion: 0 };
 
 type Row = Record<string, SqlValue>;
 type WorkerPort = Pick<MessagePort, "postMessage"> & { start?: () => void; onmessage: ((event: MessageEvent<StorageDbRequest>) => void) | null };
@@ -60,9 +60,13 @@ function createSchema(db: Database) {
   if (version === 1) {
     db.exec("BEGIN IMMEDIATE; ALTER TABLE desktops ADD COLUMN access_json TEXT; PRAGMA user_version=2; COMMIT;");
   }
-  const migratedVersion = numberValue(scalar(db, "PRAGMA user_version"));
+  let migratedVersion = numberValue(scalar(db, "PRAGMA user_version"));
   if (migratedVersion === 2) {
     db.exec(migrateSchema2To3Sql(migratedVersion));
+    migratedVersion = 3;
+  }
+  if (migratedVersion === 3) {
+    db.exec(migrateSchema3To4Sql(migratedVersion));
     return;
   }
   if (migratedVersion !== 0 && migratedVersion !== DATABASE_SCHEMA_VERSION) throw new Error(`The desktop database uses unsupported schema version ${migratedVersion}.`);
@@ -140,7 +144,8 @@ function createSchema(db: Database) {
     );
     CREATE TABLE activity (catalog_revision INTEGER PRIMARY KEY AUTOINCREMENT, timestamp INTEGER NOT NULL, action TEXT NOT NULL, source TEXT NOT NULL, summary TEXT NOT NULL, details_json TEXT NOT NULL, search_text TEXT NOT NULL);
     CREATE INDEX activity_timestamp ON activity(timestamp DESC, catalog_revision DESC);
-    ${APP_STORAGE_SCHEMA_SQL}
+    ${APP_STORAGE_SCHEMA_SQL.replace("PRAGMA user_version=3;", "")}
+    ${PREFERENCES_SCHEMA_SQL}
     COMMIT;
   `);
 }
@@ -244,11 +249,11 @@ function listActivity(db: Database, value: StorageDbRequests["listActivity"]): A
 
 function readPreferences(db: Database): StoredPreferences {
   const row = rows(db, "SELECT * FROM preferences WHERE singleton=1")[0];
-  return row ? { autoUpdate: numberValue(row.auto_update) === 1, externalEmbeddedPreviews: numberValue(row.external_embedded_previews) === 1 } : DEFAULT_PREFERENCES;
+  return row ? { autoUpdate: numberValue(row.auto_update) === 1, externalEmbeddedPreviews: numberValue(row.external_embedded_previews) === 1, searchAllDesktops: numberValue(row.search_all_desktops) === 1, onboardingVersion: numberValue(row.onboarding_version) } : DEFAULT_PREFERENCES;
 }
 
 function writePreferences(db: Database, value: StoredPreferences) {
-  db.exec({ sql: "INSERT INTO preferences VALUES (1, ?, ?) ON CONFLICT(singleton) DO UPDATE SET auto_update=excluded.auto_update, external_embedded_previews=excluded.external_embedded_previews", bind: [value.autoUpdate, value.externalEmbeddedPreviews] });
+  db.exec({ sql: "INSERT INTO preferences(singleton,auto_update,external_embedded_previews,search_all_desktops,onboarding_version) VALUES (1, ?, ?, ?, ?) ON CONFLICT(singleton) DO UPDATE SET auto_update=excluded.auto_update, external_embedded_previews=excluded.external_embedded_previews, search_all_desktops=excluded.search_all_desktops, onboarding_version=excluded.onboarding_version", bind: [value.autoUpdate, value.externalEmbeddedPreviews, value.searchAllDesktops, value.onboardingVersion] });
 }
 
 let existedBeforeOpen = false;
