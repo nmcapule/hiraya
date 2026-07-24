@@ -71,7 +71,7 @@ import { topOverlay } from "./ui/overlay";
 import { createEntryIndex } from "./ui/entry-index";
 import { clampWindowBounds, initialWindowBounds, type WindowBounds } from "./ui/window-manager";
 import { namesMatch } from "./lib/entry-validation";
-import { parseWindowTargets, restoreWindowSession, windowTargetId, type WindowSession, type WindowSessionApp, type WindowTarget } from "./lib/window-session";
+import { parseWindowTargets, restoreWindowSession, type WindowSession, type WindowSessionApp, type WindowTarget } from "./lib/window-session";
 import { parseInternetShortcut } from "./lib/internet-shortcut";
 import { createSerialTaskQueue } from "./lib/serial-task";
 import { validateWallpaperImage } from "./lib/wallpaper-image";
@@ -91,6 +91,7 @@ import type { OutboxRecord } from "./lib/outbox";
 import type { TrashItem } from "./lib/contracts";
 import type { KeyboardShortcut, WindowListItem } from "./ui/panel-data";
 import { canMutateDesktop, sharedOfflineMessage } from "./lib/permissions";
+import { builtinAppEntryDependency, builtinAppMaximizeRestoreWindow, builtinAppTargetId, builtinAppWindow, extractBuiltinAppTarget } from "./apps/registry";
 
 type BaseRunningApp = { id: string; bounds: WindowBounds; minimized: boolean; zIndex: number };
 type FileApp = BaseRunningApp & { kind: "file"; fileId: string; file?: FileEntry; blob?: File; editable?: boolean; loadError?: string; editMode: boolean; contentRevision: number; remoteChanged: boolean };
@@ -361,10 +362,9 @@ function App({ session }: { session: AuthSession | null }) {
 
   function runningAppTargets(apps = runningAppsRef.current): WindowTarget[] {
     return apps.map((app) => {
-      if (app.kind === "file") return { kind: "file", fileId: app.fileId, ...(app.editMode ? { editMode: true } : {}) };
-      if (app.kind === "explorer") return { kind: "explorer", folderId: app.folderId };
-      if (app.kind === "properties") return { kind: "properties", entryId: app.entryId };
-      return { kind: "settings" };
+      const target = extractBuiltinAppTarget(app);
+      if (!target) throw new Error(`Unknown built-in app: ${app.kind}`);
+      return target;
     });
   }
 
@@ -460,7 +460,7 @@ function App({ session }: { session: AuthSession | null }) {
   }
 
   function closeApp(id: string) {
-    if (id === "settings") setSettingsPage("main");
+    if (id === builtinAppTargetId({ kind: "settings" })) setSettingsPage("main");
     delete fileDirtyRef.current[id];
     setDirtyAppIds((current) => {
       if (!current.has(id)) return current;
@@ -505,8 +505,9 @@ function App({ session }: { session: AuthSession | null }) {
     } : app));
   }
 
-  function createAppBase(id: string, width: number, height: number, minWidth: number, minHeight: number, index?: number, segment = activeSegment): BaseRunningApp {
+  function createAppBase(id: string, kind: RunningApp["kind"], index?: number, segment = activeSegment): BaseRunningApp {
     const staggerIndex = index ?? runningAppsRef.current.filter((app) => appIsInSegment(app, segment)).length;
+    const { width, height, minWidth, minHeight } = builtinAppWindow(kind);
     const localBounds = initialWindowBounds(desktopSize, { width, height, minWidth, minHeight, index: staggerIndex });
     return {
       id,
@@ -542,13 +543,13 @@ function App({ session }: { session: AuthSession | null }) {
     const byId = new Map(loadedEntries.map((entry) => [entry.id, entry]));
     const restoredRoute = routeRef.current ?? normalizeDesktopRoute(parseDesktopRoute(window.location.hash), loadedEntries, activeDesktopIdRef.current);
     const restored = restoreWindowSession(session, loadedEntries, restoredRoute, desktopSize).map((saved): RunningApp => {
-      if (saved.kind === "settings") return { ...saved, id: "settings" };
-      if (saved.kind === "explorer") return { ...saved, id: `explorer:${saved.folderId ?? "root"}` };
-      if (saved.kind === "properties") return { ...saved, id: `properties:${saved.entryId}` };
+      if (saved.kind === "settings") return { ...saved, id: builtinAppTargetId(saved) };
+      if (saved.kind === "explorer") return { ...saved, id: builtinAppTargetId(saved) };
+      if (saved.kind === "properties") return { ...saved, id: builtinAppTargetId(saved) };
       const file = byId.get(saved.fileId) as FileEntry;
       return {
         ...saved,
-        id: `file:${saved.fileId}`,
+        id: builtinAppTargetId(saved),
         file,
         editMode: Boolean(saved.editMode),
         contentRevision: contentRevisionsRef.current[saved.fileId] ?? 0,
@@ -566,19 +567,19 @@ function App({ session }: { session: AuthSession | null }) {
   function restoreHistoryApps(targets: WindowTarget[]) {
     const historySegment = normalizeDesktopRoute(parseDesktopRoute(window.location.hash), entriesRef.current, activeDesktopIdRef.current);
     const existing = new Map(runningAppsRef.current.map((app) => [app.id, app]));
-    const targetIds = new Set(targets.map(windowTargetId));
+    const targetIds = new Set(targets.map(builtinAppTargetId));
     const reusableExplorers = runningAppsRef.current.filter((app): app is ExplorerApp => app.kind === "explorer" && !targetIds.has(app.id));
     const restored: RunningApp[] = [];
     const filesToLoad: FileApp[] = [];
     for (const target of targets) {
-      const id = windowTargetId(target);
+      const id = builtinAppTargetId(target);
       const current = existing.get(id);
       if (current) {
         restored.push(current);
         continue;
       }
       if (target.kind === "settings") {
-        restored.push({ ...createAppBase(id, 720, 700, 360, 280, restored.length, historySegment), kind: "settings" });
+        restored.push({ ...createAppBase(id, target.kind, restored.length, historySegment), kind: "settings" });
         continue;
       }
       if (target.kind === "explorer") {
@@ -586,18 +587,18 @@ function App({ session }: { session: AuthSession | null }) {
         const reusable = reusableExplorers.shift();
         restored.push(reusable
           ? { ...reusable, id, folderId: target.folderId }
-          : { ...createAppBase(id, 760, 590, 360, 280, restored.length, historySegment), kind: "explorer", folderId: target.folderId });
+          : { ...createAppBase(id, target.kind, restored.length, historySegment), kind: "explorer", folderId: target.folderId });
         continue;
       }
       if (target.kind === "properties") {
         if (!entriesRef.current.some((entry) => entry.id === target.entryId)) continue;
-        restored.push({ ...createAppBase(id, 520, 570, 360, 320, restored.length, historySegment), kind: "properties", entryId: target.entryId });
+        restored.push({ ...createAppBase(id, target.kind, restored.length, historySegment), kind: "properties", entryId: target.entryId });
         continue;
       }
       const file = entriesRef.current.find((entry): entry is FileEntry => entry.id === target.fileId && entry.kind === "file");
       if (!file) continue;
       const app: FileApp = {
-        ...createAppBase(id, 920, 680, 420, 320, restored.length, historySegment),
+        ...createAppBase(id, target.kind, restored.length, historySegment),
         kind: "file",
         fileId: file.id,
         file,
@@ -705,7 +706,10 @@ function App({ session }: { session: AuthSession | null }) {
         }
         return current.type === "rename" ? syncedIds.has(current.entryId) ? current : null : current.entryIds.some((id) => syncedIds.has(id)) ? { ...current, entryIds: current.entryIds.filter((id) => syncedIds.has(id)) } : null;
       });
-      const availableApps = runningAppsRef.current.filter((app) => app.kind === "settings" || app.kind === "explorer" && app.folderId === null || syncedIds.has(app.kind === "file" ? app.fileId : app.kind === "properties" ? app.entryId : app.folderId!));
+      const availableApps = runningAppsRef.current.filter((app) => {
+        const dependency = builtinAppEntryDependency(app);
+        return !dependency || syncedIds.has(dependency.entryId);
+      });
       updateRunningApps(availableApps);
       if (focusedAppIdRef.current && !availableApps.some((app) => app.id === focusedAppIdRef.current)) {
         const currentRoute = routeRef.current;
@@ -844,10 +848,9 @@ function App({ session }: { session: AuthSession | null }) {
         schemaVersion: 1,
         apps: runningApps.map((app): WindowSessionApp => {
           const base = { bounds: app.bounds, minimized: app.minimized, zIndex: app.zIndex };
-          if (app.kind === "file") return { ...base, kind: "file", fileId: app.fileId, ...(app.editMode ? { editMode: true } : {}) };
-          if (app.kind === "explorer") return { ...base, kind: "explorer", folderId: app.folderId };
-          if (app.kind === "properties") return { ...base, kind: "properties", entryId: app.entryId };
-          return { ...base, kind: "settings" };
+          const target = extractBuiltinAppTarget(app);
+          if (!target) throw new Error(`Unknown built-in app: ${app.kind}`);
+          return { ...base, ...target };
         }),
       };
       windowSessionSaveRef.current = windowSessionSaveRef.current
@@ -1002,7 +1005,8 @@ function App({ session }: { session: AuthSession | null }) {
     }, "replace");
     updateRunningApps((currentApps) => currentApps.map((app) => {
       const projection = projectLogicalPosition(app.bounds, desktopSize);
-      const localBounds = clampWindowBounds({ ...app.bounds, ...projection.local }, desktopSize, app.kind === "file" ? { minWidth: 420, minHeight: 320 } : { minWidth: 360, minHeight: 280 });
+      const { minWidth, minHeight } = builtinAppWindow(app.kind);
+      const localBounds = clampWindowBounds({ ...app.bounds, ...projection.local }, desktopSize, { minWidth, minHeight });
       return { ...app, bounds: { ...localBounds, ...restoreLogicalPosition(localBounds, projection.segment, desktopSize) } };
     }));
   }, [desktopSize]);
@@ -1011,12 +1015,11 @@ function App({ session }: { session: AuthSession | null }) {
     if (loading) return;
     const currentApps = runningAppsRef.current;
     const reconciledApps = currentApps.flatMap((app): RunningApp[] => {
-      if (app.kind === "settings" || app.kind === "explorer" && app.folderId === null) return [app];
-      const entryId = app.kind === "file" ? app.fileId : app.kind === "properties" ? app.entryId : app.folderId;
-      const entry = entryId ? entryIndex.byId.get(entryId) : null;
-      if (!entry || app.kind === "file" && entry.kind !== "file" || app.kind === "explorer" && entry.kind !== "folder") return [];
-      if (app.kind === "properties") return [app];
-      if (app.kind === "explorer") return [app];
+      const dependency = builtinAppEntryDependency(app);
+      if (!dependency) return [app];
+      const entry = entryIndex.byId.get(dependency.entryId);
+      if (!entry || dependency.kind !== "entry" && entry.kind !== dependency.kind) return [];
+      if (app.kind !== "file") return [app];
       if (entry.kind !== "file") return [];
       const expectedRevision = contentRevisionsRef.current[app.fileId] ?? 0;
       if (expectedRevision !== app.contentRevision && fileDirtyRef.current[app.id]) {
@@ -1694,19 +1697,19 @@ function App({ session }: { session: AuthSession | null }) {
   }
 
   function openExplorerWindow(folderId: string | null, syncRoute = true, focus = true) {
-    const id = `explorer:${folderId ?? "root"}`;
+    const id = builtinAppTargetId({ kind: "explorer", folderId });
     if (runningAppsRef.current.some((app) => app.id === id)) {
       if (focus) focusApp(id, syncRoute);
       return false;
     }
-    const app: ExplorerApp = { ...createAppBase(id, 760, 590, 360, 280), kind: "explorer", folderId };
+    const app: ExplorerApp = { ...createAppBase(id, "explorer"), kind: "explorer", folderId };
     updateRunningApps([...runningAppsRef.current, app]);
     if (focus) setFocusedApp(id);
     return true;
   }
 
   function navigateExplorerWindow(appId: string, folderId: string | null) {
-    const nextId = `explorer:${folderId ?? "root"}`;
+    const nextId = builtinAppTargetId({ kind: "explorer", folderId });
     if (nextId === appId) return;
     const previousApps = runningAppTargets();
     const zIndex = ++nextWindowZRef.current;
@@ -1728,13 +1731,13 @@ function App({ session }: { session: AuthSession | null }) {
 
   function openSettingsWindow(syncRoute = true) {
     if (!activeDesktop?.capabilities.settings && !activeDesktop?.capabilities.activity) return false;
-    const id = "settings";
+    const id = builtinAppTargetId({ kind: "settings" });
     if (runningAppsRef.current.some((app) => app.id === id)) {
       focusApp(id, syncRoute);
       return false;
     }
     const previousApps = runningAppTargets();
-    const app: SettingsApp = { ...createAppBase(id, 720, 700, 360, 280), kind: "settings" };
+    const app: SettingsApp = { ...createAppBase(id, "settings"), kind: "settings" };
     updateRunningApps([...runningAppsRef.current, app]);
     setFocusedApp(id);
     const currentRoute = routeRef.current;
@@ -1745,13 +1748,13 @@ function App({ session }: { session: AuthSession | null }) {
   function openPropertiesWindow(entryId: string, syncRoute = true) {
     const entry = entriesRef.current.find((candidate) => candidate.id === entryId);
     if (!entry) return false;
-    const id = `properties:${entryId}`;
+    const id = builtinAppTargetId({ kind: "properties", entryId });
     if (runningAppsRef.current.some((app) => app.id === id)) {
       focusApp(id, syncRoute);
       return false;
     }
     const previousApps = runningAppTargets();
-    const app: PropertiesApp = { ...createAppBase(id, 520, 570, 360, 320), kind: "properties", entryId };
+    const app: PropertiesApp = { ...createAppBase(id, "properties"), kind: "properties", entryId };
     updateRunningApps([...runningAppsRef.current, app]);
     setFocusedApp(id);
     const currentRoute = routeRef.current;
@@ -1760,7 +1763,7 @@ function App({ session }: { session: AuthSession | null }) {
   }
 
   function openFileWindow(file: FileEntry, syncRoute = true, focus = true, editMode = false) {
-    const id = `file:${file.id}`;
+    const id = builtinAppTargetId({ kind: "file", fileId: file.id });
     if (runningAppsRef.current.some((app) => app.id === id)) {
       if (editMode) updateRunningApps((current) => current.map((app) => app.id === id && app.kind === "file" ? { ...app, editMode: true } : app));
       if (focus) focusApp(id, syncRoute);
@@ -1768,7 +1771,7 @@ function App({ session }: { session: AuthSession | null }) {
     }
     const expectedRevision = contentRevisionsRef.current[file.id] ?? 0;
     const app: FileApp = {
-      ...createAppBase(id, 920, 680, 420, 320),
+      ...createAppBase(id, "file"),
       kind: "file",
       fileId: file.id,
       file,
@@ -1810,7 +1813,9 @@ function App({ session }: { session: AuthSession | null }) {
     }
     const currentRoute = routeRef.current;
     if (!currentRoute) return;
-    const existingId = entry.kind === "folder" ? `explorer:${entry.id}` : `file:${entry.id}`;
+    const existingId = entry.kind === "folder"
+      ? builtinAppTargetId({ kind: "explorer", folderId: entry.id })
+      : builtinAppTargetId({ kind: "file", fileId: entry.id });
     if (runningAppsRef.current.some((app) => app.id === existingId)) {
       focusApp(existingId);
       return;
@@ -2017,7 +2022,7 @@ function App({ session }: { session: AuthSession | null }) {
     const segment = projectLogicalPosition(app.bounds, size).segment;
     const restored = restoredWindowBoundsRef.current.get(id);
     const maximized = appIsMaximized(app);
-    const fallback = initialWindowBounds(size, app.kind === "file" ? { width: 920, height: 680, minWidth: 420, minHeight: 320 } : { width: 720, height: 590, minWidth: 360, minHeight: 280 });
+    const fallback = initialWindowBounds(size, builtinAppMaximizeRestoreWindow(app.kind));
     const bounds = maximized
       ? restored ?? { ...fallback, ...restoreLogicalPosition(fallback, segment, size) }
       : { ...restoreLogicalPosition({ x: 0, y: 0 }, segment, size), width: size.width, height: size.height };
@@ -2626,6 +2631,7 @@ function App({ session }: { session: AuthSession | null }) {
             const file = fileEntry?.kind === "file" ? fileEntry : null;
             const propertiesEntry = app.kind === "properties" ? entryIndex.byId.get(app.entryId) : null;
             const title = app.kind === "settings" ? isMobile && settingsPage !== "main" ? settingsPage === "themes" ? "Themes" : "Activity" : "Settings" : app.kind === "properties" ? `${propertiesEntry?.name ?? "Item"} properties` : app.kind === "explorer" ? folder?.name ?? activeDesktopName : file?.name ?? "Opening file";
+            const appWindow = builtinAppWindow(app.kind);
             return (
               <AppWindow
                 key={app.id}
@@ -2633,8 +2639,8 @@ function App({ session }: { session: AuthSession | null }) {
                 title={title}
                 titleId={titleId}
                 bounds={localBounds}
-                minWidth={app.kind === "file" ? 420 : 360}
-                minHeight={app.kind === "file" || app.kind === "properties" ? 320 : 280}
+                minWidth={appWindow.minWidth}
+                minHeight={appWindow.minHeight}
                 zIndex={app.zIndex}
                 focused={focusedAppId === app.id}
                 minimized={app.minimized}

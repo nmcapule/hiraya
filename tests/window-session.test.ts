@@ -14,6 +14,26 @@ describe("window and browser sessions", () => {
     expect(() => parseWindowTargets([{ kind: "explorer", folderId: null }])).toThrow("unsupported format");
   });
 
+  test("parses and normalizes every persisted built-in target", () => {
+    expect(parseWindowTargets({ schemaVersion: 1, apps: [
+      { kind: "file", fileId: "file", editMode: false, ignored: true },
+      { kind: "explorer", folderId: "folder" },
+      { kind: "properties", entryId: "entry" },
+      { kind: "settings", ignored: true },
+    ] })).toEqual([
+      { kind: "file", fileId: "file" },
+      { kind: "explorer", folderId: "folder" },
+      { kind: "properties", entryId: "entry" },
+      { kind: "settings" },
+    ]);
+  });
+
+  test("rejects unregistered and malformed targets in history and sessions", () => {
+    expect(() => parseWindowTargets({ schemaVersion: 1, apps: [{ kind: "trash" }] })).toThrow("invalid app");
+    expect(() => parseWindowTargets({ schemaVersion: 1, apps: [{ kind: "file", fileId: "file", editMode: "true" }] })).toThrow("invalid app");
+    expect(() => parseWindowSession({ schemaVersion: 1, apps: [{ kind: "explorer", folderId: undefined, bounds: { x: 0, y: 0, width: 500, height: 400 }, minimized: false, zIndex: 1 }] })).toThrow("invalid app");
+  });
+
   test("restores properties windows for current files and folders and filters stale targets", () => {
     const entries: DesktopEntry[] = [
       { kind: "folder", id: "folder", name: "Folder", parentId: null, createdAt: 1, modifiedAt: 1, position: { x: 0, y: 0 } },
@@ -32,5 +52,19 @@ describe("window and browser sessions", () => {
     const app = { kind: "settings", bounds: { x: 0, y: 0, width: 500, height: 400 }, minimized: false, zIndex: 1 };
     expect(() => parseWindowSession({ schemaVersion: 1, apps: [app, app] })).toThrow("duplicate apps");
     expect(() => parseWindowTargets({ schemaVersion: 1, apps: [{ kind: "settings" }, { kind: "settings" }] })).toThrow("duplicate apps");
+  });
+
+  test("uses registry minimum sizes while restoring", () => {
+    const bounds = { x: 0, y: 0, width: 1, height: 1 };
+    const session = parseWindowSession({ schemaVersion: 1, apps: [
+      { kind: "properties", entryId: "folder", bounds, minimized: false, zIndex: 1 },
+      { kind: "explorer", folderId: null, bounds, minimized: false, zIndex: 2 },
+    ] });
+    const entries: DesktopEntry[] = [{ kind: "folder", id: "folder", name: "Folder", parentId: null, createdAt: 1, modifiedAt: 1, position: { x: 0, y: 0 } }];
+    const restored = restoreWindowSession(session, entries, { column: 0, row: 0 }, { width: 1000, height: 700 });
+    expect(restored.map((app) => ({ kind: app.kind, width: app.bounds.width, height: app.bounds.height }))).toEqual([
+      { kind: "properties", width: 360, height: 320 },
+      { kind: "explorer", width: 360, height: 280 },
+    ]);
   });
 });

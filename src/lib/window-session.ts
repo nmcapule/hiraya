@@ -1,7 +1,8 @@
 import type { DesktopEntry } from "../types";
-import { isValidId } from "./contracts";
 import { clampWindowBounds, type WindowBounds, type WindowViewport } from "../ui/window-manager";
 import { projectLogicalPosition, restoreLogicalPosition, type SurfaceSegment } from "../ui/desktop-geometry";
+import { builtinAppEntryDependency, builtinAppTargetId, builtinAppWindow, extractBuiltinAppTarget } from "../apps/registry";
+import type { BuiltinAppTarget } from "../apps/types";
 
 type WindowSessionBase = {
   bounds: WindowBounds;
@@ -9,21 +10,12 @@ type WindowSessionBase = {
   zIndex: number;
 };
 
-export type WindowSessionApp = WindowSessionBase & (
-  | { kind: "file"; fileId: string; editMode?: boolean }
-  | { kind: "explorer"; folderId: string | null }
-  | { kind: "properties"; entryId: string }
-  | { kind: "settings" }
-);
+export type WindowSessionApp = WindowSessionBase & BuiltinAppTarget;
 
 export type WindowSession = { schemaVersion: 1; apps: WindowSessionApp[] };
 export type BrowserHistoryState = { schemaVersion: 1; apps: WindowTarget[] };
 
-export type WindowTarget =
-  | { kind: "file"; fileId: string; editMode?: boolean }
-  | { kind: "explorer"; folderId: string | null }
-  | { kind: "properties"; entryId: string }
-  | { kind: "settings" };
+export type WindowTarget = BuiltinAppTarget;
 
 export const EMPTY_WINDOW_SESSION: WindowSession = { schemaVersion: 1, apps: [] };
 
@@ -32,10 +24,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export function windowTargetId(target: WindowTarget) {
-  if (target.kind === "file") return `file:${target.fileId}`;
-  if (target.kind === "explorer") return `explorer:${target.folderId ?? "root"}`;
-  if (target.kind === "properties") return `properties:${target.entryId}`;
-  return "settings";
+  return builtinAppTargetId(target);
 }
 
 export function parseWindowTargets(value: unknown): WindowTarget[] {
@@ -43,12 +32,8 @@ export function parseWindowTargets(value: unknown): WindowTarget[] {
   const ids = new Set<string>();
   return value.apps.map((item): WindowTarget => {
     if (!isRecord(item)) throw new Error("The route history contains an invalid app.");
-    let target: WindowTarget;
-    if (item.kind === "file" && isValidId(item.fileId) && (item.editMode === undefined || typeof item.editMode === "boolean")) target = { kind: "file", fileId: item.fileId, ...(item.editMode ? { editMode: true } : {}) };
-    else if (item.kind === "explorer" && (item.folderId === null || isValidId(item.folderId))) target = { kind: "explorer", folderId: item.folderId as string | null };
-    else if (item.kind === "properties" && isValidId(item.entryId)) target = { kind: "properties", entryId: item.entryId };
-    else if (item.kind === "settings") target = { kind: "settings" };
-    else throw new Error("The route history contains an invalid app.");
+    const target = extractBuiltinAppTarget(item);
+    if (!target) throw new Error("The route history contains an invalid app.");
     const id = windowTargetId(target);
     if (ids.has(id)) throw new Error("The route history contains duplicate apps.");
     ids.add(id);
@@ -73,23 +58,10 @@ export function parseWindowSession(value: unknown): WindowSession {
       throw new Error("The saved window session has invalid app metadata.");
     }
     const base = { bounds: parseBounds(item.bounds), minimized: item.minimized, zIndex: item.zIndex as number };
-    let app: WindowSessionApp;
-    let id: string;
-    if (item.kind === "file" && isValidId(item.fileId) && (item.editMode === undefined || typeof item.editMode === "boolean")) {
-      app = { ...base, kind: "file", fileId: item.fileId, ...(item.editMode ? { editMode: true } : {}) };
-      id = `file:${item.fileId}`;
-    } else if (item.kind === "explorer" && (item.folderId === null || isValidId(item.folderId))) {
-      app = { ...base, kind: "explorer", folderId: item.folderId as string | null };
-      id = `explorer:${item.folderId ?? "root"}`;
-    } else if (item.kind === "properties" && isValidId(item.entryId)) {
-      app = { ...base, kind: "properties", entryId: item.entryId };
-      id = `properties:${item.entryId}`;
-    } else if (item.kind === "settings") {
-      app = { ...base, kind: "settings" };
-      id = "settings";
-    } else {
-      throw new Error("The saved window session contains an invalid app.");
-    }
+    const target = extractBuiltinAppTarget(item);
+    if (!target) throw new Error("The saved window session contains an invalid app.");
+    const app: WindowSessionApp = { ...base, ...target };
+    const id = builtinAppTargetId(target);
     if (ids.has(id)) throw new Error("The saved window session contains duplicate apps.");
     ids.add(id);
     return app;
@@ -101,16 +73,16 @@ export function restoreWindowSession(session: WindowSession, entries: DesktopEnt
   const byId = new Map(entries.map((entry) => [entry.id, entry]));
   return session.apps
     .filter((app) => {
-      if (app.kind === "settings" || app.kind === "explorer" && app.folderId === null) return true;
-      if (app.kind === "properties") return byId.has(app.entryId);
-      if (app.kind === "file") return byId.get(app.fileId)?.kind === "file";
-      return byId.get(app.folderId!)?.kind === "folder";
+      const dependency = builtinAppEntryDependency(app);
+      if (!dependency) return true;
+      const entry = byId.get(dependency.entryId);
+      return dependency.kind === "entry" ? Boolean(entry) : entry?.kind === dependency.kind;
     })
     .sort((left, right) => left.zIndex - right.zIndex)
     .map((app, index): WindowSessionApp => {
-      const minimumSize = app.kind === "file" ? { minWidth: 420, minHeight: 320 } : { minWidth: 360, minHeight: 280 };
+      const { minWidth, minHeight } = builtinAppWindow(app.kind);
       const projection = projectLogicalPosition(app.bounds, viewport);
-      const localBounds = clampWindowBounds({ ...app.bounds, ...projection.local }, viewport, minimumSize);
+      const localBounds = clampWindowBounds({ ...app.bounds, ...projection.local }, viewport, { minWidth, minHeight });
       return {
         ...app,
         bounds: {
