@@ -5,6 +5,7 @@ import {
   AppHostServices,
   AppLifecycleService,
   AppMemoryStorageService,
+  AppPersistentStorageService,
   AppNotificationService,
   AppThemeService,
   HostServiceError,
@@ -97,6 +98,27 @@ describe("app lifecycle", () => {
 });
 
 describe("bounded app services", () => {
+  test("routes persistent storage by app identity and preserves quota errors", async () => {
+    const values = new Map<string, unknown>();
+    const storage = new AppPersistentStorageService({
+      get: async (appId, key) => values.get(`${appId}:${key}`) as never,
+      set: async (appId, key, value, maxBytes) => {
+        if (JSON.stringify(value).length > maxBytes) throw new Error("App storage quota exceeded.");
+        values.set(`${appId}:${key}`, structuredClone(value));
+      },
+      remove: async (appId, key) => { values.delete(`${appId}:${key}`); },
+      clear: async (appId) => { for (const key of values.keys()) if (key.startsWith(`${appId}:`)) values.delete(key); },
+    }, 12);
+    const first = storage.forInstance({ appId: "test.editor", instanceId: "one" });
+    const second = storage.forInstance({ appId: "test.viewer", instanceId: "one" });
+    await first.set("state", { ok: true });
+    expect(await first.get("state")).toEqual({ ok: true });
+    expect(await second.get("state")).toBeUndefined();
+    expect(first.set("large", "x".repeat(20))).rejects.toMatchObject({ code: "QUOTA_EXCEEDED" });
+    await first.clear();
+    expect(await first.get("state")).toBeUndefined();
+  });
+
   test("shares isolated app-scoped storage without leaking object references", async () => {
     const storage = new AppMemoryStorageService(80);
     const first = storage.forInstance({ appId: "test.editor", instanceId: "one" });

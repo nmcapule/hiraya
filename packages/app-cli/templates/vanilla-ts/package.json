@@ -1,15 +1,19 @@
 {
-  "name": "hiraya-hello-app-example",
+  "name": "hiraya-app-starter",
   "private": true,
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "build": "vite build"
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "test": "bun test",
+    "package": "bun run build && hiraya-app package dist"
   },
   "dependencies": {
     "@hiraya/apps-sdk": "workspace:*"
   },
   "devDependencies": {
+    "@hiraya/app-cli": "workspace:*",
     "typescript": "~5.8.3",
     "vite": "^7.0.4"
   }

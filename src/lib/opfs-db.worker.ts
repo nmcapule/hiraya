@@ -8,8 +8,10 @@ import { parseCustomTheme, parseThemeState, type CustomTheme } from "./themes";
 import { EMPTY_WINDOW_SESSION, parseWindowSession } from "./window-session";
 import { activityRecord, parseActivityPage, parseActivityQuery, type ActivityPage, type NewActivityRecord } from "./activity";
 import type { StorageDbMethod, StorageDbRequest, StorageDbRequests, StorageDbResponses, StoredPreferences } from "./opfs-db-protocol";
+import { parseJsonValue } from "@hiraya/apps-contracts";
+import { parseInstalledApp, type InstalledApp } from "../apps/installed-apps";
+import { APP_STORAGE_SCHEMA_SQL, DATABASE_SCHEMA_VERSION, migrateSchema2To3Sql } from "./opfs-schema";
 
-const DATABASE_SCHEMA_VERSION = 2;
 const FRONTEND_ONLY = import.meta.env.HIRAYA_FRONTEND_ONLY === "true";
 const HISTORY_LIMIT = Number(import.meta.env.HIRAYA_HISTORY_LIMIT);
 const DEFAULT_PREFERENCES: StoredPreferences = { autoUpdate: true, externalEmbeddedPreviews: true };
@@ -56,10 +58,14 @@ function createSchema(db: Database) {
   const version = numberValue(scalar(db, "PRAGMA user_version"));
   if (version === 1) {
     db.exec("BEGIN IMMEDIATE; ALTER TABLE desktops ADD COLUMN access_json TEXT; PRAGMA user_version=2; COMMIT;");
+  }
+  const migratedVersion = numberValue(scalar(db, "PRAGMA user_version"));
+  if (migratedVersion === 2) {
+    db.exec(migrateSchema2To3Sql(migratedVersion));
     return;
   }
-  if (version !== 0 && version !== DATABASE_SCHEMA_VERSION) throw new Error(`The desktop database uses unsupported schema version ${version}.`);
-  if (version === DATABASE_SCHEMA_VERSION) return;
+  if (migratedVersion !== 0 && migratedVersion !== DATABASE_SCHEMA_VERSION) throw new Error(`The desktop database uses unsupported schema version ${migratedVersion}.`);
+  if (migratedVersion === DATABASE_SCHEMA_VERSION) return;
   db.exec(`
     BEGIN IMMEDIATE;
     CREATE TABLE desktops (
@@ -133,9 +139,16 @@ function createSchema(db: Database) {
     );
     CREATE TABLE activity (catalog_revision INTEGER PRIMARY KEY AUTOINCREMENT, timestamp INTEGER NOT NULL, action TEXT NOT NULL, source TEXT NOT NULL, summary TEXT NOT NULL, details_json TEXT NOT NULL, search_text TEXT NOT NULL);
     CREATE INDEX activity_timestamp ON activity(timestamp DESC, catalog_revision DESC);
-    PRAGMA user_version=1;
+    ${APP_STORAGE_SCHEMA_SQL}
     COMMIT;
   `);
+}
+
+function readInstalledApps(db: Database): InstalledApp[] {
+  return rows(db, "SELECT * FROM installed_apps ORDER BY approved_at, app_id").map((row) => parseInstalledApp({
+    appId: stringValue(row.app_id), packageEntryId: stringValue(row.package_entry_id), digest: stringValue(row.digest),
+    version: stringValue(row.version), manifest: JSON.parse(stringValue(row.manifest_json)), approvedAt: numberValue(row.approved_at),
+  }));
 }
 
 function readDesktopState(db: Database, desktopId: string): PersistedDesktopState {
@@ -346,6 +359,37 @@ async function dispatch<M extends StorageDbMethod>(method: M, params: StorageDbR
     case "blockMutation": { const input = params as StorageDbRequests["blockMutation"]; db.exec({ sql: "UPDATE outbox SET status='blocked', error=? WHERE operation_id=?", bind: [input.error, input.operationId] }); return undefined as StorageDbResponses[M]; }
     case "listActivity": return listActivity(db, params as StorageDbRequests["listActivity"]) as StorageDbResponses[M];
     case "pruneDesktops": { const retained = new Set((params as StorageDbRequests["pruneDesktops"]).retainedDesktopIds); db.transaction("IMMEDIATE", () => { for (const row of rows(db, "SELECT id FROM desktops")) { const id = stringValue(row.id); if (!retained.has(id)) db.exec({ sql: "DELETE FROM desktops WHERE id=?", bind: [id] }); } }); return undefined as StorageDbResponses[M]; }
+    case "listInstalledApps": return readInstalledApps(db) as StorageDbResponses[M];
+    case "installApp": {
+      const install = parseInstalledApp((params as StorageDbRequests["installApp"]).install);
+      db.transaction("IMMEDIATE", () => {
+        db.exec({ sql: "INSERT INTO installed_apps VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(app_id) DO UPDATE SET package_entry_id=excluded.package_entry_id,digest=excluded.digest,version=excluded.version,manifest_json=excluded.manifest_json,approved_at=excluded.approved_at", bind: [install.appId, install.packageEntryId, install.digest, install.version, JSON.stringify(install.manifest), install.approvedAt] });
+      });
+      return install as StorageDbResponses[M];
+    }
+    case "uninstallApp": { db.exec({ sql: "DELETE FROM installed_apps WHERE app_id=?", bind: [(params as StorageDbRequests["uninstallApp"]).appId] }); return undefined as StorageDbResponses[M]; }
+    case "readAppStorage": {
+      const input = params as StorageDbRequests["readAppStorage"];
+      const value = scalar(db, "SELECT value_json FROM app_storage WHERE app_id=? AND key=?", [input.appId, input.key]);
+      return (value === undefined ? undefined : parseJsonValue(JSON.parse(stringValue(value)))) as StorageDbResponses[M];
+    }
+    case "writeAppStorage": {
+      const input = params as StorageDbRequests["writeAppStorage"];
+      const value = JSON.stringify(parseJsonValue(input.value));
+      const bytes = new TextEncoder().encode(JSON.stringify(input.key)).byteLength + new TextEncoder().encode(value).byteLength;
+      db.transaction("IMMEDIATE", () => {
+        if (!scalar(db, "SELECT 1 FROM installed_apps WHERE app_id=?", [input.appId])) throw new Error("That app is not installed.");
+        const existing = numberValue(scalar(db, "SELECT COUNT(*) FROM app_storage WHERE app_id=?", [input.appId]));
+        if (!scalar(db, "SELECT 1 FROM app_storage WHERE app_id=? AND key=?", [input.appId, input.key]) && existing >= input.maxEntries) throw new Error("App storage entry quota exceeded.");
+        const currentBytes = numberValue(scalar(db, "SELECT COALESCE(SUM(bytes),0) FROM app_storage WHERE app_id=?", [input.appId]));
+        const oldBytes = Number(scalar(db, "SELECT bytes FROM app_storage WHERE app_id=? AND key=?", [input.appId, input.key]) ?? 0);
+        if (currentBytes - oldBytes + bytes > input.maxBytes) throw new Error("App storage quota exceeded.");
+        db.exec({ sql: "INSERT INTO app_storage VALUES (?, ?, ?, ?) ON CONFLICT(app_id,key) DO UPDATE SET value_json=excluded.value_json,bytes=excluded.bytes", bind: [input.appId, input.key, value, bytes] });
+      });
+      return undefined as StorageDbResponses[M];
+    }
+    case "removeAppStorage": { const input = params as StorageDbRequests["removeAppStorage"]; db.exec({ sql: "DELETE FROM app_storage WHERE app_id=? AND key=?", bind: [input.appId, input.key] }); return undefined as StorageDbResponses[M]; }
+    case "clearAppStorage": { db.exec({ sql: "DELETE FROM app_storage WHERE app_id=?", bind: [(params as StorageDbRequests["clearAppStorage"]).appId] }); return undefined as StorageDbResponses[M]; }
   }
 }
 

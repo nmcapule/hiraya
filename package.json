@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@hiraya/apps-contracts": "workspace:*",
+    "@hiraya/apps-sdk": "workspace:*",
     "@hiraya/app-cli": "workspace:*",
     "@hiraya/app-runtime": "workspace:*",
     "@codemirror/lang-css": "^6.3.1",

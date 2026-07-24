@@ -8,7 +8,7 @@ import { fileCapabilities } from "../src/ui/file-capabilities";
 describe("internet shortcuts", () => {
   test("parses BOM, case-insensitive sections, CRLF, and equals signs", () => {
     const shortcut = parseInternetShortcut("\uFEFF[internetshortcut]\r\nurl=https://example.com/search?q=a=b\r\n");
-    expect(shortcut).toEqual({ url: "https://example.com/search?q=a=b", scheme: "https", sensitive: false });
+    expect(shortcut).toEqual({ url: "https://example.com/search?q=a=b", scheme: "https" });
   });
 
   test("ignores URL settings outside the InternetShortcut section", () => {
@@ -16,10 +16,10 @@ describe("internet shortcuts", () => {
     expect(parseInternetShortcut(content).url).toBe("mailto:user@example.com");
   });
 
-  test("accepts custom schemes and marks executable or local schemes sensitive", () => {
-    expect(parseShortcutUrl("steam://run/123")).toMatchObject({ scheme: "steam", sensitive: false });
-    for (const url of ["javascript:alert(1)", "data:text/plain,hello", "blob:https://example.com/id", "file:///tmp/file.txt"]) {
-      expect(parseShortcutUrl(url).sensitive).toBe(true);
+  test("accepts custom schemes and rejects executable or local schemes", () => {
+    expect(parseShortcutUrl("steam://run/123")).toMatchObject({ scheme: "steam" });
+    for (const url of ["javascript:alert(1)", "JaVaScRiPt:alert(1)", "vbscript:msgbox(1)", "data:text/plain,hello", "blob:https://example.com/id", "file:///tmp/file.txt", "filesystem:https://example.com/temporary/file"]) {
+      expect(() => parseShortcutUrl(url)).toThrow("cannot be opened");
     }
   });
 

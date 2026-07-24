@@ -250,7 +250,7 @@ export function FileWindow({ file, blob, editable, editMode = false, readOnly = 
             <MarkdownRenderer content={content} externalEmbeddedPreviews={externalEmbeddedPreviews} onResolveLink={onResolveLink} onOpenLinkedFile={onOpenLinkedFile} onLinkError={setLinkError} />
           )}
           {!editable && preview === "image" && objectUrl && <ImagePreview src={objectUrl} alt={file.name} zoom={imageZoom} onZoomChange={setImageZoom} onFit={() => setImageZoom("fit")} />}
-          {!editable && preview === "pdf" && objectUrl && <iframe className="preview-frame" src={objectUrl} title={file.name} />}
+          {!editable && preview === "pdf" && objectUrl && <iframe className="preview-frame" src={objectUrl} title={file.name} sandbox="" referrerPolicy="no-referrer" />}
           {!editable && preview === "video" && objectUrl && <video className="preview-media" src={objectUrl} controls aria-label={`Video: ${file.name}`} />}
           {!editable && preview === "audio" && objectUrl && <audio className="preview-audio" src={objectUrl} controls aria-label={`Audio: ${file.name}`} />}
           {!editable && preview === "none" && (

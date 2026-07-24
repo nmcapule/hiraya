@@ -30,12 +30,12 @@ export type OpenAppInstance = {
 export class AppHostServices {
   readonly dialogs = new AppDialogService();
   readonly notifications = new AppNotificationService();
-  readonly storage: AppMemoryStorageService;
+  readonly storage: { forInstance(owner: AppInstanceOwner): AppStorageApi };
 
   constructor(
     readonly lifecycle: AppLifecycleService,
     readonly theme: AppThemeService,
-    storage = new AppMemoryStorageService(),
+    storage: { forInstance(owner: AppInstanceOwner): AppStorageApi } = new AppMemoryStorageService(),
   ) {
     this.storage = storage;
   }

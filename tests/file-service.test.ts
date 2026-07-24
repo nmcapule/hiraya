@@ -3,6 +3,7 @@ import type { AppPermission, FileHandle, FolderHandle } from "@hiraya/apps-contr
 import { CapabilityStore, type FileCapabilityOperation } from "../src/apps/host/capability-store";
 import { FileService, FileServiceError, type FileSyncFunctions } from "../src/apps/host/file-service";
 import { ContentRevisionConflictError, type DesktopStateSnapshot } from "../src/lib/opfs";
+import { grantPickedFiles, grantPickedFolder } from "../src/apps/host/picker-grants";
 import type { DesktopEntry, FileEntry, FolderEntry } from "../src/types";
 import { desktopStateSnapshot } from "./fixtures";
 
@@ -50,6 +51,16 @@ async function expectCode(promise: Promise<unknown>, code: string) {
 }
 
 describe("app file authority", () => {
+  test("turns picker selections into instance-bound least-authority capabilities", async () => {
+    const h = fixture();
+    const file = grantPickedFiles(h.capabilities, "app-1", ["files:read"], [h.nested])[0];
+    const folder = grantPickedFolder(h.capabilities, "app-1", ["files:read", "files:write"], h.folder);
+    expect((await h.service().read({ handle: file })).data.byteLength).toBe(3);
+    await expectCode(h.service().write({ handle: file, data: new ArrayBuffer(0) }), "PERMISSION_DENIED");
+    expect(await h.service().createFile({ parent: folder, name: "created.bin" })).toMatchObject({ name: "created.bin" });
+    await expectCode(h.service("app-2").stat({ handle: file }), "NOT_FOUND");
+  });
+
   test("defaults launch grants to read-only file and folder access", async () => {
     const h = fixture();
     const file = h.capabilities.grantFile("app-1", h.nested.id);

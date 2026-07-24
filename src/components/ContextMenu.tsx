@@ -58,9 +58,10 @@ type Props = {
   readOnly?: boolean;
   selectionCount?: number;
   trashSupported?: boolean;
+  openWith?: readonly { id: string; label: string; onOpen: () => void }[];
 };
 
-export function ContextMenu({ menu, entry, onOpen, onEditFile, onRename, onDownload, onCopy, onPasteInto, onMove, onProperties, onDelete, onCopyLink, offlineAvailable, onMakeAvailableOffline, onRemoveOfflineCopy, readOnly = false, selectionCount = 1, trashSupported = true }: Props) {
+export function ContextMenu({ menu, entry, onOpen, onEditFile, onRename, onDownload, onCopy, onPasteInto, onMove, onProperties, onDelete, onCopyLink, offlineAvailable, onMakeAvailableOffline, onRemoveOfflineCopy, readOnly = false, selectionCount = 1, trashSupported = true, openWith = [] }: Props) {
   const position = useMenuPosition(menu.x, menu.y);
 
   return (
@@ -71,6 +72,9 @@ export function ContextMenu({ menu, entry, onOpen, onEditFile, onRename, onDownl
       {selectionCount === 1 && entry.kind === "file" && onEditFile && <button type="button" role="menuitem" disabled={readOnly} onClick={onEditFile}>
         <PencilSimple size={17} /> Edit file
       </button>}
+      {selectionCount === 1 && entry.kind === "file" && openWith.map((app) => <button type="button" role="menuitem" key={app.id} onClick={app.onOpen}>
+        <FolderOpen size={17} /> Open with {app.label}
+      </button>)}
       {selectionCount === 1 && <button type="button" role="menuitem" disabled={readOnly} onClick={onRename}>
         <PencilSimple size={17} /> Rename
         <kbd>R</kbd>

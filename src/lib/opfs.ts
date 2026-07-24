@@ -18,6 +18,8 @@ import { parseWindowSession, type WindowSession } from "./window-session";
 import { activityRecord, type ActivityQuery, type NewActivityRecord } from "./activity";
 import { resolveDesktopContext } from "./desktop-catalog";
 import { localDesktopIdentity } from "./permissions";
+import { parseInstalledApp, type InstalledApp } from "../apps/installed-apps";
+import { parseJsonValue, type JsonValue } from "@hiraya/apps-contracts";
 
 const FILES_DIRECTORY = "files";
 const PENDING_DIRECTORY = "pending";
@@ -1319,3 +1321,10 @@ export function acknowledgeMutation(operationId: string) { return serializeStora
 export function blockMutation(operationId: string, error: string) { return serializeStorage(() => callDatabase("blockMutation", { operationId, error })); }
 export function readPendingContent(operationId: string, entryId: string) { return serializeStorage(() => readStagedContent(operationId, entryId)); }
 export function listActivity(query: ActivityQuery = {}) { return serializeStorage(() => callDatabase("listActivity", query)); }
+export function listInstalledApps() { return serializeStorage(async () => (await callDatabase("listInstalledApps", undefined, null)).map(parseInstalledApp)); }
+export function installApp(install: InstalledApp) { return serializeStorage(() => callDatabase("installApp", { install: parseInstalledApp(install) }, null)); }
+export function uninstallApp(appId: string) { return serializeStorage(() => callDatabase("uninstallApp", { appId }, null)); }
+export function readAppStorage(appId: string, key: string) { return serializeStorage(() => callDatabase("readAppStorage", { appId, key }, null)); }
+export function writeAppStorage(appId: string, key: string, value: JsonValue, maxBytes: number, maxEntries: number) { return serializeStorage(() => callDatabase("writeAppStorage", { appId, key, value: parseJsonValue(value), maxBytes, maxEntries }, null)); }
+export function removeAppStorage(appId: string, key: string) { return serializeStorage(() => callDatabase("removeAppStorage", { appId, key }, null)); }
+export function clearAppStorage(appId: string) { return serializeStorage(() => callDatabase("clearAppStorage", { appId }, null)); }

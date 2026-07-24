@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { APP_COMMAND_IDS, CommandService, createAppCommandService, type AppCommandContext } from "../src/apps/commands";
+import { APP_COMMAND_IDS, CommandService, RuntimeCommandContributions, createAppCommandService, runtimeCommandId, type AppCommandContext } from "../src/apps/commands";
 
 describe("command service", () => {
   test("protects namespaced IDs and duplicate registrations", () => {
@@ -44,6 +44,20 @@ describe("command service", () => {
 });
 
 describe("app command contributions", () => {
+  test("namespaces runtime commands, emits local IDs, and disposes replacements", async () => {
+    const service = new CommandService<object>();
+    const invoked: string[] = [];
+    const contributions = new RuntimeCommandContributions(service, "test.editor", (id) => invoked.push(id));
+    contributions.set([{ id: "format-document", title: "Format" }]);
+    expect(service.list({}).map(({ id }) => id)).toEqual([runtimeCommandId("test.editor", "format-document")]);
+    expect(await service.execute(runtimeCommandId("test.editor", "format-document"), {})).toBe(true);
+    expect(invoked).toEqual(["format-document"]);
+    contributions.set([{ id: "save-all", title: "Save all", enabled: false }]);
+    expect(service.list({}).map(({ id, enabled }) => [id, enabled])).toEqual([[runtimeCommandId("test.editor", "save-all"), false]]);
+    contributions.close();
+    expect(service.list({})).toEqual([]);
+  });
+
   test("preserves palette order, visibility, and mutation permissions", async () => {
     const calls: string[] = [];
     const context: AppCommandContext = {

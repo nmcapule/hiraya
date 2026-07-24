@@ -7,3 +7,4 @@ export * from "./storage";
 export * from "./theme";
 export * from "./types";
 export * from "./file-service";
+export * from "./picker-grants";

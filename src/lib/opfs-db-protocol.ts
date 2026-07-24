@@ -3,6 +3,8 @@ import type { OutboxOperation, OutboxRecord } from "./outbox";
 import type { WindowSession } from "./window-session";
 import type { ActivityPage, ActivityQuery, NewActivityRecord } from "./activity";
 import type { DesktopIdentity } from "../types";
+import type { InstalledApp } from "../apps/installed-apps";
+import type { JsonValue } from "@hiraya/apps-contracts";
 
 export type StoredPreferences = { autoUpdate: boolean; externalEmbeddedPreviews: boolean };
 
@@ -32,6 +34,13 @@ export type StorageDbRequests = {
   blockMutation: { operationId: string; error: string };
   listActivity: ActivityQuery;
   pruneDesktops: { retainedDesktopIds: string[] };
+  listInstalledApps: undefined;
+  installApp: { install: InstalledApp };
+  uninstallApp: { appId: string };
+  readAppStorage: { appId: string; key: string };
+  writeAppStorage: { appId: string; key: string; value: JsonValue; maxBytes: number; maxEntries: number };
+  removeAppStorage: { appId: string; key: string };
+  clearAppStorage: { appId: string };
 };
 
 export type StorageDbResponses = {
@@ -60,6 +69,13 @@ export type StorageDbResponses = {
   blockMutation: undefined;
   listActivity: ActivityPage;
   pruneDesktops: undefined;
+  listInstalledApps: InstalledApp[];
+  installApp: InstalledApp;
+  uninstallApp: undefined;
+  readAppStorage: JsonValue | undefined;
+  writeAppStorage: undefined;
+  removeAppStorage: undefined;
+  clearAppStorage: undefined;
 };
 
 export type StorageDbMethod = keyof StorageDbRequests;

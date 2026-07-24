@@ -13,6 +13,7 @@ import type { CatalogQuota } from "./lib/desktop-catalog";
 import { PasteConflictDialog } from "./components/PasteConflictDialog";
 import { PropertiesWindow } from "./components/PropertiesWindow";
 import { SettingsWindow } from "./components/SettingsWindow";
+import { AppPickerDialog } from "./components/AppPickerDialog";
 import { UpdateToast } from "./components/UpdateToast";
 import {
   createFolder,
@@ -58,7 +59,7 @@ import {
   stopDesktopSync,
   type SyncStatus,
 } from "./lib/sync";
-import { DEFAULT_EDITOR_SETTINGS, pruneLocalDesktops, readDesktopEntries, readLocalPreferences, readWindowSession, saveLocalPreferences, saveWindowSession, switchDesktop as switchLocalDesktop, type DesktopStateSnapshot, type LocalPreferences } from "./lib/opfs";
+import { clearAppStorage, DEFAULT_EDITOR_SETTINGS, installApp, listInstalledApps, pruneLocalDesktops, readAppStorage, readDesktopEntries, readLocalPreferences, readWindowSession, removeAppStorage, saveLocalPreferences, saveWindowSession, switchDesktop as switchLocalDesktop, uninstallApp, writeAppStorage, type DesktopStateSnapshot, type LocalPreferences } from "./lib/opfs";
 import { createPwaUpdater, type PwaUpdater } from "./lib/pwa-update";
 import { exportSeededDesktop } from "./lib/seeded";
 import { CLIPBOARD_ARCHIVE_WEB_MIME_TYPE, decodeClipboardArchiveItem, encodeClipboardArchive, snapshotFromClipboardItems, type ClipboardEntrySnapshot } from "./lib/clipboard";
@@ -92,12 +93,13 @@ import type { TrashItem } from "./lib/contracts";
 import type { KeyboardShortcut, WindowListItem } from "./ui/panel-data";
 import { canMutateDesktop, sharedOfflineMessage } from "./lib/permissions";
 import { builtinAppEntryDependency, builtinAppMaximizeRestoreWindow, builtinAppTargetId, builtinAppWindow, extractBuiltinAppTarget } from "./apps/registry";
-import { createAppCommandService, type AppCommandContext, type AppCommandId } from "./apps/commands";
+import { createAppCommandService, RuntimeCommandContributions, type AppCommandContext, type CommandId } from "./apps/commands";
 import type { AppPackageInspection } from "@hiraya/app-cli";
 import { isAppPackageName, RpcDispatcher } from "@hiraya/app-runtime";
 import { SandboxAppFrame } from "@hiraya/app-runtime/react";
-import { AppHostServices, AppLifecycleService, AppThemeService, CapabilityStore, FileService, HostServiceError, mapThemeTokens } from "./apps/host";
+import { AppHostServices, AppLifecycleService, AppPersistentStorageService, AppThemeService, CapabilityStore, FileService, HostServiceError, grantPickedFiles, grantPickedFolder, mapThemeTokens, type AppNotification, type DialogRequest } from "./apps/host";
 import { createFile as createAppFile, deleteEntry as deleteAppEntry, moveEntry as moveAppEntry, saveFile as saveAppFile } from "./lib/sync";
+import { installedAppAcceptsFile, installedAppIsAvailable, packageMatchesInstall, type InstalledApp } from "./apps/installed-apps";
 
 type BaseRunningApp = { id: string; bounds: WindowBounds; minimized: boolean; zIndex: number };
 type FileApp = BaseRunningApp & { kind: "file"; fileId: string; file?: FileEntry; blob?: File; editable?: boolean; loadError?: string; editMode: boolean; contentRevision: number; remoteChanged: boolean };
@@ -128,7 +130,7 @@ function App({ session }: { session: AuthSession | null }) {
   const commandService = useMemo(createAppCommandService, []);
   const appLifecycle = useMemo(() => new AppLifecycleService(2_000, ({ instanceId }) => closeAppRef.current(instanceId)), []);
   const appTheme = useMemo(() => new AppThemeService(resolveTheme(DEFAULT_THEME_STATE)), []);
-  const appHostServices = useMemo(() => new AppHostServices(appLifecycle, appTheme), [appLifecycle, appTheme]);
+  const appHostServices = useMemo(() => new AppHostServices(appLifecycle, appTheme, new AppPersistentStorageService({ get: readAppStorage, set: writeAppStorage, remove: removeAppStorage, clear: clearAppStorage })), [appLifecycle, appTheme]);
   const appCapabilities = useMemo(() => new CapabilityStore(), []);
   const [entries, setEntries] = useState<DesktopEntry[]>([]);
   const [desktops, setDesktops] = useState<DesktopIdentity[]>([]);
@@ -166,7 +168,10 @@ function App({ session }: { session: AuthSession | null }) {
   const [draggedSegmentKey, setDraggedSegmentKey] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(() => Boolean(document.fullscreenElement));
   const [isMobile, setIsMobile] = useState(() => window.matchMedia("(max-width: 620px)").matches);
-  const [settingsPage, setSettingsPage] = useState<"main" | "themes" | "activity">("main");
+  const [settingsPage, setSettingsPage] = useState<"main" | "themes" | "activity" | "apps">("main");
+  const [installedApps, setInstalledApps] = useState<InstalledApp[]>([]);
+  const [appDialogRequests, setAppDialogRequests] = useState<readonly DialogRequest[]>([]);
+  const [appNotifications, setAppNotifications] = useState<readonly AppNotification[]>([]);
   const [autoUpdate, setAutoUpdate] = useState(true);
   const [externalEmbeddedPreviews, setExternalEmbeddedPreviews] = useState<boolean | null>(null);
   const [updateSupported, setUpdateSupported] = useState(false);
@@ -360,6 +365,10 @@ function App({ session }: { session: AuthSession | null }) {
       return { ...app, title: state.title, bounds };
     }));
   }), [appLifecycle]);
+
+  useEffect(() => appHostServices.dialogs.subscribe(setAppDialogRequests), [appHostServices]);
+  useEffect(() => appHostServices.notifications.subscribe(setAppNotifications), [appHostServices]);
+  useEffect(() => { void listInstalledApps().then(setInstalledApps).catch(() => setError("Installed apps could not be loaded.")); }, []);
   function setCurrentRoute(next: DesktopRoute) {
     routeRef.current = next;
     setRoute(next);
@@ -1839,31 +1848,40 @@ function App({ session }: { session: AuthSession | null }) {
     return true;
   }
 
-  async function openAppPackage(file: FileEntry) {
-    const existing = runningAppsRef.current.find((app): app is SandboxApp => app.kind === "sandbox" && app.fileId === file.id);
-    if (existing) { focusApp(existing.id); return; }
+  async function openAppPackage(file: FileEntry, launchFile?: FileEntry) {
     setError("");
+    let pendingInstanceId: string | null = null;
+    let pendingHost: { close(): void } | null = null;
     try {
       const blob = await readFile(file.id);
       const { inspectAppArchive } = await import("@hiraya/app-cli");
       const appPackage = await inspectAppArchive(new Uint8Array(await blob.arrayBuffer()));
-      const permissions = appPackage.manifest.permissions.length ? appPackage.manifest.permissions.join(", ") : "None";
-      const confirmed = await requestConfirmation({
-        title: `Run ${appPackage.manifest.name}?`,
-        message: `This package will run only for this session. Requested permissions: ${permissions}. It is isolated from Hiraya and the network except through approved host services.`,
-        confirmLabel: "Run app",
-      });
-      if (!confirmed || !entriesRef.current.some((entry) => entry.id === file.id)) return;
+      const existing = runningAppsRef.current.find((app): app is SandboxApp => app.kind === "sandbox" && app.package.manifest.id === appPackage.manifest.id);
+      if (!launchFile && existing && existing.fileId === file.id && existing.package.digest === appPackage.digest && existing.package.manifest.version === appPackage.manifest.version) { focusApp(existing.id); return; }
+      const approved = installedApps.find((item) => item.appId === appPackage.manifest.id);
+      if (!packageMatchesInstall(approved, file.id, appPackage.digest, appPackage.manifest.version)) {
+        const permissions = appPackage.manifest.permissions.length ? appPackage.manifest.permissions.join(", ") : "None";
+        const confirmed = await requestConfirmation({ title: `${approved ? "Approve updated" : "Install"} ${appPackage.manifest.name}?`, message: `Requested permissions: ${permissions}. The package is isolated from Hiraya and the network except through approved host services.`, confirmLabel: approved ? "Approve update" : "Install and run" });
+        if (!confirmed || !entriesRef.current.some((entry) => entry.id === file.id)) return;
+        const next: InstalledApp = { appId: appPackage.manifest.id, packageEntryId: file.id, digest: appPackage.digest, version: appPackage.manifest.version, manifest: appPackage.manifest, approvedAt: Date.now() };
+        await installApp(next);
+        setInstalledApps((current) => [...current.filter((item) => item.appId !== next.appId), next]);
+      }
+      if (existing && !launchFile) closeApp(existing.id);
       const id = `sandbox:${file.id}:${crypto.randomUUID()}`;
+      pendingInstanceId = id;
       const base = createAppBase(id, "sandbox");
+      const launchHandles = launchFile && appPackage.manifest.permissions.includes("files:read")
+        ? [appCapabilities.grantFile(id, launchFile.id, appPackage.manifest.permissions.includes("files:write") ? ["stat", "read", "write"] : ["stat", "read"])]
+        : [];
       const host = appHostServices.openInstance({
         instanceId: id,
         launch: {
           protocolVersion: 1,
           appId: appPackage.manifest.id,
           launchId: crypto.randomUUID(),
-          source: "launcher",
-          files: [],
+          source: launchFile ? "file" : "launcher",
+          files: launchHandles,
           folders: [],
           arguments: [],
           theme: mapThemeTokens(activeTheme),
@@ -1871,13 +1889,13 @@ function App({ session }: { session: AuthSession | null }) {
         window: { focused: true, maximized: false, fullscreen: false, width: Math.round(base.bounds.width), height: Math.round(base.bounds.height) },
         title: appPackage.manifest.name,
       });
-      const unavailablePicker = async () => { throw new HostServiceError("File pickers are not supported for session apps yet.", "UNAVAILABLE"); };
+      pendingHost = host;
       const runtimeHost = {
         ...host,
         dialogs: {
-          openFile: unavailablePicker,
-          openFolder: unavailablePicker,
-          saveFile: unavailablePicker,
+          openFile: host.dialogs.openFile,
+          openFolder: host.dialogs.openFolder,
+          saveFile: host.dialogs.saveFile,
           confirm: async (params: { title: string; message: string; confirmLabel?: string; destructive?: boolean }) => requestConfirmation({ title: params.title, message: params.message, confirmLabel: params.confirmLabel ?? "Confirm", danger: params.destructive }),
         },
       };
@@ -1897,13 +1915,30 @@ function App({ session }: { session: AuthSession | null }) {
         },
         createPosition: () => positionFor(null),
       });
-      const dispatcher = new RpcDispatcher({ permissions: appPackage.manifest.permissions, host: runtimeHost, files });
+      const dispatcher = new RpcDispatcher({
+        permissions: appPackage.manifest.permissions,
+        host: runtimeHost,
+        files,
+        commands: new RuntimeCommandContributions(commandService, appPackage.manifest.id, (commandId) => dispatcher.emit("commands.invoked", { id: commandId })),
+      });
       const app: SandboxApp = { ...base, kind: "sandbox", fileId: file.id, title: appPackage.manifest.name, dirty: false, package: appPackage, dispatcher };
       updateRunningApps([...runningAppsRef.current, app]);
       setFocusedApp(id);
+      pendingInstanceId = null;
+      pendingHost = null;
     } catch (openError) {
+      pendingHost?.close();
+      if (pendingInstanceId) appCapabilities.revokeInstance(pendingInstanceId);
       setError(openError instanceof Error ? openError.message : "The app package could not be opened.");
     }
+  }
+
+  async function removeInstalledApp(app: InstalledApp) {
+    if (!await requestConfirmation({ title: `Uninstall ${app.manifest.name}?`, message: "This removes its approval and device-local app data. The package and your files are not deleted.", confirmLabel: "Uninstall", danger: true })) return;
+    for (const running of [...runningAppsRef.current]) if (running.kind === "sandbox" && running.package.manifest.id === app.appId) closeApp(running.id);
+    await uninstallApp(app.appId);
+    setInstalledApps((current) => current.filter((item) => item.appId !== app.appId));
+    setNotice(`${app.manifest.name} uninstalled`);
   }
 
   async function openInternetShortcut(file: FileEntry, popup: Window | null) {
@@ -1914,10 +1949,6 @@ function App({ session }: { session: AuthSession | null }) {
     popup.opener = null;
     try {
       const shortcut = parseInternetShortcut(await (await readFile(file.id)).text());
-      if (shortcut.sensitive && !await requestConfirmation({ title: "Open sensitive link?", message: `This shortcut uses the sensitive ${shortcut.scheme}: scheme. Only continue if you trust it.`, confirmLabel: "Open link", danger: true })) {
-        popup.close();
-        return;
-      }
       popup.location.replace(shortcut.url);
     } catch (openError) {
       popup.close();
@@ -2571,7 +2602,7 @@ function App({ session }: { session: AuthSession | null }) {
     { id: "close", group: "Windows", label: "Close the top panel or focused window", keys: ["Escape"] },
   ];
 
-  function runSearchCommand(commandId: AppCommandId) {
+  function runSearchCommand(commandId: CommandId) {
     void commandService.execute(commandId, commandContext);
   }
 
@@ -2752,7 +2783,7 @@ function App({ session }: { session: AuthSession | null }) {
             const fileEntry = app.kind === "file" ? app.file ?? entryIndex.byId.get(app.fileId) : null;
             const file = fileEntry?.kind === "file" ? fileEntry : null;
             const propertiesEntry = app.kind === "properties" ? entryIndex.byId.get(app.entryId) : null;
-            const title = app.kind === "sandbox" ? app.title : app.kind === "settings" ? isMobile && settingsPage !== "main" ? settingsPage === "themes" ? "Themes" : "Activity" : "Settings" : app.kind === "properties" ? `${propertiesEntry?.name ?? "Item"} properties` : app.kind === "explorer" ? folder?.name ?? activeDesktopName : file?.name ?? "Opening file";
+            const title = app.kind === "sandbox" ? app.title : app.kind === "settings" ? isMobile && settingsPage !== "main" ? settingsPage === "themes" ? "Themes" : settingsPage === "activity" ? "Activity" : "Apps" : "Settings" : app.kind === "properties" ? `${propertiesEntry?.name ?? "Item"} properties` : app.kind === "explorer" ? folder?.name ?? activeDesktopName : file?.name ?? "Opening file";
             const appWindow = app.kind === "sandbox" ? { minWidth: 360, minHeight: 260 } : builtinAppWindow(app.kind);
             return (
               <AppWindow
@@ -2879,6 +2910,12 @@ function App({ session }: { session: AuthSession | null }) {
                     externalEmbeddedPreviews={externalEmbeddedPreviews === true}
                     localPreferencesLoaded={externalEmbeddedPreviews !== null}
                     serverBuildTimestamp={serverBuildTimestamp}
+                    installedApps={installedApps}
+                    onLaunchApp={(installed) => {
+                      const entry = entriesRef.current.find((candidate): candidate is FileEntry => candidate.id === installed.packageEntryId && candidate.kind === "file");
+                      if (entry) void openAppPackage(entry); else setError("That app package is unavailable.");
+                    }}
+                    onUninstallApp={(installed) => void removeInstalledApp(installed)}
                     onListActivity={canViewActivity ? listActivity : async () => { throw new Error("Activity is unavailable for your role."); }}
                     onSubscribeToActivity={canViewActivity ? subscribeToActivityChanges : () => () => undefined}
                     canOpenAffectedEntries={(activity) => canOpenActivity(activity, activeDesktopIdRef.current, entriesRef.current, desktops.map((desktop) => desktop.id))}
@@ -2985,9 +3022,10 @@ function App({ session }: { session: AuthSession | null }) {
         event.target.value = "";
       }} />
 
-      {(error || notice) && <div className="notification-stack">
+      {(error || notice || appNotifications.length > 0) && <div className="notification-stack">
         {error && <div className="error-banner" role="alert"><WarningCircle size={19} weight="fill" /><span>{error}</span><button type="button" onClick={() => setError("")} aria-label="Dismiss error">Dismiss</button></div>}
         {notice && <div className="notice" role="status"><span>{notice}</span>{undoTrash && <button type="button" onClick={() => void undoMoveToTrash()}>Undo</button>}<button type="button" aria-label="Dismiss notice" onClick={() => { setNotice(""); setUndoTrash(null); }}><X size={14} /></button></div>}
+        {appNotifications.map((notification) => <div className="notice" role="status" key={notification.id}><span>{[notification.title, notification.body].filter(Boolean).join(": ")}</span><button type="button" aria-label="Dismiss app notification" onClick={() => appHostServices.notifications.dismiss(notification.owner, notification.id)}><X size={14} /></button></div>)}
       </div>}
       {importProgress && <div className="import-progress" role="status" aria-live="polite"><SpinnerGap size={18} /><div><strong>{importProgress.phase === "preparing" ? "Preparing import" : importProgress.phase === "saving" ? "Saving files locally" : "Saving and synchronizing files"}</strong><span>{importProgress.count} {importProgress.count === 1 ? "file" : "files"}. This API does not support safe cancellation or byte-level progress.</span></div></div>}
       {showUpdateToast && (
@@ -3005,6 +3043,15 @@ function App({ session }: { session: AuthSession | null }) {
           entry={contextMenuEntry}
           onOpen={() => handleOpen(contextMenuEntry)}
           onEditFile={contextMenuEntry.kind === "file" && fileCapabilities(contextMenuEntry).editable ? () => handleEditFile(contextMenuEntry) : undefined}
+          openWith={contextMenuEntry.kind === "file" ? installedApps.filter((app) => installedAppIsAvailable(app, entries) && app.manifest.permissions.includes("files:read") && installedAppAcceptsFile(app, contextMenuEntry)).map((app) => ({
+            id: app.appId,
+            label: app.manifest.name,
+            onOpen: () => {
+              const packageEntry = entriesRef.current.find((entry): entry is FileEntry => entry.kind === "file" && entry.id === app.packageEntryId);
+              setContextMenu(null);
+              if (packageEntry) void openAppPackage(packageEntry, contextMenuEntry);
+            },
+          })) : undefined}
           onRename={() => { setDialog({ type: "rename", entryId: contextMenuEntry.id }); setContextMenu(null); }}
           onDownload={contextMenuEntry.kind === "file" ? () => void download(contextMenuEntry) : undefined}
           onCopy={() => void copySelection()}
@@ -3045,6 +3092,32 @@ function App({ session }: { session: AuthSession | null }) {
         />
       )}
       {dialog && (!(dialog.type === "rename" || dialog.type === "delete") || dialogEntry) && <FileDialog dialog={dialog} entry={dialogEntry} entryCount={dialog.type === "delete" ? dialog.entryIds.length : 1} trashSupported={syncStatus !== "local"} onClose={() => setDialog(null)} onSubmit={handleDialogSubmit} />}
+      {appDialogRequests[0] && appDialogRequests[0].kind !== "confirm" && <AppPickerDialog
+        request={appDialogRequests[0]}
+        entries={entries}
+        onCancel={() => appHostServices.dialogs.reject(appDialogRequests[0].id)}
+        onOpenFiles={(files) => {
+          const request = appDialogRequests[0];
+          const running = runningAppsRef.current.find((app): app is SandboxApp => app.kind === "sandbox" && app.id === request.owner.instanceId);
+          if (!running) { appHostServices.dialogs.reject(request.id); return; }
+          appHostServices.dialogs.respond(request.id, grantPickedFiles(appCapabilities, request.owner.instanceId, running.package.manifest.permissions, files));
+        }}
+        onOpenFolder={(folder) => {
+          const request = appDialogRequests[0];
+          const running = runningAppsRef.current.find((app): app is SandboxApp => app.kind === "sandbox" && app.id === request.owner.instanceId);
+          if (!running) { appHostServices.dialogs.reject(request.id); return; }
+          appHostServices.dialogs.respond(request.id, grantPickedFolder(appCapabilities, request.owner.instanceId, running.package.manifest.permissions, folder));
+        }}
+        onSave={async (name, folder) => {
+          const request = appDialogRequests[0];
+          if (request.kind !== "saveFile") return;
+          const running = runningAppsRef.current.find((app): app is SandboxApp => app.kind === "sandbox" && app.id === request.owner.instanceId);
+          if (!running) { appHostServices.dialogs.reject(request.id); return; }
+          if (!running.package.manifest.permissions.includes("files:write")) throw new HostServiceError("The app does not have permission to create files.", "PERMISSION_DENIED");
+          const file = await createAppFile(name, folder?.id ?? null, positionFor(folder?.id ?? null), new Blob([], { type: request.params.mimeType ?? "application/octet-stream" }), request.params.mimeType);
+          appHostServices.dialogs.respond(request.id, grantPickedFiles(appCapabilities, request.owner.instanceId, running.package.manifest.permissions, [file])[0]);
+        }}
+      />}
       {moveDialogEntries.length > 0 && (
         <MoveDialog
           desktops={desktops.filter((desktop) => desktop.capabilities.write && (desktop.ownership === "owned" || syncStatus === "online")).map((desktop) => ({ ...desktop, folders: (desktopMoveFolders[desktop.id] ?? []).filter((entry): entry is Extract<DesktopEntry, { kind: "folder" }> => entry.kind === "folder") }))}

@@ -1,0 +1,43 @@
+:root {
+  color: var(--hiraya-text, #f5eedc);
+  background: var(--hiraya-background, #13231f);
+  font-family: system-ui, sans-serif;
+}
+
+body {
+  display: grid;
+  min-height: 100vh;
+  margin: 0;
+  place-items: center;
+}
+
+main {
+  width: min(32rem, calc(100% - 3rem));
+  padding: 2rem;
+  border: 1px solid var(--hiraya-border, #526a60);
+  border-radius: 0.75rem;
+  background: var(--hiraya-surface, #1b3029);
+}
+
+.eyebrow {
+  color: var(--hiraya-accent, #e1a854);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+}
+
+button {
+  padding: 0.75rem 1rem;
+  border: 0;
+  border-radius: 0.35rem;
+  background: var(--hiraya-accent, #e1a854);
+  color: var(--hiraya-accent-text, #172019);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+}
+
+button:focus-visible {
+  outline: 3px solid var(--hiraya-focus, #fff);
+  outline-offset: 3px;
+}

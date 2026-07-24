@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "id": "dev.hiraya.hello",
-  "name": "Hello Hiraya",
+  "id": "dev.hiraya.starter",
+  "name": "Hiraya App",
   "version": "0.1.0",
   "entrypoint": "index.html",
-  "description": "A minimal Vanilla TypeScript Hiraya app.",
+  "description": "A Vanilla TypeScript Hiraya app.",
   "permissions": ["window", "commands", "theme", "storage"]
 }

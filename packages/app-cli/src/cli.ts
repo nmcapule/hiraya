@@ -1,16 +1,20 @@
 #!/usr/bin/env bun
 import { inspectAppInput, packageApp, relativeOutput } from "./filesystem";
+import { initApp } from "./init";
 
 function usage(): never {
-  console.error("Usage: hiraya-app <validate|inspect> <dir-or-.hiraya.app>\n       hiraya-app package <app-dir> [output.hiraya.app]");
+  console.error("Usage: hiraya-app init <dir> [app-id]\n       hiraya-app <validate|inspect> <dir-or-.hiraya.app>\n       hiraya-app package <app-dir> [output.hiraya.app]");
   process.exit(2);
 }
 
 const [command, input, output, ...extra] = process.argv.slice(2);
-if (!command || !input || extra.length > 0 || (command !== "package" && output !== undefined)) usage();
+if (!command || !input || extra.length > 0 || (command !== "package" && command !== "init" && output !== undefined)) usage();
 
 try {
-  if (command === "package") {
+  if (command === "init") {
+    const result = await initApp(input, output);
+    console.log(`Created ${relativeOutput(result.destination)} (${result.appId})`);
+  } else if (command === "package") {
     const result = await packageApp(input, output);
     console.log(`${relativeOutput(result.destination)}\nsha256 ${result.inspection.digest}`);
   } else if (command === "validate") {

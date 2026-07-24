@@ -76,8 +76,48 @@ export type AppCommandContext = {
   openPanel: (panel: AppCommandPanel) => void;
 };
 
-export function createAppCommandService(): CommandService<AppCommandContext, AppCommandId> {
-  const service = new CommandService<AppCommandContext, AppCommandId>();
+export type RuntimeCommandDefinition = { id: string; title: string; shortcut?: string; enabled?: boolean };
+
+export class RuntimeCommandContributions<Context> {
+  readonly #disposals: Array<() => void> = [];
+
+  constructor(
+    private readonly service: CommandService<Context>,
+    private readonly appId: string,
+    private readonly invoke: (id: string) => void,
+  ) {}
+
+  set(commands: readonly RuntimeCommandDefinition[]): void {
+    this.clear();
+    const localIds = new Set<string>();
+    try {
+      for (const command of commands) {
+        if (localIds.has(command.id)) throw new TypeError(`Duplicate app command: ${command.id}`);
+        localIds.add(command.id);
+        const id = runtimeCommandId(this.appId, command.id);
+        this.#disposals.push(this.service.register({ id, label: command.title, detail: command.shortcut, enabled: () => command.enabled ?? true, execute: () => this.invoke(command.id) }));
+      }
+    } catch (error) {
+      this.clear();
+      throw error;
+    }
+  }
+
+  clear(): void {
+    for (const dispose of this.#disposals.splice(0)) dispose();
+  }
+
+  close(): void { this.clear(); }
+}
+
+export function runtimeCommandId(appId: string, commandId: string): CommandId {
+  if (!appId || !commandId) throw new TypeError("App command ID is invalid.");
+  const encode = (value: string) => Array.from(new TextEncoder().encode(value), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `app.a-${encode(appId)}.c-${encode(commandId)}`;
+}
+
+export function createAppCommandService(): CommandService<AppCommandContext> {
+  const service = new CommandService<AppCommandContext>();
   const commands: CommandDescriptor<AppCommandContext, AppCommandId>[] = [
     { id: APP_COMMAND_IDS.newFile, order: 10, label: "New text file", keywords: ["create"], enabled: ({ canMutate }) => canMutate, execute: ({ createFile }) => createFile() },
     { id: APP_COMMAND_IDS.newFolder, order: 20, label: "New folder", keywords: ["create directory"], enabled: ({ canMutate }) => canMutate, execute: ({ createFolder }) => createFolder() },

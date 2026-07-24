@@ -1,10 +1,9 @@
 const ABSOLUTE_URL = /^[a-z][a-z\d+.-]*:/i;
-const SENSITIVE_SCHEMES = new Set(["javascript", "vbscript", "data", "blob", "file", "filesystem"]);
+const BLOCKED_SCHEMES = new Set(["javascript", "vbscript", "data", "blob", "file", "filesystem"]);
 
 export type InternetShortcut = {
   url: string;
   scheme: string;
-  sensitive: boolean;
 };
 
 export function parseShortcutUrl(value: string): InternetShortcut {
@@ -16,7 +15,8 @@ export function parseShortcutUrl(value: string): InternetShortcut {
     throw new Error("Enter a valid URL.");
   }
   const scheme = url.slice(0, url.indexOf(":")).toLowerCase();
-  return { url, scheme, sensitive: SENSITIVE_SCHEMES.has(scheme) };
+  if (BLOCKED_SCHEMES.has(scheme)) throw new Error(`The ${scheme}: scheme cannot be opened by Hiraya.`);
+  return { url, scheme };
 }
 
 export function parseInternetShortcut(content: string): InternetShortcut {

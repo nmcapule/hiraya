@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowClockwise, ArrowLeft, ArrowsOut, CaretRight, ClockCounterClockwise, CornersIn, CornersOut, ExportIcon, GlobeSimple, GridFour, ImageSquare, PaintBrush, UploadSimple } from "@phosphor-icons/react";
+import { ArrowClockwise, ArrowLeft, ArrowsOut, CaretRight, ClockCounterClockwise, CornersIn, CornersOut, ExportIcon, GlobeSimple, GridFour, ImageSquare, PaintBrush, Package, Play, Trash, UploadSimple } from "@phosphor-icons/react";
 import { ActivityLog } from "./ActivityLog";
 import type { ActivityPage, ActivityQuery } from "../lib/activity";
 import type { ActivityRecord } from "../lib/activity";
@@ -17,6 +17,7 @@ import {
 import { DEFAULT_WALLPAPER, WALLPAPERS, type DesktopEntry, type DesktopLayout, type FileEntry, type WallpaperPreset } from "../types";
 import { WALLPAPER_IMAGE_ACCEPT } from "../lib/wallpaper-image";
 import type { AppWindowHeaderElements } from "./AppWindow";
+import { installedAppIsAvailable, type InstalledApp } from "../apps/installed-apps";
 
 const WALLPAPER_LABELS: Record<WallpaperPreset, { name: string; description: string }> = {
   dusk: { name: "Dusk", description: "Misty green with a warm horizon" },
@@ -48,8 +49,8 @@ const COLOR_LABELS: Record<keyof ThemeColors, string> = {
 };
 
 type Props = {
-  page: "main" | "themes" | "activity";
-  onPageChange: (page: "main" | "themes" | "activity") => void;
+  page: "main" | "themes" | "activity" | "apps";
+  onPageChange: (page: "main" | "themes" | "activity" | "apps") => void;
   mobileHeaderElements?: AppWindowHeaderElements;
   layout: DesktopLayout;
   activeDesktopId: string;
@@ -69,6 +70,9 @@ type Props = {
   externalEmbeddedPreviews: boolean;
   localPreferencesLoaded: boolean;
   serverBuildTimestamp: string | null;
+  installedApps: InstalledApp[];
+  onLaunchApp: (app: InstalledApp) => void;
+  onUninstallApp: (app: InstalledApp) => void;
   onListActivity: (query?: ActivityQuery) => Promise<ActivityPage>;
   onSubscribeToActivity: (listener: () => void) => () => void;
   onOpenAffectedEntries?: (activity: ActivityRecord, entryIds: readonly string[]) => void;
@@ -154,6 +158,9 @@ export function SettingsWindow({
   externalEmbeddedPreviews,
   localPreferencesLoaded,
   serverBuildTimestamp,
+  installedApps,
+  onLaunchApp,
+  onUninstallApp,
   onListActivity,
   onSubscribeToActivity,
   onOpenAffectedEntries,
@@ -183,8 +190,10 @@ export function SettingsWindow({
   const pendingLayoutRef = useRef<{ desktopId: string; layout: DesktopLayout } | null>(null);
   const mainThemesButtonRef = useRef<HTMLButtonElement>(null);
   const mainActivityButtonRef = useRef<HTMLButtonElement>(null);
+  const mainAppsButtonRef = useRef<HTMLButtonElement>(null);
   const themesHeadingRef = useRef<HTMLHeadingElement>(null);
   const activityHeadingRef = useRef<HTMLHeadingElement>(null);
+  const appsHeadingRef = useRef<HTMLHeadingElement>(null);
   const mutationsDisabled = !canMutate || saving;
   const displayedLayout = layoutDraft.desktopId === activeDesktopId ? layoutDraft.layout : layout;
   const contrastIssues = draft ? themeContrastIssues(draft.definition) : [];
@@ -334,11 +343,13 @@ export function SettingsWindow({
     onPageChange("main");
     requestAnimationFrame(() => mainActivityButtonRef.current?.focus());
   };
+  const openApps = () => { contentRef.current?.scrollTo({ top: 0 }); onPageChange("apps"); if (!mobileHeaderElements) requestAnimationFrame(() => appsHeadingRef.current?.focus()); };
+  const closeApps = () => { contentRef.current?.scrollTo({ top: 0 }); onPageChange("main"); requestAnimationFrame(() => mainAppsButtonRef.current?.focus()); };
 
   return (
     <div className="settings-window settings-window--embedded">
       {page !== "main" && mobileHeaderElements?.leading && createPortal(
-        <button className="app-window__control mobile-header-back" type="button" aria-label="Back to settings" disabled={page === "themes" && saving} onClick={page === "themes" ? closeThemes : closeActivity}>
+        <button className="app-window__control mobile-header-back" type="button" aria-label="Back to settings" disabled={page === "themes" && saving} onClick={page === "themes" ? closeThemes : page === "apps" ? closeApps : closeActivity}>
           <ArrowLeft size={18} />
         </button>,
         mobileHeaderElements.leading,
@@ -365,6 +376,12 @@ export function SettingsWindow({
                   <small>Review and search accepted desktop changes.</small>
                 </span>
                 <CaretRight className="settings-row__chevron" size={17} aria-hidden="true" />
+              </button>
+            </section>
+
+            <section className="settings-section" aria-labelledby="apps-link-heading">
+              <button className="settings-row settings-row--navigation" type="button" ref={mainAppsButtonRef} onClick={openApps}>
+                <span className="settings-row__icon"><Package size={17} /></span><span className="settings-row__copy"><strong id="apps-link-heading">Apps</strong><small>{installedApps.length ? `${installedApps.length} approved ${installedApps.length === 1 ? "app" : "apps"} on this device.` : "Manage approved app packages."}</small></span><CaretRight className="settings-row__chevron" size={17} aria-hidden="true" />
               </button>
             </section>
 
@@ -620,7 +637,7 @@ export function SettingsWindow({
         </section>
             {!canMutate && <p className="settings-window__offline" role="status">Connecting to the shared desktop. Appearance controls will be available shortly.</p>}
           </div>
-        ) : (
+        ) : page === "activity" ? (
           <div className="settings-page settings-page--activity">
             <header className="settings-page__header">
               <button className="settings-page__back" type="button" aria-label="Back to settings" onClick={closeActivity}><ArrowLeft size={17} /></button>
@@ -630,6 +647,17 @@ export function SettingsWindow({
               </div>
             </header>
             <ActivityLog onListActivity={onListActivity} onSubscribe={onSubscribeToActivity} onOpenAffectedEntries={onOpenAffectedEntries} canOpenAffectedEntries={canOpenAffectedEntries} />
+          </div>
+        ) : (
+          <div className="settings-page settings-page--apps">
+            <header className="settings-page__header"><button className="settings-page__back" type="button" aria-label="Back to settings" onClick={closeApps}><ArrowLeft size={17} /></button><div><h3 ref={appsHeadingRef} tabIndex={-1}>Apps</h3><p>Approved packages and device-local data.</p></div></header>
+            <div className="installed-app-list">
+              {installedApps.map((app) => {
+                const available = installedAppIsAvailable(app, entries);
+                return <article className="installed-app" key={app.appId}><div className="installed-app__heading"><Package size={20} /><div><strong>{app.manifest.name}</strong><small>{app.appId}</small></div><span>{available ? `v${app.version}` : "Unavailable"}</span></div><p>{app.manifest.description ?? "No description provided."}</p><dl><div><dt>Permissions</dt><dd>{app.manifest.permissions.join(", ") || "None"}</dd></div><div><dt>Digest</dt><dd><code title={app.digest}>{app.digest.slice(0, 12)}...</code></dd></div></dl><div className="installed-app__actions"><button className="button button--quiet" type="button" disabled={!available} onClick={() => onLaunchApp(app)}><Play size={15} /> Launch</button><button className="button button--quiet" type="button" onClick={() => onUninstallApp(app)}><Trash size={15} /> Uninstall</button></div></article>;
+              })}
+              {!installedApps.length && <p className="theme-custom__empty">No apps are approved on this device. Open a <code>.hiraya.app</code> package to install one.</p>}
+            </div>
           </div>
         )}
       </div>

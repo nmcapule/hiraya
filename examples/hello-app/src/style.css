@@ -1,6 +1,6 @@
 :root {
-  color: #f5eedc;
-  background: #13231f;
+  color: var(--hiraya-text, #f5eedc);
+  background: var(--hiraya-background, #13231f);
   font-family: Georgia, serif;
 }
 
@@ -14,12 +14,12 @@ body {
 main {
   max-width: 32rem;
   padding: 3rem;
-  border: 1px solid #526a60;
-  background: #1b3029;
+  border: 1px solid var(--hiraya-border, #526a60);
+  background: var(--hiraya-surface, #1b3029);
 }
 
 .eyebrow {
-  color: #e1a854;
+  color: var(--hiraya-accent, #e1a854);
   font: 700 0.7rem/1.2 system-ui, sans-serif;
   letter-spacing: 0.18em;
 }
@@ -33,8 +33,39 @@ h1 {
 button {
   padding: 0.8rem 1rem;
   border: 0;
-  background: #e1a854;
-  color: #172019;
+  background: var(--hiraya-accent, #e1a854);
+  color: var(--hiraya-accent-text, #172019);
   cursor: pointer;
   font: 700 0.9rem system-ui, sans-serif;
+}
+
+#status {
+  color: var(--hiraya-text-muted, #b9c5bf);
+}
+
+dl {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0 0 2rem;
+  font: 0.8rem/1.4 system-ui, sans-serif;
+}
+
+dl div {
+  display: grid;
+  grid-template-columns: 7rem 1fr;
+  gap: 1rem;
+}
+
+dt {
+  color: var(--hiraya-text-muted, #b9c5bf);
+}
+
+dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+button:focus-visible {
+  outline: 3px solid var(--hiraya-focus, #fff);
+  outline-offset: 3px;
 }
