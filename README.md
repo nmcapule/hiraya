@@ -2,6 +2,8 @@
 
 Hiraya is an installable desktop built with React, TypeScript, Vite, OPFS, and SQLite. It runs browser-local or synchronizes a catalog of named desktops with a same-origin Hiraya server.
 
+The user-oriented [Hiraya User Guide](docs/USER_GUIDE.md) is checked in and bundled into the app for offline Help. It covers the product model, hierarchy import, desktops and areas, sharing, offline storage, installation, apps, export, backup and recovery, and troubleshooting.
+
 ## Development
 
 ```sh

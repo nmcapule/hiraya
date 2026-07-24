@@ -7,11 +7,12 @@ import { applyOutboxOperation, desktopPendingOperationProtection, normalizeOutbo
 import { parseCustomTheme, parseThemeState, type CustomTheme } from "./themes";
 import { EMPTY_WINDOW_SESSION, parseWindowSession } from "./window-session";
 import { activityRecord, parseActivityPage, parseActivityQuery, type ActivityPage, type NewActivityRecord } from "./activity";
-import type { StorageDbMethod, StorageDbRequest, StorageDbRequests, StorageDbResponses, StoredPreferences } from "./opfs-db-protocol";
+import { validateOfflinePinRequest, type StorageDbMethod, type StorageDbRequest, type StorageDbRequests, type StorageDbResponses, type StoredPreferences } from "./opfs-db-protocol";
 import { parseJsonValue } from "@hiraya/apps-contracts";
 import { parseInstalledApp, type InstalledApp } from "../apps/installed-apps";
 import { APP_STORAGE_SCHEMA_SQL, DATABASE_SCHEMA_VERSION, migrateSchema2To3Sql, migrateSchema3To4Sql, PREFERENCES_SCHEMA_SQL } from "./opfs-schema";
 import { storageOwnerLockName } from "./storage-worker";
+import { STORAGE_PROTOCOL_VERSION } from "./storage-worker";
 
 const FRONTEND_ONLY = import.meta.env.HIRAYA_FRONTEND_ONLY === "true";
 const HISTORY_LIMIT = Number(import.meta.env.HIRAYA_HISTORY_LIMIT);
@@ -207,6 +208,7 @@ function replaceDesktopStateRows(db: Database, desktopId: string, value: Persist
   try {
     state.entries.forEach((entry, ordinal) => statement.bind([entry.id, desktopId, ordinal, entry.kind, entry.name, entry.parentId, entry.createdAt, entry.modifiedAt, entry.position.x, entry.position.y, entry.kind === "file" ? entry.mimeType : null, entry.kind === "file" ? entry.size : null, state.sync.entryRevisions[entry.id] ?? null, entry.kind === "file" ? state.sync.contentRevisions[entry.id] ?? null : null]).stepReset().clearBindings());
   } finally { statement.finalize(); }
+  db.exec({ sql: "DELETE FROM offline_pins WHERE desktop_id=? AND entry_id NOT IN (SELECT id FROM entries WHERE desktop_id=?)", bind: [desktopId, desktopId] });
 }
 
 function createDesktopRows(db: Database, desktop: DesktopIdentity, state: PersistedDesktopState) {
@@ -279,9 +281,11 @@ const database = ownedNamespace.then(async (namespace) => {
 });
 
 async function dispatch<M extends StorageDbMethod>(method: M, params: StorageDbRequests[M], desktopId: string | null): Promise<StorageDbResponses[M]> {
+  if (method === "listOfflinePins" || method === "setOfflinePins") validateOfflinePinRequest(method, params, desktopId);
   const db = await database;
   switch (method) {
     case "ping": return undefined as StorageDbResponses[M];
+    case "protocol": return { version: STORAGE_PROTOCOL_VERSION } as StorageDbResponses[M];
     case "status": return { existedBeforeOpen } as StorageDbResponses[M];
     case "listDesktops": return { desktops: rows(db, "SELECT id,name,access_json FROM desktops ORDER BY ordinal").map((row) => {
       const identity = row.access_json === null ? { id: stringValue(row.id), name: stringValue(row.name) } : JSON.parse(stringValue(row.access_json)) as DesktopIdentity;
@@ -372,6 +376,24 @@ async function dispatch<M extends StorageDbMethod>(method: M, params: StorageDbR
     case "blockMutation": { const input = params as StorageDbRequests["blockMutation"]; db.exec({ sql: "UPDATE outbox SET status='blocked', error=? WHERE operation_id=?", bind: [input.error, input.operationId] }); return undefined as StorageDbResponses[M]; }
     case "listActivity": return listActivity(db, params as StorageDbRequests["listActivity"]) as StorageDbResponses[M];
     case "pruneDesktops": { const retained = new Set((params as StorageDbRequests["pruneDesktops"]).retainedDesktopIds); db.transaction("IMMEDIATE", () => { for (const row of rows(db, "SELECT id FROM desktops")) { const id = stringValue(row.id); if (!retained.has(id)) db.exec({ sql: "DELETE FROM desktops WHERE id=?", bind: [id] }); } }); return undefined as StorageDbResponses[M]; }
+    case "listOfflinePins": {
+      const id = (params as StorageDbRequests["listOfflinePins"]).desktopId;
+      return { desktopId: id, entryIds: rows(db, "SELECT entry_id FROM offline_pins WHERE desktop_id=? ORDER BY created_at, entry_id", [id]).map((row) => stringValue(row.entry_id)) } as StorageDbResponses[M];
+    }
+    case "setOfflinePins": {
+      const input = params as StorageDbRequests["setOfflinePins"];
+      const entryIds = [...new Set(input.entryIds)];
+      if (entryIds.length !== input.entryIds.length || !Number.isSafeInteger(input.createdAt) || input.createdAt < 0) throw new Error("The offline pin request is invalid.");
+      db.transaction("IMMEDIATE", () => {
+        if (!scalar(db, "SELECT 1 FROM desktops WHERE id=?", [input.desktopId])) throw new Error("That desktop no longer exists.");
+        for (const entryId of entryIds) {
+          if (!scalar(db, "SELECT 1 FROM entries WHERE desktop_id=? AND id=?", [input.desktopId, entryId])) throw new Error("An offline pin entry no longer exists.");
+          if (input.pinned) db.exec({ sql: "INSERT INTO offline_pins(desktop_id,entry_id,created_at) VALUES (?, ?, ?) ON CONFLICT(desktop_id,entry_id) DO NOTHING", bind: [input.desktopId, entryId, input.createdAt] });
+          else db.exec({ sql: "DELETE FROM offline_pins WHERE desktop_id=? AND entry_id=?", bind: [input.desktopId, entryId] });
+        }
+      });
+      return { desktopId: input.desktopId, entryIds: rows(db, "SELECT entry_id FROM offline_pins WHERE desktop_id=? ORDER BY created_at, entry_id", [input.desktopId]).map((row) => stringValue(row.entry_id)) } as StorageDbResponses[M];
+    }
     case "listInstalledApps": return readInstalledApps(db) as StorageDbResponses[M];
     case "installApp": {
       const install = parseInstalledApp((params as StorageDbRequests["installApp"]).install);

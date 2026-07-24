@@ -11,7 +11,7 @@ function publicUrl(publication: SharingState["publication"]) {
   return publication.token ? new URL(`/shared/${encodeURIComponent(publication.token)}`, window.location.origin).href : "";
 }
 
-export function SharingDialog({ desktop, onClose }: { desktop: DesktopIdentity; onClose: () => void }) {
+export function SharingDialog({ desktop, onClose, onOpenHelp }: { desktop: DesktopIdentity; onClose: () => void; onOpenHelp: () => void }) {
   const [sharing, setSharing] = useState<SharingState | null>(null);
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<SharingRole>("reader");
@@ -72,6 +72,7 @@ export function SharingDialog({ desktop, onClose }: { desktop: DesktopIdentity; 
         <section className="sharing-section"><div className="sharing-section__heading"><Globe size={20} /><div><h3>Public link</h3><p>Anyone with this opaque link can browse and download a read-only copy.</p></div></div>
           {sharing?.publication.published ? <div className="publication-card"><div><span>Published</span><strong>{publicationUrl || "Rotate the link to reveal a new share URL."}</strong></div>{publicationUrl && <button className="button button--quiet" type="button" onClick={() => void copy(publicationUrl, "public")}>{copied === "public" ? <Check size={15} /> : <Copy size={15} />} {copied === "public" ? "Copied" : "Copy link"}</button>}<button className="button button--quiet" type="button" disabled={busy !== ""} onClick={() => void revealPublication("rotate", () => rotatePublication(desktop.id))}><ArrowClockwise size={15} /> Rotate</button><button className="button button--danger" type="button" disabled={busy !== ""} onClick={() => void run("unpublish", () => unpublishDesktop(desktop.id))}>Unpublish</button></div> : <button className="button button--primary" type="button" disabled={!sharing || busy !== ""} onClick={() => void revealPublication("publish", () => publishDesktop(desktop.id))}><Globe size={16} /> Publish read-only link</button>}
         </section>
+        <button className="inline-help-link" type="button" onClick={onOpenHelp}>Sharing roles and public-link safety</button>
         {error && <p className="form-error" role="alert">{error}</p>}
       </div>
     </section>

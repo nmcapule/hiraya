@@ -1,6 +1,7 @@
 import { strToU8, unzip, zip, type Zippable } from "fflate";
 import type { DesktopEntry } from "../types";
 import { isRecord, isValidId, parseEntries } from "./contracts";
+import { fileFromEntry, readAllDirectoryEntries } from "./file-system-entry";
 
 export const CLIPBOARD_ARCHIVE_VERSION = 1 as const;
 export const CLIPBOARD_ARCHIVE_MIME_TYPE = "application/vnd.hiraya.entry-archive-v1+zip";
@@ -146,20 +147,6 @@ export async function decodeClipboardArchiveItem(item: Pick<ClipboardItem, "type
   return decodeClipboardArchive(await item.getType(type));
 }
 
-function entryFile(entry: FileSystemFileEntry) {
-  return new Promise<File>((resolve, reject) => entry.file(resolve, reject));
-}
-
-async function directoryEntries(entry: FileSystemDirectoryEntry) {
-  const reader = entry.createReader();
-  const result: FileSystemEntry[] = [];
-  for (;;) {
-    const batch = await new Promise<FileSystemEntry[]>((resolve, reject) => reader.readEntries(resolve, reject));
-    if (!batch.length) return result;
-    result.push(...batch);
-  }
-}
-
 export async function snapshotFromClipboardItems(items: DataTransferItemList): Promise<ClipboardEntrySnapshot | null> {
   const roots = Array.from(items).map((item) => item.webkitGetAsEntry()).filter((entry): entry is FileSystemEntry => entry !== null);
   if (!roots.length) return null;
@@ -174,11 +161,11 @@ export async function snapshotFromClipboardItems(items: DataTransferItemList): P
     if (parentId === null) selectedRootIds.push(id);
     if (source.isDirectory) {
       entries.push({ kind: "folder", id, name: source.name, parentId, createdAt, modifiedAt: createdAt, position });
-      for (const child of await directoryEntries(source as FileSystemDirectoryEntry)) await visit(child, id);
+      for (const child of await readAllDirectoryEntries(source as FileSystemDirectoryEntry)) await visit(child, id);
       return;
     }
     if (!source.isFile) throw new Error("The clipboard contains an unsupported filesystem item.");
-    const file = await entryFile(source as FileSystemFileEntry);
+    const file = await fileFromEntry(source as FileSystemFileEntry);
     entries.push({ kind: "file", id, name: source.name || file.name, parentId, mimeType: file.type || "application/octet-stream", size: file.size, createdAt, modifiedAt: file.lastModified || createdAt, position });
     contents.set(id, file);
   }

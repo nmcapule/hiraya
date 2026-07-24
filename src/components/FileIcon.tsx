@@ -10,9 +10,15 @@ import {
   FileVideo,
   Folder,
   LinkSimple,
+  CloudArrowDown,
+  CloudCheck,
+  CloudSlash,
+  SpinnerGap,
+  WarningCircle,
 } from "@phosphor-icons/react";
 import type { DesktopEntry, EntryPosition } from "../types";
 import { fileCapabilities } from "../ui/file-capabilities";
+import { offlineStatusLabel, type OfflineEntryAvailability } from "../lib/offline-availability";
 
 type Props = {
   entry: DesktopEntry;
@@ -30,7 +36,8 @@ type Props = {
   getSnapPreview?: (position: EntryPosition) => EntryPosition;
   onContextMenu: (event: React.MouseEvent) => void;
   onContextMenuAt: (x: number, y: number) => void;
-  onExternalDrop?: (files: File[]) => void;
+  onExternalDrop?: (dataTransfer: DataTransfer) => void;
+  offlineAvailability?: OfflineEntryAvailability;
 };
 
 export function EntryTypeIcon({ entry, size = 43 }: { entry: DesktopEntry; size?: number }) {
@@ -49,7 +56,7 @@ export function EntryTypeIcon({ entry, size = 43 }: { entry: DesktopEntry; size?
   return <FileGlyph {...props} />;
 }
 
-export function FileIcon({ entry, selected, onSelect, onOpen, onMove, onDragAtEdge, onDragEnd, getSnapPreview, onContextMenu, onContextMenuAt, onExternalDrop }: Props) {
+export function FileIcon({ entry, selected, onSelect, onOpen, onMove, onDragAtEdge, onDragEnd, getSnapPreview, onContextMenu, onContextMenuAt, onExternalDrop, offlineAvailability }: Props) {
   const iconRef = useRef<HTMLButtonElement>(null);
   const snapPreviewRef = useRef<HTMLSpanElement>(null);
   const drag = useRef<{
@@ -257,7 +264,7 @@ export function FileIcon({ entry, selected, onSelect, onOpen, onMove, onDragAtEd
         data-entry-id={entry.id}
         data-folder-id={entry.kind === "folder" ? entry.id : undefined}
         type="button"
-        aria-label={`${entry.name}, ${entry.kind === "folder" ? "folder" : entry.mimeType || "file"}`}
+        aria-label={`${entry.name}, ${entry.kind === "folder" ? "folder" : entry.mimeType || "file"}${offlineAvailability ? `, ${offlineStatusLabel(offlineAvailability)}` : ""}`}
         aria-pressed={selected}
         onClick={(event) => { if (event.detail === 0) onSelect(event); }}
         onDoubleClick={onOpen}
@@ -274,7 +281,7 @@ export function FileIcon({ entry, selected, onSelect, onOpen, onMove, onDragAtEd
           event.preventDefault();
           event.stopPropagation();
           delete event.currentTarget.dataset.dropTarget;
-          onExternalDrop?.(Array.from(event.dataTransfer.files));
+          onExternalDrop?.(event.dataTransfer);
         } : undefined}
         onKeyDown={(event) => {
           if (event.key === "Enter") onOpen();
@@ -318,6 +325,9 @@ export function FileIcon({ entry, selected, onSelect, onOpen, onMove, onDragAtEd
       >
         <span className="file-icon__art">
           <EntryTypeIcon entry={entry} />
+          {offlineAvailability && offlineAvailability.status !== "unavailable" && <span className="offline-badge" data-status={offlineAvailability.status} title={offlineStatusLabel(offlineAvailability)} aria-hidden="true">
+            {offlineAvailability.status === "error" ? <WarningCircle /> : offlineAvailability.status === "updating" ? <SpinnerGap /> : offlineAvailability.status === "pinned" ? <CloudArrowDown /> : offlineAvailability.status === "partial" ? <CloudSlash /> : <CloudCheck />}
+          </span>}
         </span>
         <span className="file-icon__name">{entry.name}</span>
       </button>

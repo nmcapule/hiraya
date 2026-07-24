@@ -1,12 +1,40 @@
 import { describe, expect, test } from "bun:test";
 import type { DesktopEntry } from "../src/types";
 import { desktopSlots, nextAvailableDesktopSlot, projectLogicalAxis, projectLogicalPosition, reorderDesktopSegments, reorderSurfaceSegments, responsiveDesktop, restoreLogicalPosition } from "../src/ui/desktop-geometry";
+import { adjacentArea, arrangeableAreaItems, desktopAreaItems, moveLogicalPositionToArea, persistAreaPositionUpdates } from "../src/ui/desktop-areas";
 
 function file(id: string, x = 22, y = 22): DesktopEntry {
   return { kind: "file", id, name: `${id}.txt`, parentId: null, modifiedAt: 1, position: { x, y }, mimeType: "text/plain", size: 0 };
 }
 
 describe("responsive desktop geometry", () => {
+  test("builds derived area view models with a reachable empty current area", () => {
+    const areas = desktopAreaItems([
+      { segment: { column: 0, row: 0 }, rootItemCount: 2, windowCount: 1 },
+      { segment: { column: -1, row: 0 }, rootItemCount: 1, windowCount: 0 },
+    ], { column: 1, row: 0 });
+    expect(areas).toEqual([
+      { segment: { column: -1, row: 0 }, rootItemCount: 1, windowCount: 0, current: false, occupied: true, key: "0:-1", label: "Area 1", coordinateLabel: "Column -1, row 0" },
+      { segment: { column: 0, row: 0 }, rootItemCount: 2, windowCount: 1, current: false, occupied: true, key: "0:0", label: "Area 2", coordinateLabel: "Column 0, row 0" },
+      { segment: { column: 1, row: 0 }, rootItemCount: 0, windowCount: 0, current: true, occupied: false, key: "0:1", label: "Area 3", coordinateLabel: "Column 1, row 0" },
+    ]);
+    expect(arrangeableAreaItems(areas).map((area) => area.key)).toEqual(["0:-1", "0:0"]);
+  });
+
+  test("derives adjacent coordinates and preserves local placement when moving", () => {
+    expect(adjacentArea({ column: 2, row: -1 }, "left")).toEqual({ column: 1, row: -1 });
+    expect(adjacentArea({ column: 2, row: -1 }, "down")).toEqual({ column: 2, row: 0 });
+    expect(moveLogicalPositionToArea({ x: 412, y: 640 }, { column: -1, row: 2 }, { width: 390, height: 600 })).toEqual({ x: -368, y: 1240 });
+  });
+
+  test("reports whether area position persistence committed", async () => {
+    const updates = [{ entryId: "one", position: { x: 412, y: 22 } }];
+    let persisted = 0;
+    expect(await persistAreaPositionUpdates(updates, async (values) => { persisted = values.length; })).toBe(true);
+    expect(persisted).toBe(1);
+    expect(await persistAreaPositionUpdates(updates, async () => { throw new Error("offline"); })).toBe(false);
+  });
+
   test("reorders logical canvas segments without persisted area identity", () => {
     expect(reorderSurfaceSegments([
       { column: -1, row: 0 },

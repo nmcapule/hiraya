@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { createStorageDbRequest } from "../src/lib/opfs-db-protocol";
+import { createStorageDbRequest, parseOfflinePinResponse, parseStorageProtocol, validateOfflinePinRequest } from "../src/lib/opfs-db-protocol";
+import { STORAGE_PROTOCOL_VERSION } from "../src/lib/storage-worker";
 import { APP_STORAGE_SCHEMA_SQL, DATABASE_SCHEMA_VERSION, migrateSchema2To3Sql, migrateSchema3To4Sql, PREFERENCES_SCHEMA_SQL } from "../src/lib/opfs-schema";
 
 describe("storage worker request context", () => {
@@ -35,5 +36,27 @@ describe("local schema 4", () => {
     const request = createStorageDbRequest(3, null, "readAppStorage", { appId: "test.editor", key: "theme" });
     expect(request.desktopId).toBeNull();
     expect(request.params).toEqual({ appId: "test.editor", key: "theme" });
+  });
+
+  test("uses strict schema-v4 pin requests without another migration", () => {
+    const list = createStorageDbRequest(4, "desktop-a", "listOfflinePins", { desktopId: "desktop-a" });
+    const update = createStorageDbRequest(5, "desktop-a", "setOfflinePins", { desktopId: "desktop-a", entryIds: ["entry-a"], pinned: true, createdAt: 123 });
+    expect(DATABASE_SCHEMA_VERSION).toBe(4);
+    expect(list.params).toEqual({ desktopId: "desktop-a" });
+    expect(update.params).toEqual({ desktopId: "desktop-a", entryIds: ["entry-a"], pinned: true, createdAt: 123 });
+  });
+
+  test("rejects malformed pin requests and cross-desktop responses", () => {
+    expect(() => validateOfflinePinRequest("setOfflinePins", { desktopId: "desktop-a", entryIds: ["entry-a", "entry-a"], pinned: true, createdAt: 1 }, "desktop-a")).toThrow("invalid");
+    expect(() => validateOfflinePinRequest("setOfflinePins", { desktopId: "desktop-a", entryIds: ["entry-a"], pinned: 1, createdAt: 1 }, "desktop-a")).toThrow("invalid");
+    expect(() => validateOfflinePinRequest("listOfflinePins", { desktopId: "desktop-a", extra: true }, "desktop-a")).toThrow("binding");
+    expect(() => parseOfflinePinResponse({ desktopId: "desktop-b", entryIds: ["entry-a"] }, "desktop-a")).toThrow("invalid offline-pin response");
+    expect(() => parseOfflinePinResponse({ desktopId: "desktop-a", entryIds: ["entry-a", "entry-a"] }, "desktop-a")).toThrow("invalid offline-pin response");
+  });
+
+  test("handshakes the named worker protocol", () => {
+    expect(STORAGE_PROTOCOL_VERSION).toBe(3);
+    expect(parseStorageProtocol({ version: 3 })).toBe(3);
+    expect(() => parseStorageProtocol({ version: 2 })).toThrow("outdated");
   });
 });

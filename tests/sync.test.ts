@@ -26,6 +26,7 @@ function remoteStorage() {
   let outbox: OutboxRecord[] = [];
   let sequence = 0;
   const cached = new Map<string, File>();
+  const pins = new Set<string>();
   const pending = new Map<string, Map<string, Blob>>();
   const stats = { cacheWrites: 0, blockWrites: 0, remoteApplications: [] as Array<{ acknowledgedOperationId?: string; force: boolean; useAcknowledgedContent: boolean }> };
   const storage = {
@@ -47,6 +48,29 @@ function remoteStorage() {
       return file;
     },
     removeCachedFile: async (desktopId: string, catalogId: string, id: string, contentRevision: number) => cached.delete(`${desktopId}:${catalogId}:${id}:${contentRevision}`),
+    loadOfflineInventory: async (desktopId: string) => ({
+      desktopId,
+      pinIds: [...pins],
+      files: Object.fromEntries(current.entries.filter((entry) => entry.kind === "file").map((entry) => {
+        const revision = current.sync.contentRevisions[entry.id];
+        const available = cached.has(`${desktopId}:${current.sync.catalogId}:${entry.id}:${revision}`);
+        return [entry.id, { cached: available, cachedBytes: available ? entry.size : 0, storedBytes: available ? entry.size : 0, pending: false, protected: false }];
+      })),
+      cachedBytes: [...cached.values()].reduce((total, file) => total + file.size, 0),
+      protectedBytes: 0,
+      releasableBytes: [...cached.values()].reduce((total, file) => total + file.size, 0),
+      browserStorage: null,
+    }),
+    setOfflinePins: async (_desktopId: string, entryIds: string[], pinned: boolean) => {
+      for (const id of entryIds) if (pinned) pins.add(id); else pins.delete(id);
+      return [...pins];
+    },
+    releaseOfflineCopies: async () => {
+      const releasedBytes = [...cached.values()].reduce((total, file) => total + file.size, 0);
+      const releasedFiles = cached.size;
+      cached.clear();
+      return { releasedBytes, releasedFiles, skippedFiles: 0 };
+    },
     readOutbox: async () => outbox,
     enqueueMutation: async (operation: OutboxOperation, contents = new Map<string, Blob>()) => {
       const state = applyOutboxOperation({ entries: current.entries, snapToGrid: current.layout.snapToGrid, wallpaper: current.layout.wallpaper, editorSettings: current.editorSettings, appearance: current.appearance, sync: current.sync }, operation);
@@ -75,6 +99,24 @@ function remoteStorage() {
 }
 
 describe("canonical synchronization", () => {
+  test("projects a complete imported hierarchy as one offline create operation", async () => {
+    const storage = remoteStorage();
+    const engine = new SyncEngine({ storage, fetch: (async () => { throw new TypeError("offline"); }) as typeof fetch, eventSource: FakeEventSource as unknown as typeof EventSource });
+    await engine.start("desk", { x: 0, y: 0 });
+    const entries = [
+      { kind: "folder" as const, id: "import-root", name: "Imported", parentId: null, createdAt: 1, modifiedAt: 1, position: { x: 10, y: 20 } },
+      { kind: "folder" as const, id: "import-empty", name: "Empty", parentId: "import-root", createdAt: 1, modifiedAt: 1, position: { x: 8, y: 8 } },
+      { kind: "file" as const, id: "import-file", name: "note.txt", parentId: "import-root", createdAt: 1, modifiedAt: 1, position: { x: 8, y: 96 }, mimeType: "text/plain", size: 4 },
+    ];
+
+    expect(await engine.createEntries(entries, new Map([["import-file", new Blob(["note"], { type: "text/plain" })]]))).toEqual(entries);
+    const records = await storage.readOutbox();
+    expect(records).toHaveLength(1);
+    expect(records[0].operation).toEqual({ schemaVersion: 1, kind: "create", entries });
+    expect(await storage.readPendingContent(records[0].operationId, "import-file").then((content) => content.text())).toBe("note");
+    await engine.stop();
+  });
+
   test("saves binary content with MIME and revision options while preserving text saves", async () => {
     const file = { kind: "file" as const, id: "binary", name: "binary.dat", parentId: null, createdAt: 1, modifiedAt: 1, position: { x: 0, y: 0 }, mimeType: "application/octet-stream", size: 0 };
     let current = { ...desktopStateSnapshot(), entries: [file], sync: { ...desktopStateSnapshot().sync, contentRevisions: { binary: 4 } } };
@@ -430,6 +472,71 @@ describe("canonical synchronization", () => {
     expect(await engine.removeFileFromOfflineCache("file-1")).toBe(true);
     expect(await engine.isFileAvailableOffline("file-1")).toBe(false);
     await engine.stop();
+  });
+
+  test("roundtrips durable pin intent and downloads through the verified access path", async () => {
+    const storage = remoteStorage();
+    const requests: string[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      requests.push(String(input));
+      if (String(input) === "/api/desktops/desk") return Response.json(remoteDesktopState());
+      if (String(input) === "/api/desktops/desk/entries/file-1/content-access?revision=1") return Response.json({ entryId: "file-1", contentRevision: 1, size: 4, sha256: "edb465624291e4053c6c5ea4b7eb320dec773e10a57d26b95dcf0564f8e310f8", access: { url: "https://downloads.example.test/file-1", method: "GET", headers: {}, expiresAt: 2_000_000_000_000 } });
+      if (String(input) === "https://downloads.example.test/file-1") return new Response("note");
+      throw new Error(`Unexpected request: ${String(input)}`);
+    }) as typeof fetch;
+    const engine = new SyncEngine({ storage, fetch: fetchImpl, eventSource: FakeEventSource as unknown as typeof EventSource });
+    await engine.start("desk", { x: 0, y: 0 });
+
+    await engine.setOfflinePinIntent(["file-1"], true);
+    expect((await engine.loadOfflineInventory()).pinIds).toEqual(["file-1"]);
+    expect(await engine.isFileAvailableOffline("file-1")).toBe(true);
+    expect(requests).toContain("/api/desktops/desk/entries/file-1/content-access?revision=1");
+    await engine.setOfflinePinIntent(["file-1"], false);
+    expect((await engine.loadOfflineInventory()).pinIds).toEqual([]);
+    expect(await engine.releaseOfflineCopies()).toMatchObject({ releasedFiles: 1, releasedBytes: 4 });
+    await engine.stop();
+  });
+
+  test("coalesces concurrent active-desktop inventory loads", async () => {
+    const storage = remoteStorage();
+    const original = storage.loadOfflineInventory;
+    let loads = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    storage.loadOfflineInventory = async (desktopId: string) => { loads += 1; await gate; return original(desktopId); };
+    const engine = new SyncEngine({ frontendOnly: true, storage });
+    await engine.start("desk", { x: 0, y: 0 });
+    const first = engine.loadOfflineInventory();
+    const second = engine.loadOfflineInventory();
+    release();
+    await Promise.all([first, second]);
+    expect(loads).toBe(1);
+    await engine.stop();
+  });
+
+  test("suppresses late offline progress after the desktop generation stops", async () => {
+    const storage = remoteStorage();
+    await storage.setOfflinePins("desk", ["file-1"], true);
+    let releaseDownload!: () => void;
+    const downloadGate = new Promise<void>((resolve) => { releaseDownload = resolve; });
+    const progress: Array<{ phase: string; desktopId: string; generation: number; operationId: string }> = [];
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/desktops/desk") return Response.json(remoteDesktopState());
+      if (String(input) === "/api/desktops/desk/entries/file-1/content-access?revision=1") return Response.json({ entryId: "file-1", contentRevision: 1, size: 4, sha256: "edb465624291e4053c6c5ea4b7eb320dec773e10a57d26b95dcf0564f8e310f8", access: { url: "https://downloads.example.test/file-1", method: "GET", headers: {}, expiresAt: 2_000_000_000_000 } });
+      if (String(input) === "https://downloads.example.test/file-1") { await downloadGate; return new Response("note"); }
+      throw new Error(`Unexpected request: ${String(input)}`);
+    }) as typeof fetch;
+    const engine = new SyncEngine({ storage, fetch: fetchImpl, eventSource: FakeEventSource as unknown as typeof EventSource });
+    engine.subscribeOfflineStorage(() => undefined, (value) => { if (value) progress.push(value); });
+    await engine.start("desk", { x: 0, y: 0 });
+    while (!progress.length) await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(progress[0]).toMatchObject({ phase: "downloading", desktopId: "desk" });
+    expect(progress[0].operationId).toBeTruthy();
+    await engine.stop();
+    const countAfterStop = progress.length;
+    releaseDownload();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(progress).toHaveLength(countAfterStop);
   });
 
   test("retries blocked records in order and publishes queue changes", async () => {

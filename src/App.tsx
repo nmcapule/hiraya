@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, CloudCheck, CloudSlash, File as FileGlyph, Folder, FolderPlus, GearSix, HardDrive, Info, Keyboard, LinkSimple, MagnifyingGlass, Plus, ShareNetwork, SpinnerGap, SquaresFour, Trash, UploadSimple, WarningCircle, X } from "@phosphor-icons/react";
+import { BookOpenText, Check, CloudCheck, CloudSlash, Desktop, File as FileGlyph, Folder, FolderOpen, FolderPlus, GearSix, HardDrive, Info, Keyboard, LinkSimple, MagnifyingGlass, Plus, ShareNetwork, SpinnerGap, SquaresFour, Trash, UploadSimple, WarningCircle, X } from "@phosphor-icons/react";
 import seededDesktop from "virtual:hiraya-seeded";
 import { ContextMenu, DesktopContextMenu } from "./components/ContextMenu";
 import { AppWindow } from "./components/AppWindow";
@@ -18,6 +18,7 @@ import { AppPickerDialog } from "./components/AppPickerDialog";
 import { UpdateToast } from "./components/UpdateToast";
 import {
   createFolder,
+  createEntries,
   createDesktop as createDesktopMutation,
   createTextFile,
   deleteCustomTheme,
@@ -51,14 +52,18 @@ import {
   listOutboxRecords,
   retryBlockedOutboxRecord,
   discardBlockedOutboxRecord,
-  isFileAvailableOffline,
-  makeFileAvailableOffline,
-  removeFileFromOfflineCache,
+  loadOfflineInventory,
+  subscribeToOfflineStorage,
+  estimateOfflineOperation,
+  setOfflinePinIntent,
+  refreshPinnedContent,
+  releaseOfflineCopies,
   listTrash,
   restoreTrash,
   permanentlyDeleteTrash,
   stopDesktopSync,
   type SyncStatus,
+  type OfflineOperationProgress,
 } from "./lib/sync";
 import { clearAppStorage, DEFAULT_EDITOR_SETTINGS, installApp, listInstalledApps, pruneLocalDesktops, readAppStorage, readDesktopEntries, readLocalPreferences, readWindowSession, removeAppStorage, saveLocalPreferences, saveWindowSession, switchDesktop as switchLocalDesktop, uninstallApp, writeAppStorage, type DesktopStateSnapshot, type LocalPreferences } from "./lib/opfs";
 import { createPwaUpdater, type PwaUpdater } from "./lib/pwa-update";
@@ -86,6 +91,7 @@ import { AllWindowsPanel } from "./components/AllWindowsPanel";
 import { KeyboardShortcutsPanel } from "./components/KeyboardShortcutsPanel";
 import { TrashWindow } from "./components/TrashWindow";
 import { PanelDialog } from "./components/PanelDialog";
+import { AreasPanel } from "./components/AreasPanel";
 import { ConfirmationDialog, type ConfirmationRequest } from "./components/ConfirmationDialog";
 import { SharingDialog } from "./components/SharingDialog";
 import { canOpenActivity } from "./ui/activity-navigation";
@@ -105,6 +111,12 @@ import { COMPACT_CHROME_QUERY, MOBILE_WINDOW_QUERY, useMediaQuery } from "./ui/r
 import { localSearchResults, searchAccessibleDesktops, type DesktopSearchResult } from "./lib/search";
 import { createTrashNotification, dismissTrashNotification, updateTrashNotification, type TrashNotification } from "./lib/trash-notifications";
 import { isStandalone, pwaInstallState, type InstallPromptEvent } from "./lib/pwa-install";
+import { adjacentArea, areaCoordinateLabel, desktopAreaItems, moveLogicalPositionToArea, persistAreaPositionUpdates } from "./ui/desktop-areas";
+import { assertImportOperationCurrent, buildImportPlan, sourcesFromDirectoryHandle, sourcesFromDirectoryPicker, sourcesFromDrop, supportsDirectoryHandlePicker, supportsDirectoryPicker, type ImportOperationContext, type ImportSource } from "./lib/directory-import";
+import { buildOfflineAvailability, type OfflineStorageInventory } from "./lib/offline-availability";
+import { OfflineStoragePanel } from "./components/OfflineStoragePanel";
+import { HelpPanel } from "./components/HelpPanel";
+import type { HelpSectionId } from "./lib/help";
 
 type BaseRunningApp = { id: string; bounds: WindowBounds; minimized: boolean; zIndex: number };
 type FileApp = BaseRunningApp & { kind: "file"; fileId: string; file?: FileEntry; blob?: File; editable?: boolean; loadError?: string; editMode: boolean; contentRevision: number; remoteChanged: boolean };
@@ -121,6 +133,13 @@ const ONBOARDING_VERSION = 1;
 
 function formatClock(date: Date) {
   return new Intl.DateTimeFormat(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" }).format(date);
+}
+
+function formatImportBytes(value: number) {
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KB`;
+  if (value < 1024 ** 3) return `${(value / 1024 ** 2).toFixed(1)} MB`;
+  return `${(value / 1024 ** 3).toFixed(1)} GB`;
 }
 
 function transientMenuOpen() {
@@ -148,6 +167,7 @@ function App({ session }: { session: AuthSession | null }) {
   const [activeDesktopId, setActiveDesktopId] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [folderImportError, setFolderImportError] = useState("");
   const [notice, setNotice] = useState("");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [dirtyAppIds, setDirtyAppIds] = useState<Set<string>>(() => new Set());
@@ -194,13 +214,15 @@ function App({ session }: { session: AuthSession | null }) {
   const [serverBuildTimestamp, setServerBuildTimestamp] = useState<string | null>(null);
   const [pendingPaste, setPendingPaste] = useState<PendingPaste | null>(null);
   const [marquee, setMarquee] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
-  const [activePanel, setActivePanel] = useState<"search" | "sync" | "windows" | "shortcuts" | "trash" | null>(null);
+  const [activePanel, setActivePanel] = useState<"search" | "sync" | "offline" | "windows" | "areas" | "help" | "shortcuts" | "trash" | null>(null);
+  const [helpSection, setHelpSection] = useState<HelpSectionId>("start-here");
   const [outboxRecords, setOutboxRecords] = useState<OutboxRecord[]>([]);
   const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
   const [confirmation, setConfirmation] = useState<ConfirmationRequest | null>(null);
-  const [offlineAvailability, setOfflineAvailability] = useState<Record<string, boolean | null>>({});
-  const [offlineBusyId, setOfflineBusyId] = useState<string | null>(null);
-  const [importProgress, setImportProgress] = useState<{ count: number; phase: "preparing" | "saving" | "syncing" } | null>(null);
+  const [offlineInventory, setOfflineInventory] = useState<OfflineStorageInventory | null>(null);
+  const [offlineProgress, setOfflineProgress] = useState<OfflineOperationProgress | null>(null);
+  const [offlineBusy, setOfflineBusy] = useState(false);
+  const [importProgress, setImportProgress] = useState<{ folderCount: number; fileCount: number; totalBytes: number; phase: "preparing" | "saving" | "syncing" } | null>(null);
   const [trashNotifications, setTrashNotifications] = useState<TrashNotification[]>([]);
   const [cachedSearchResults, setCachedSearchResults] = useState<DesktopSearchResult[]>([]);
   const [searchAllDesktops, setSearchAllDesktops] = useState(false);
@@ -213,8 +235,10 @@ function App({ session }: { session: AuthSession | null }) {
   const desktopSizeRef = useRef(desktopSize);
   const canvasRef = useRef<HTMLDivElement>(null);
   const uploadRef = useRef<HTMLInputElement>(null);
+  const directoryRef = useRef<HTMLInputElement>(null);
   const uploadParentRef = useRef<string | null>(null);
   const uploadPositionRef = useRef<EntryPosition | undefined>(undefined);
+  const importOperationRef = useRef<ImportOperationContext | null>(null);
   const swipeRef = useRef<{ axis: "x" | "y" | null; pointerId: number; startSegment: { column: number; row: number }; startTime: number; startX: number; startY: number; x: number; y: number } | null>(null);
   const minimapPointerRef = useRef<{
     activated: boolean;
@@ -312,6 +336,15 @@ function App({ session }: { session: AuthSession | null }) {
   const syncIndicatorStatus = syncStatus === "online" && isSyncing ? "syncing" : syncStatus;
   const activeDesktopName = desktops.find((desktop) => desktop.id === activeDesktopId)?.name ?? "Desktop";
   const entryIndex = useMemo(() => createEntryIndex(entries), [entries]);
+  const offlineModel = useMemo(() => buildOfflineAvailability(entries, offlineInventory ?? {
+    desktopId: activeDesktopId,
+    pinIds: [],
+    files: {},
+    cachedBytes: 0,
+    protectedBytes: 0,
+    releasableBytes: 0,
+    browserStorage: null,
+  }, { updatingIds: offlineProgress?.updatingIds, errors: offlineProgress?.errors }), [activeDesktopId, entries, offlineInventory, offlineProgress]);
   const activeTheme = useMemo(() => themePreview ?? resolveTheme(appearance), [appearance, themePreview]);
   const iconMetrics = useMemo(() => themeIconMetrics(activeTheme), [activeTheme]);
   const rootEntries = entryIndex.roots;
@@ -632,6 +665,7 @@ function App({ session }: { session: AuthSession | null }) {
         editable: fileCapabilities(file).editable,
         contentRevision: expectedRevision,
       } : candidate));
+      void loadOfflineInventory().catch(() => undefined);
     }).catch((openError) => {
       if (fileLoadGenerationsRef.current[id] !== generation) return;
       updateRunningApps((current) => current.map((candidate) => candidate.id === id && candidate.kind === "file" ? {
@@ -669,38 +703,30 @@ function App({ session }: { session: AuthSession | null }) {
   function restoreHistoryApps(targets: WindowTarget[]) {
     const historySegment = normalizeDesktopRoute(parseDesktopRoute(window.location.hash), entriesRef.current, activeDesktopIdRef.current);
     const existing = new Map(runningAppsRef.current.map((app) => [app.id, app]));
-    const targetIds = new Set(targets.map(builtinAppTargetId));
-    const reusableExplorers = runningAppsRef.current.filter((app): app is ExplorerApp => app.kind === "explorer" && !targetIds.has(app.id));
     const restored: RunningApp[] = [];
     const filesToLoad: FileApp[] = [];
     for (const target of targets) {
       const id = builtinAppTargetId(target);
       const current = existing.get(id);
-      if (current) {
-        restored.push(current);
-        continue;
-      }
+      if (current) continue;
       if (target.kind === "settings") {
-        restored.push({ ...createAppBase(id, target.kind, restored.length, historySegment), kind: "settings" });
+        restored.push({ ...createAppBase(id, target.kind, runningAppsRef.current.length + restored.length, historySegment), kind: "settings" });
         continue;
       }
       if (target.kind === "explorer") {
         if (target.folderId !== null && entriesRef.current.find((entry) => entry.id === target.folderId)?.kind !== "folder") continue;
-        const reusable = reusableExplorers.shift();
-        restored.push(reusable
-          ? { ...reusable, id, folderId: target.folderId }
-          : { ...createAppBase(id, target.kind, restored.length, historySegment), kind: "explorer", folderId: target.folderId });
+        restored.push({ ...createAppBase(id, target.kind, runningAppsRef.current.length + restored.length, historySegment), kind: "explorer", folderId: target.folderId });
         continue;
       }
       if (target.kind === "properties") {
         if (!entriesRef.current.some((entry) => entry.id === target.entryId)) continue;
-        restored.push({ ...createAppBase(id, target.kind, restored.length, historySegment), kind: "properties", entryId: target.entryId });
+        restored.push({ ...createAppBase(id, target.kind, runningAppsRef.current.length + restored.length, historySegment), kind: "properties", entryId: target.entryId });
         continue;
       }
       const file = entriesRef.current.find((entry): entry is FileEntry => entry.id === target.fileId && entry.kind === "file");
       if (!file) continue;
       const app: FileApp = {
-        ...createAppBase(id, target.kind, restored.length, historySegment),
+        ...createAppBase(id, target.kind, runningAppsRef.current.length + restored.length, historySegment),
         kind: "file",
         fileId: file.id,
         file,
@@ -711,14 +737,7 @@ function App({ session }: { session: AuthSession | null }) {
       restored.push(app);
       filesToLoad.push(app);
     }
-    const restoredIds = new Set(restored.map((app) => app.id));
-    for (const app of runningAppsRef.current) {
-      if (restoredIds.has(app.id)) continue;
-      delete fileDirtyRef.current[app.id];
-      delete fileLoadGenerationsRef.current[app.id];
-    }
-    updateRunningApps(restored);
-    if (focusedAppIdRef.current && !restoredIds.has(focusedAppIdRef.current)) setFocusedApp(null);
+    updateRunningApps([...runningAppsRef.current, ...restored]);
     for (const app of filesToLoad) loadFileApp(app.id, app.file!, app.contentRevision);
   }
 
@@ -824,6 +843,7 @@ function App({ session }: { session: AuthSession | null }) {
       }
       navigationReadyRef.current = true;
       applyLocationRouteRef.current(synced.entries, synced.layout);
+      void loadOfflineInventory().catch(() => undefined);
       setLoading(false);
       restoreSavedWindowSession();
     }, (nextStatus) => {
@@ -832,6 +852,10 @@ function App({ session }: { session: AuthSession | null }) {
       if (nextStatus === "online") setLastSyncedAt(Date.now());
     }, (syncing) => { if (active) setIsSyncing(syncing); });
     const unsubscribeOutbox = subscribeToOutbox((records) => { if (active) setOutboxRecords([...records]); });
+    const unsubscribeOffline = subscribeToOfflineStorage(
+      (inventory) => { if (active && inventory.desktopId === activeDesktopIdRef.current) setOfflineInventory(inventory); },
+      (progress) => { if (active && (!progress || progress.desktopId === activeDesktopIdRef.current)) setOfflineProgress(progress); },
+    );
     const unsubscribeCatalog = subscribeToDesktopCatalog((registry) => {
       if (!active) return;
       desktopsRef.current = registry.desktops;
@@ -881,6 +905,7 @@ function App({ session }: { session: AuthSession | null }) {
         setAppearance(loadedAppearance);
         setSyncStatus(loadedStatus);
         setLoading(false);
+        void loadOfflineInventory().catch(() => undefined);
         restoreSavedWindowSession();
         const routedApps = historyApps(window.history.state);
         if (routedApps) restoreHistoryAppsRef.current(routedApps);
@@ -902,6 +927,7 @@ function App({ session }: { session: AuthSession | null }) {
       active = false;
       unsubscribe();
       unsubscribeOutbox();
+      unsubscribeOffline();
       unsubscribeCatalog();
       void stopDesktopSync();
     };
@@ -917,6 +943,11 @@ function App({ session }: { session: AuthSession | null }) {
     });
     return () => { active = false; };
   }, [activePanel]);
+
+  useEffect(() => {
+    if (activePanel !== "offline" || !activeDesktopId) return;
+    void loadOfflineInventory().catch((reason) => setError(reason instanceof Error ? reason.message : "Offline storage could not be loaded."));
+  }, [activeDesktopId, activePanel]);
 
   useEffect(() => {
     if (activePanel !== "search") return;
@@ -1347,21 +1378,6 @@ function App({ session }: { session: AuthSession | null }) {
     if (wallpaperAssetRef.current) URL.revokeObjectURL(wallpaperAssetRef.current.url);
   }, []);
 
-  const availabilityEntryIds = [contextMenuEntry?.kind === "file" ? contextMenuEntry.id : null, ...runningApps.filter((app): app is PropertiesApp => app.kind === "properties").map((app) => entryIndex.byId.get(app.entryId)?.kind === "file" ? app.entryId : null)].filter((id): id is string => Boolean(id));
-  const availabilityKey = [...new Set(availabilityEntryIds)].sort().join("\n");
-  useEffect(() => {
-    let active = true;
-    for (const id of availabilityKey ? availabilityKey.split("\n") : []) {
-      setOfflineAvailability((current) => ({ ...current, [id]: null }));
-      void isFileAvailableOffline(id).then((available) => {
-        if (active) setOfflineAvailability((current) => ({ ...current, [id]: available }));
-      }).catch(() => {
-        if (active) setOfflineAvailability((current) => ({ ...current, [id]: false }));
-      });
-    }
-    return () => { active = false; };
-  }, [availabilityKey]);
-
   function childrenCount(parentId: string | null) {
     return parentId !== null ? entryIndex.children.get(parentId)?.length ?? 0 : activeDesktopSegment.entries.length;
   }
@@ -1412,11 +1428,56 @@ function App({ session }: { session: AuthSession | null }) {
     setContextMenu({ type: "entry", entryId, x: clientX, y: clientY });
   }
 
+  function captureImportOperation(parentId: string | null, position?: EntryPosition): ImportOperationContext {
+    return { operationId: crypto.randomUUID(), desktopId: activeDesktopIdRef.current, parentId, activationGeneration: activationGenerationRef.current, position };
+  }
+
+  function importOperationIsCurrent(context: ImportOperationContext) {
+    assertImportOperationCurrent(context, { desktopId: activeDesktopIdRef.current, activationGeneration: activationGenerationRef.current, entries: entriesRef.current });
+  }
+
   function chooseUpload(parentId: string | null, position?: EntryPosition) {
     if (!canMutate) return;
+    importOperationRef.current = captureImportOperation(parentId, position);
     uploadParentRef.current = parentId;
     uploadPositionRef.current = position;
     uploadRef.current?.click();
+  }
+
+  async function chooseFolderImport(parentId: string | null, position?: EntryPosition) {
+    if (!canMutate) return;
+    if (!supportsDirectoryPicker()) {
+      reportFolderImportError("Folder import is not supported by this browser. Use Upload files to add files without a folder hierarchy.");
+      return;
+    }
+    const context = captureImportOperation(parentId, position);
+    importOperationRef.current = context;
+    if (supportsDirectoryHandlePicker()) {
+      try {
+        const picker = (window as typeof window & { showDirectoryPicker(): Promise<FileSystemDirectoryHandle> }).showDirectoryPicker;
+        const directory = await picker.call(window);
+        const sources = await sourcesFromDirectoryHandle(directory);
+        importOperationIsCurrent(context);
+        await handleImportSources(sources, context);
+      } catch (reason) {
+        if (!(reason instanceof DOMException && reason.name === "AbortError")) reportFolderImportError(reason instanceof Error ? reason.message : "The selected folder could not be imported.");
+      } finally {
+        if (importOperationRef.current?.operationId === context.operationId) importOperationRef.current = null;
+      }
+      return;
+    }
+    const confirmed = await requestConfirmation({ title: "Import folder with browser fallback?", message: "This browser's folder selector preserves files and their hierarchy, but empty folders cannot be represented and will not be imported.", confirmLabel: "Choose folder" });
+    if (!confirmed) return;
+    try { importOperationIsCurrent(context); }
+    catch (reason) { if (reason instanceof DOMException && reason.name === "AbortError") return; throw reason; }
+    uploadParentRef.current = parentId;
+    uploadPositionRef.current = position;
+    directoryRef.current?.click();
+  }
+
+  function reportFolderImportError(message: string) {
+    setFolderImportError(message);
+    setError(message);
   }
 
   function previewLayout(next: DesktopLayout, desktopId: string) {
@@ -1598,6 +1659,7 @@ function App({ session }: { session: AuthSession | null }) {
     setError("");
     setDialog(null);
     setContextMenu(null);
+    setImportProgress(null);
     setMoveDialogEntryIds([]);
     windowSessionReadyRef.current = false;
     try {
@@ -1605,9 +1667,12 @@ function App({ session }: { session: AuthSession | null }) {
       await layoutSaveRef.current;
       await stopDesktopSync();
       syncStopped = true;
+      setOfflineInventory(null);
+      setOfflineProgress(null);
       const desktop = await switchLocalDesktop(desktopId);
       await applyActivatedDesktopState(desktopId, desktop);
       await initializeDesktop(desktopId, { x: window.innerWidth, y: Math.max(1, window.innerHeight - 44) });
+      await loadOfflineInventory();
       if (activationGenerationRef.current !== token || activeDesktopIdRef.current !== desktopId) throw new Error("Desktop activation lost ownership.");
       return true;
     } catch (switchError) {
@@ -1616,7 +1681,8 @@ function App({ session }: { session: AuthSession | null }) {
           await stopDesktopSync();
           const previous = await switchLocalDesktop(previousDesktopId);
           await applyActivatedDesktopState(previousDesktopId, previous);
-          await initializeDesktop(previousDesktopId, { x: window.innerWidth, y: Math.max(1, window.innerHeight - 44) });
+           await initializeDesktop(previousDesktopId, { x: window.innerWidth, y: Math.max(1, window.innerHeight - 44) });
+          await loadOfflineInventory();
         } catch (rollbackError) {
           setError(rollbackError instanceof Error ? `Desktop activation failed and rollback failed: ${rollbackError.message}` : "Desktop activation and rollback failed.");
           return false;
@@ -1709,35 +1775,71 @@ function App({ session }: { session: AuthSession | null }) {
     setDialog(null);
   }
 
-  async function handleImport(sources: File[], parentId: string | null, base?: EntryPosition) {
+  async function handleImportSources(sources: readonly ImportSource[], context: ImportOperationContext) {
     if (!sources.length || !canMutate) return;
+    importOperationIsCurrent(context);
+    const { parentId, position: base } = context;
+    setFolderImportError("");
     setError("");
-    setImportProgress({ count: sources.length, phase: "preparing" });
+    setImportProgress({ folderCount: 0, fileCount: sources.filter((source) => source.file).length, totalBytes: sources.reduce((total, source) => total + (source.file?.size ?? 0), 0), phase: "preparing" });
     try {
       const offset = childrenCount(parentId);
       const occupied = parentId === null
         ? activeDesktopSegment.entries.map((entry) => responsive.positions.get(entry.id) ?? projectLogicalPosition(entry.position, desktopSize).local)
         : [];
-      const positions = sources.map((_, index) => {
+      const positionForRoot = (index: number) => {
         if (parentId !== null) return nextRootEntryPosition(offset + index, window.innerHeight, base, iconMetrics);
         const localPosition = base && index === 0
           ? layoutRef.current.snapToGrid ? snapPositionInView(base) : base
           : nextAvailableDesktopSlot(desktopSize, occupied, responsive.segments.length > 1, offset + index, iconMetrics);
         occupied.push(localPosition);
         return restoreLogicalPosition(localPosition, activeSegment, desktopSize);
-      });
-      setImportProgress({ count: sources.length, phase: syncStatus === "local" ? "saving" : "syncing" });
-      const imported = await importFiles(sources, parentId, positions);
+      };
+      const plan = buildImportPlan(sources, { destinationParentId: parentId, existingEntries: entriesRef.current, positionForRoot });
+      setImportProgress({ folderCount: plan.folderCount, fileCount: plan.fileCount, totalBytes: plan.totalBytes, phase: syncStatus === "online" ? "syncing" : "saving" });
+      importOperationIsCurrent(context);
+      const imported = await createEntries(plan.entries, plan.contents);
       setEntries((current) => {
         const existingIds = new Set(current.map((entry) => entry.id));
         return [...current, ...imported.filter((entry) => !existingIds.has(entry.id))];
       });
-      replaceSelection(parentId === null ? "desktop" : `explorer:${parentId}`, imported.map((entry) => entry.id));
-      setNotice(`${imported.length} ${imported.length === 1 ? "file" : "files"} added`);
+      replaceSelection(parentId === null ? "desktop" : `explorer:${parentId}`, plan.rootIds);
+      setNotice(`${plan.folderCount} ${plan.folderCount === 1 ? "folder" : "folders"} and ${plan.fileCount} ${plan.fileCount === 1 ? "file" : "files"} added`);
     } catch (importError) {
-      setError(importError instanceof Error ? importError.message : "The upload could not be completed.");
+      if (!(importError instanceof DOMException && importError.name === "AbortError")) reportFolderImportError(importError instanceof Error ? importError.message : "The import could not be completed.");
     } finally {
-      setImportProgress(null);
+      if (importOperationRef.current?.operationId === context.operationId) {
+        importOperationRef.current = null;
+        setImportProgress(null);
+      }
+    }
+  }
+
+  async function handleImport(files: File[], parentId: string | null, base?: EntryPosition) {
+    const context = captureImportOperation(parentId, base);
+    importOperationRef.current = context;
+    await handleImportSources(files.map((file) => ({ relativePath: file.name, file })), context);
+  }
+
+  async function handleExternalDrop(dataTransfer: DataTransfer, parentId: string | null, base?: EntryPosition) {
+    if (!canMutate) return;
+    const context = captureImportOperation(parentId, base);
+    importOperationRef.current = context;
+    setFolderImportError("");
+    setError("");
+    setImportProgress({ folderCount: 0, fileCount: 0, totalBytes: 0, phase: "preparing" });
+    try {
+      const sources = await sourcesFromDrop(dataTransfer);
+      if (!sources.length) return;
+      importOperationIsCurrent(context);
+      await handleImportSources(sources, context);
+    } catch (dropError) {
+      if (!(dropError instanceof DOMException && dropError.name === "AbortError")) reportFolderImportError(dropError instanceof Error ? dropError.message : "The dropped items could not be imported.");
+    } finally {
+      if (importOperationRef.current?.operationId === context.operationId) {
+        importOperationRef.current = null;
+        setImportProgress(null);
+      }
     }
   }
   handleImportRef.current = handleImport;
@@ -2100,21 +2202,47 @@ function App({ session }: { session: AuthSession | null }) {
     }
   }
 
-  async function changeOfflineAvailability(file: FileEntry, available: boolean) {
-    if (offlineBusyId) return;
-    setOfflineBusyId(file.id);
+  async function makeAvailableOffline(rootIds: string[]) {
+    if (offlineBusy) return;
+    setOfflineBusy(true);
     setError("");
     try {
-      if (available) await makeFileAvailableOffline(file.id);
-      else await removeFileFromOfflineCache(file.id);
-      setOfflineAvailability((current) => ({ ...current, [file.id]: available }));
-      setNotice(available ? `${file.name} is available offline` : `Offline copy of ${file.name} removed`);
+      const estimate = await estimateOfflineOperation(rootIds);
+      if ((estimate.fileCount >= 50 || estimate.downloadBytes >= 100 * 1024 * 1024) && !await requestConfirmation({
+        title: "Make this selection available offline?",
+        message: `${estimate.fileCount} files may download (${formatImportBytes(estimate.downloadBytes)}). Folder pins also include new descendants after synchronization.`,
+        confirmLabel: "Make available",
+      })) return;
+      await setOfflinePinIntent(estimate.roots, true);
+      setNotice(syncStatus === "offline" ? "Offline pin saved. Download will occur after reconnect." : `${estimate.fileCount} ${estimate.fileCount === 1 ? "file is" : "files are"} available or updating for offline use`);
       setContextMenu(null);
     } catch (availabilityError) {
       setError(availabilityError instanceof Error ? availabilityError.message : "Offline availability could not be changed.");
     } finally {
-      setOfflineBusyId(null);
+      setOfflineBusy(false);
     }
+  }
+
+  async function unpinOffline(rootIds: string[]) {
+    if (offlineBusy) return;
+    setOfflineBusy(true);
+    try {
+      await setOfflinePinIntent(rootIds, false);
+      setNotice("Offline pin removed. Existing downloaded copies remain until released.");
+      setContextMenu(null);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "The offline pin could not be removed."); }
+    finally { setOfflineBusy(false); }
+  }
+
+  async function removeDownloadedCopies(rootIds?: string[]) {
+    if (offlineBusy) return;
+    setOfflineBusy(true);
+    try {
+      const released = await releaseOfflineCopies(rootIds);
+      setNotice(released.releasedFiles ? `${released.releasedFiles} downloaded ${released.releasedFiles === 1 ? "copy" : "copies"} released (${formatImportBytes(released.releasedBytes)})` : released.skippedFiles ? "No copies released. Pinned or protected content was kept." : "No eligible downloaded copies found.");
+      setContextMenu(null);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Downloaded copies could not be released."); }
+    finally { setOfflineBusy(false); }
   }
 
   async function undoMoveToTrash(pending: TrashNotification) {
@@ -2228,7 +2356,7 @@ function App({ session }: { session: AuthSession | null }) {
       anchor.download = "hiraya-seeded.zip";
       anchor.click();
       window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-      setNotice("Desktop package exported");
+      setNotice("Deployment seed exported");
     } catch (exportError) {
       setError(exportError instanceof Error ? exportError.message : "The desktop could not be exported.");
     } finally {
@@ -2295,6 +2423,53 @@ function App({ session }: { session: AuthSession | null }) {
     const moved = { ...app, bounds: { ...app.bounds, ...restoreLogicalPosition(projection.local, segment, size) } };
     updateRunningApps((current) => current.map((candidate) => candidate.id === id ? moved : candidate));
     goToSegment(segment, "push", moved);
+  }
+
+  function moveAppToSegment(id: string, segment: SurfaceSegment, navigate = true) {
+    const app = runningAppsRef.current.find((candidate) => candidate.id === id);
+    if (!app) return;
+    const bounds = { ...app.bounds, ...moveLogicalPositionToArea(app.bounds, segment, desktopSizeRef.current) };
+    const moved = { ...app, minimized: false, bounds };
+    updateRunningApps((current) => current.map((candidate) => candidate.id === id ? moved : candidate));
+    if (navigate) goToSegment(segment, "push", moved);
+  }
+
+  async function moveRootItemsToSegment(ids: readonly string[], segment: SurfaceSegment, announce = true): Promise<boolean> {
+    if (!canMutate) return false;
+    const idSet = new Set(ids);
+    const updates = entriesRef.current
+      .filter((entry) => entry.parentId === null && idSet.has(entry.id))
+      .map((entry) => ({ entryId: entry.id, position: moveLogicalPositionToArea(entry.position, segment, desktopSizeRef.current) }));
+    if (!updates.length) return true;
+    const previous = new Map(entriesRef.current.map((entry) => [entry.id, entry.position]));
+    const positions = new Map(updates.map((update) => [update.entryId, update.position]));
+    const next = entriesRef.current.map((entry) => positions.has(entry.id) ? { ...entry, position: positions.get(entry.id)! } : entry);
+    entriesRef.current = next;
+    setEntries(next);
+    if (await persistAreaPositionUpdates(updates, updateRootEntryPositions)) {
+      if (announce) setNotice(`${updates.length} root ${updates.length === 1 ? "item" : "items"} moved`);
+      return true;
+    }
+    const restored = entriesRef.current.map((entry) => previous.has(entry.id) ? { ...entry, position: previous.get(entry.id)! } : entry);
+    entriesRef.current = restored;
+    setEntries(restored);
+    setError("The selected items could not be moved to that area.");
+    return false;
+  }
+
+  async function moveAreaContentsToCurrent(source: SurfaceSegment) {
+    if (!canMutate) return;
+    const rootIds = entriesRef.current.filter((entry) => entry.parentId === null && segmentKey(projectLogicalPosition(entry.position, desktopSizeRef.current).segment) === segmentKey(source)).map((entry) => entry.id);
+    if (!await moveRootItemsToSegment(rootIds, activeSegment, false)) return;
+    for (const app of runningAppsRef.current.filter((candidate) => segmentKey(segmentForApp(candidate)) === segmentKey(source))) moveAppToSegment(app.id, activeSegment, false);
+    setNotice("Area contents moved; the empty derived area was removed");
+  }
+
+  function showDesktop() {
+    for (const app of runningAppsRef.current) if (app.kind === "sandbox") appLifecycle.setHostState({ appId: app.package.manifest.id, instanceId: app.id }, { focused: false });
+    setFocusedApp(null);
+    const currentRoute = routeRef.current;
+    if (currentRoute) navigateRoute({ desktopId: activeDesktopIdRef.current, column: currentRoute.column, row: currentRoute.row }, "replace");
   }
 
   windowCommandRef.current = { maximize: toggleMaximizeApp, move: moveAppToArea };
@@ -2581,9 +2756,9 @@ function App({ session }: { session: AuthSession | null }) {
   }
 
   function startMinimapPress(event: React.PointerEvent<HTMLButtonElement>, pressedSegmentKey: string) {
-    if (event.button !== 0 || !canMutate) return;
+    if (event.button !== 0) return;
     const press = {
-      activated: editingAreas,
+      activated: canMutate && editingAreas,
       pointerId: event.pointerId,
       startX: event.clientX,
       startY: event.clientY,
@@ -2594,12 +2769,12 @@ function App({ session }: { session: AuthSession | null }) {
         .map((entry) => ({ entryId: entry.id, position: { ...entry.position } })),
       initialAppBounds: runningAppsRef.current.map((app) => ({ appId: app.id, bounds: { ...app.bounds } })),
     };
-    press.timer = window.setTimeout(() => {
+    press.timer = canMutate ? window.setTimeout(() => {
       press.activated = true;
       setEditingAreas(true);
       setDraggedSegmentKey(pressedSegmentKey);
       suppressClickRef.current = true;
-    }, editingAreas ? 0 : MINIMAP_LONG_PRESS_MS);
+    }, editingAreas ? 0 : MINIMAP_LONG_PRESS_MS) : 0;
     minimapPointerRef.current = press;
     event.currentTarget.setPointerCapture(event.pointerId);
   }
@@ -2670,8 +2845,15 @@ function App({ session }: { session: AuthSession | null }) {
   const windowItems: WindowListItem[] = runningApps.map((app) => {
     const area = segmentForApp(app);
     const areaIndex = visibleSegments.findIndex((candidate) => candidate.key === segmentKey(area));
-    return { id: app.id, title: runningAppLabel(app), areaId: segmentKey(area), areaLabel: `Area ${areaIndex >= 0 ? areaIndex + 1 : `${area.column}, ${area.row}`}`, minimized: app.minimized };
+    return { id: app.id, title: runningAppLabel(app), areaId: segmentKey(area), areaLabel: `Area ${areaIndex >= 0 ? areaIndex + 1 : "outside current list"} · ${areaCoordinateLabel(area)}`, minimized: app.minimized };
   });
+  const areaItems = desktopAreaItems(occupiedSegments.map((area) => ({
+    segment: area.segment,
+    rootItemCount: area.entries.length,
+    windowCount: runningApps.filter((app) => segmentKey(segmentForApp(app)) === area.key).length,
+  })), activeSegment);
+  const selectedRootIds = selectedEntries.filter((entry) => entry.parentId === null).map((entry) => entry.id);
+  const focusedApp = runningApps.find((app) => app.id === focusedAppId);
   const commandContext: AppCommandContext = {
     canMutate,
     canOpenTrash,
@@ -2679,6 +2861,7 @@ function App({ session }: { session: AuthSession | null }) {
     createFile: () => setDialog({ type: "create-file", parentId: null }),
     createFolder: () => setDialog({ type: "create-folder", parentId: null }),
     uploadFiles: () => chooseUpload(null),
+    importFolder: () => chooseFolderImport(null),
     openSettings: openSettingsWindow,
     openPanel: setActivePanel,
   };
@@ -2700,11 +2883,16 @@ function App({ session }: { session: AuthSession | null }) {
     void commandService.execute(commandId, commandContext);
   }
 
+  function openHelp(section: HelpSectionId = "start-here") {
+    setHelpSection(section);
+    setActivePanel("help");
+  }
+
   return (
     <main className="desktop-shell" data-theme={isBuiltinThemeId(appearance.selectedThemeId) ? appearance.selectedThemeId : "custom"} style={themeStyle(activeTheme)}>
       <header className="menu-bar">
         {activeDesktopId && <DesktopSwitcher desktops={desktops} activeDesktopId={activeDesktopId} disabled={loading} quota={catalogQuota} quotaStale={syncStatus === "offline"} onSwitch={(id) => void activateDesktop(id)} onCreate={createDesktop} onRename={renameDesktop} onDelete={deleteDesktop} canManageDesktop={(desktop) => desktop.ownership === "owned" || syncStatus === "online"} />}
-        <nav className="taskbar" aria-label="Open windows">
+        {!isMobile ? <nav className="taskbar" aria-label="Open windows">
           {runningApps.map((app) => {
             const entry = app.kind === "file" ? entryIndex.byId.get(app.fileId) : app.kind === "properties" ? entryIndex.byId.get(app.entryId) : app.kind === "explorer" && app.folderId ? entryIndex.byId.get(app.folderId) : null;
             const label = runningAppLabel(app);
@@ -2726,27 +2914,46 @@ function App({ session }: { session: AuthSession | null }) {
               </button>
             );
           })}
-        </nav>
+        </nav> : <nav className="mobile-window-nav" aria-label="Desktop and open windows">
+          <button type="button" className="mobile-window-nav__desktop" aria-label="Show Desktop without closing open windows" onClick={showDesktop}><Desktop size={18} /><span>Desktop</span></button>
+          <span className="mobile-window-nav__title" aria-live="polite">{focusedApp ? runningAppLabel(focusedApp) : "Desktop"}</span>
+          <MobileHeaderMenu label={`Switch windows, ${runningApps.length} open`} icon={<span className="mobile-window-nav__count"><SquaresFour size={18} /><b>{runningApps.length}</b></span>}>
+            {(dismiss) => <>
+              <button type="button" aria-current={!focusedAppId ? "page" : undefined} onClick={() => { dismiss(); showDesktop(); }}><Desktop size={18} /> Desktop <small>{areaItems.find((area) => area.current)?.label}</small></button>
+              {windowItems.map((window) => <button type="button" key={window.id} aria-current={window.id === focusedAppId ? "page" : undefined} onClick={() => { dismiss(); focusApp(window.id); }}><SquaresFour size={18} /><span>{window.title}</span><small>{window.areaLabel}{window.minimized ? " · Minimized" : ""}</small></button>)}
+              <span className="mobile-header-menu__separator" />
+              <button type="button" onClick={() => { dismiss(); setActivePanel("areas"); }}><Desktop size={18} /> Areas</button>
+            </>}
+          </MobileHeaderMenu>
+        </nav>}
         <div className="menu-bar__actions">
           {compactChrome ? (
             <MobileHeaderMenu label="Create or upload" icon={<Plus size={18} weight="bold" />}>
               {(dismiss) => <>
                 <button type="button" disabled={!canMutate} onClick={() => { dismiss(); setDialog({ type: "create-file", parentId: null }); }}><FileGlyph size={17} /> New text file</button>
                 <button type="button" disabled={!canMutate} onClick={() => { dismiss(); setDialog({ type: "create-folder", parentId: null }); }}><FolderPlus size={17} /> New folder</button>
-                <button type="button" disabled={!canMutate} onClick={() => { dismiss(); chooseUpload(null); }}><UploadSimple size={17} /> Upload files</button>
+                 <button type="button" disabled={!canMutate} onClick={() => { dismiss(); chooseUpload(null); }}><UploadSimple size={17} /> Upload files</button>
+                 <button type="button" disabled={!canMutate} onClick={() => { dismiss(); chooseFolderImport(null); }}><FolderOpen size={17} /> Import folder</button>
               </>}
             </MobileHeaderMenu>
           ) : <>
             <button type="button" aria-label="New text file" disabled={!canMutate} onClick={() => setDialog({ type: "create-file", parentId: null })}><Plus size={15} weight="bold" /> <span>New text file</span></button>
             <button type="button" aria-label="New folder" disabled={!canMutate} onClick={() => setDialog({ type: "create-folder", parentId: null })}><FolderPlus size={16} /> <span>New folder</span></button>
-            <button type="button" aria-label="Upload files" disabled={!canMutate} onClick={() => chooseUpload(null)}><UploadSimple size={16} /> <span>Upload files</span></button>
+             <button type="button" aria-label="Upload files" disabled={!canMutate} onClick={() => chooseUpload(null)}><UploadSimple size={16} /> <span>Upload files</span></button>
+             <button type="button" aria-label="Import folder" disabled={!canMutate} onClick={() => chooseFolderImport(null)}><FolderOpen size={16} /> <span>Import folder</span></button>
             <button type="button" aria-label="Search files, windows, and commands" title="Search (Ctrl/Command K)" onClick={() => setActivePanel("search")}><MagnifyingGlass size={16} /></button>
+            <button type="button" aria-label="Open Areas" title="Areas" onClick={() => setActivePanel("areas")}><Desktop size={16} /></button>
+            <button type="button" aria-label="Open Offline Storage" title="Offline Storage" onClick={() => setActivePanel("offline")}><CloudCheck size={16} /></button>
+            <button type="button" aria-label="Open User Guide" title="User Guide" onClick={() => openHelp()}><BookOpenText size={16} /></button>
             <button type="button" aria-label="Show all windows" title="All windows" onClick={() => setActivePanel("windows")}><SquaresFour size={16} /></button>
             {canOpenTrash && <button type="button" aria-label="Open Trash" title="Trash" onClick={() => setActivePanel("trash")}><Trash size={16} /></button>}
           </>}
           {compactChrome ? <MobileHeaderMenu label="Navigation and tools" icon={<GearSix size={18} />}>
             {(dismiss) => <>
               <button type="button" onClick={() => { dismiss(); setActivePanel("search"); }}><MagnifyingGlass size={17} /> Search</button>
+              <button type="button" onClick={() => { dismiss(); setActivePanel("areas"); }}><Desktop size={17} /> Areas</button>
+              <button type="button" onClick={() => { dismiss(); setActivePanel("offline"); }}><CloudCheck size={17} /> Offline Storage</button>
+              <button type="button" onClick={() => { dismiss(); openHelp(); }}><BookOpenText size={17} /> User Guide</button>
               <button type="button" onClick={() => { dismiss(); setActivePanel("windows"); }}><SquaresFour size={17} /> All windows</button>
               {canOpenTrash && <button type="button" onClick={() => { dismiss(); setActivePanel("trash"); }}><Trash size={17} /> Trash</button>}
               <button type="button" onClick={() => { dismiss(); setActivePanel("shortcuts"); }}><Keyboard size={17} /> Keyboard shortcuts</button>
@@ -2801,7 +3008,7 @@ function App({ session }: { session: AuthSession | null }) {
           event.preventDefault();
           delete event.currentTarget.dataset.dropActive;
           const bounds = event.currentTarget.getBoundingClientRect();
-          void handleImport(Array.from(event.dataTransfer.files), null, {
+          void handleExternalDrop(event.dataTransfer, null, {
             x: event.clientX - bounds.left - iconMetrics.width / 2,
             y: event.clientY - bounds.top - iconMetrics.height / 2,
           });
@@ -2830,6 +3037,7 @@ function App({ session }: { session: AuthSession | null }) {
             return <FileIcon
               key={entry.id}
               entry={renderedEntry}
+              offlineAvailability={offlineModel.entries[entry.id]}
               selected={selectedIdSet.has(entry.id)}
               onSelect={(event) => selectEntry("desktop", entry, { toggle: event.metaKey || event.ctrlKey })}
               onOpen={() => void handleOpen(entry)}
@@ -2837,7 +3045,7 @@ function App({ session }: { session: AuthSession | null }) {
               onDragAtEdge={(clientX, clientY) => handleIconDragAtEdge(entry, clientX, clientY)}
               onDragEnd={finishEdgeNavigation}
               getSnapPreview={layout.snapToGrid ? snapRootEntryPosition : undefined}
-              onExternalDrop={(sources) => void handleImport(sources, entry.id)}
+              onExternalDrop={(dataTransfer) => void handleExternalDrop(dataTransfer, entry.id)}
               onContextMenu={(event) => {
                 event.preventDefault();
                 if (!selectedIdSet.has(entry.id)) replaceSelection("desktop", [entry.id]);
@@ -2853,19 +3061,34 @@ function App({ session }: { session: AuthSession | null }) {
         {marquee && <div className="desktop-marquee" aria-hidden="true" style={{ left: marquee.left, top: marquee.top, width: marquee.width, height: marquee.height }} />}
 
         {loading && <div className="desktop-state desktop-state--loading" role="status"><span className="loading-line" /><span className="loading-line loading-line--short" /><span className="visually-hidden">Loading desktop...</span></div>}
-        {!loading && rootEntries.length === 0 && (
+        {!loading && rootEntries.length === 0 && activeSegment.column === 0 && activeSegment.row === 0 && (
           <div className="desktop-state empty-state">
             <span className="empty-state__icon"><HardDrive size={28} weight="duotone" /></span>
             <h1>Your space is ready.</h1>
-            <p>{offlineSharedNotice || (syncStatus === "local" ? "Create an item or drop files anywhere. Items are saved only in this browser." : canMutate ? "Create an item or drop files anywhere. Items are saved to this shared desktop and synchronized by the Hiraya server." : "This desktop is read only for your account.")}</p>
+            <p>{offlineSharedNotice || (syncStatus === "local" ? "Create an item, import a folder, or drop files anywhere. Items are saved only in this browser." : canMutate ? "Create an item, import a folder, or drop files anywhere. Items are saved to this shared desktop and synchronized by the Hiraya server." : "This desktop is read only for your account.")}</p>
             <div className="empty-state__actions">
               <button className="button button--primary" type="button" disabled={!canMutate} onClick={() => setDialog({ type: "create-file", parentId: null })}><Plus size={17} /> New text file</button>
               <button className="button button--quiet" type="button" disabled={!canMutate} onClick={() => setDialog({ type: "create-folder", parentId: null })}><FolderPlus size={17} /> New folder</button>
-              <button className="button button--quiet" type="button" disabled={!canMutate} onClick={() => chooseUpload(null)}><UploadSimple size={17} /> Upload files</button>
+               <button className="button button--quiet" type="button" disabled={!canMutate} onClick={() => chooseUpload(null)}><UploadSimple size={17} /> Upload files</button>
+               <button className="button button--quiet" type="button" disabled={!canMutate} onClick={() => chooseFolderImport(null)}><FolderOpen size={17} /> Import folder</button>
             </div>
           </div>
         )}
-        <div className="drop-message" aria-hidden="true"><UploadSimple size={25} /> Drop files to add them</div>
+        {!loading && (rootEntries.length > 0 || activeSegment.column !== 0 || activeSegment.row !== 0) && activeDesktopSegment.entries.length === 0 && !runningApps.some((app) => appIsInSegment(app, activeSegment)) && (
+          <div className="desktop-state area-empty-state">
+            <span className="empty-state__icon"><Desktop size={28} weight="duotone" /></span>
+            <h1>This area is empty.</h1>
+            <p>This coordinate region remains available in this viewport after you place a root item or window here.</p>
+            <div className="empty-state__actions">
+               <button className="button button--primary" type="button" disabled={!canMutate} onClick={() => setDialog({ type: "create-folder", parentId: null })}><FolderPlus size={17} /> Create folder here</button>
+               <button className="button button--quiet" type="button" disabled={!canMutate} onClick={() => chooseUpload(null)}><UploadSimple size={17} /> Upload files here</button>
+               <button className="button button--quiet" type="button" disabled={!canMutate} onClick={() => chooseFolderImport(null)}><FolderOpen size={17} /> Import folder here</button>
+              <button className="button button--quiet" type="button" disabled={!canMutate || selectedRootIds.length === 0} onClick={() => void moveRootItemsToSegment(selectedRootIds, activeSegment)}>Move selected root items here</button>
+              <button className="button button--quiet" type="button" disabled={runningApps.length === 0} onClick={() => setActivePanel("windows")}><SquaresFour size={17} /> Move a window here</button>
+            </div>
+          </div>
+        )}
+        <div className="drop-message" aria-hidden="true"><UploadSimple size={25} /> Drop files or folders to add them</div>
 
         <div className="app-window-layer" aria-label="Open windows">
           {runningApps.map((app, index) => {
@@ -2955,7 +3178,10 @@ function App({ session }: { session: AuthSession | null }) {
                     onOpen={handleOpen}
                     onCreateFolder={(parentId) => setDialog({ type: "create-folder", parentId })}
                     onCreateFile={(parentId) => setDialog({ type: "create-file", parentId })}
-                    onUpload={chooseUpload}
+                     onUpload={chooseUpload}
+                     onImportFolder={chooseFolderImport}
+                     onExternalDrop={(dataTransfer, parentId) => void handleExternalDrop(dataTransfer, parentId)}
+                    offlineAvailability={offlineModel.entries}
                     onMove={(entry, parentId) => void handleMoveTo(selectionScope === app.id && selectedIdSet.has(entry.id) ? selectedEntries : [entry], parentId)}
                     onContextMenu={(entry, x, y) => {
                       if (selectionScope !== app.id || !selectedIdSet.has(entry.id)) replaceSelection(app.id, [entry.id]);
@@ -2976,10 +3202,11 @@ function App({ session }: { session: AuthSession | null }) {
                     rootLabel={activeDesktopName}
                     ancestors={entryIndex.ancestors(propertiesEntry.id)}
                     descendants={propertiesEntry.kind === "folder" ? entryIndex.descendants(propertiesEntry.id) : []}
-                    offlineAvailable={propertiesEntry.kind === "file" ? offlineAvailability[propertiesEntry.id] ?? null : undefined}
-                    offlineBusy={offlineBusyId === propertiesEntry.id}
-                    onMakeAvailableOffline={propertiesEntry.kind === "file" && syncStatus !== "local" ? () => void changeOfflineAvailability(propertiesEntry, true) : undefined}
-                    onRemoveOfflineCopy={propertiesEntry.kind === "file" && syncStatus !== "local" ? () => void changeOfflineAvailability(propertiesEntry, false) : undefined}
+                    offlineAvailability={offlineModel.entries[propertiesEntry.id]}
+                    offlineBusy={offlineBusy || offlineProgress?.phase === "downloading"}
+                    onMakeAvailableOffline={syncStatus !== "local" ? () => void makeAvailableOffline([propertiesEntry.id]) : undefined}
+                    onUnpin={offlineModel.entries[propertiesEntry.id]?.directlyPinned ? () => void unpinOffline([propertiesEntry.id]) : undefined}
+                    onRemoveOfflineCopy={syncStatus !== "local" ? () => void removeDownloadedCopies([propertiesEntry.id]) : undefined}
                   />
                 )}
                 {app.kind === "settings" && (
@@ -3047,6 +3274,8 @@ function App({ session }: { session: AuthSession | null }) {
                     onSearchAllDesktopsChange={(enabled) => void changeSearchAllDesktops(enabled)}
                     onOpenGettingStarted={() => setShowGettingStarted(true)}
                     onInstall={() => void installPwa()}
+                    onOpenOfflineStorage={() => setActivePanel("offline")}
+                    onOpenHelp={openHelp}
                   />
                 )}
                 </>}
@@ -3058,12 +3287,10 @@ function App({ session }: { session: AuthSession | null }) {
 
       {(segmentColumns > 1 || segmentRows > 1 || occupiedSegments.length > 1) && (
         <nav className="desktop-minimap" data-editing={editingAreas || undefined} data-obscured={minimapObscured || undefined} aria-label={`${activeDesktopName} desktop areas`}>
-          {editingAreas && (
-            <div className="desktop-minimap__toolbar">
-              <span>Arrange desktop areas</span>
-              <button type="button" onClick={() => { setEditingAreas(false); setDraggedSegmentKey(null); }}><Check size={12} /> Done</button>
-            </div>
-          )}
+          <div className="desktop-minimap__toolbar">
+            <span>{editingAreas ? "Arrange desktop areas" : "Desktop areas"}</span>
+            <button type="button" disabled={!canMutate || !editingAreas && occupiedSegments.length < 2} aria-pressed={editingAreas} onClick={() => { setEditingAreas((current) => !current); setDraggedSegmentKey(null); }}>{editingAreas ? <><Check size={12} /> Done</> : "Arrange"}</button>
+          </div>
           <span className="desktop-minimap__summary">Area {Math.max(1, visibleSegments.findIndex((candidate) => candidate.key === activeSegmentKey) + 1)} of {visibleSegments.length}</span>
           <div className="desktop-minimap__grid" style={{ "--minimap-columns": segmentColumns, "--minimap-rows": segmentRows } as React.CSSProperties}>
             {visibleSegments.map((desktopSegment, visibleIndex) => {
@@ -3078,7 +3305,7 @@ function App({ session }: { session: AuthSession | null }) {
                     className="desktop-minimap__area"
                     data-active={currentSegmentKey === activeSegmentKey || undefined}
                     type="button"
-                    aria-label={`${activeDesktopName}, area ${visibleIndex + 1} of ${visibleSegments.length}${currentSegmentKey === activeSegmentKey ? ", current area" : ""}${editingAreas && isOccupiedSegment ? ", use arrow keys to move" : isOccupiedSegment ? ", long press to arrange" : ""}`}
+                    aria-label={`${activeDesktopName}, area ${visibleIndex + 1} of ${visibleSegments.length}${currentSegmentKey === activeSegmentKey ? ", current area" : ""}${canMutate && editingAreas && isOccupiedSegment ? ", use arrow keys to move" : canMutate && isOccupiedSegment ? ", long press to arrange" : ""}`}
                     aria-current={currentSegmentKey === activeSegmentKey ? "true" : undefined}
                     onClick={(event) => { if (event.detail === 0 && !editingAreas) goToSegment(desktopSegment.segment); }}
                     onContextMenu={isOccupiedSegment && canMutate ? (event) => { event.preventDefault(); setEditingAreas(true); } : undefined}
@@ -3087,7 +3314,7 @@ function App({ session }: { session: AuthSession | null }) {
                     onPointerUp={(event) => finishMinimapPress(event)}
                     onPointerCancel={(event) => finishMinimapPress(event, true)}
                     onKeyDown={(event) => {
-                      if ((event.shiftKey && event.key === "F10") || event.key === "ContextMenu") {
+                      if (canMutate && ((event.shiftKey && event.key === "F10") || event.key === "ContextMenu")) {
                         event.preventDefault();
                         setEditingAreas(true);
                       } else if (editingAreas && isOccupiedSegment && (event.key === "ArrowLeft" || event.key === "ArrowUp")) {
@@ -3119,19 +3346,28 @@ function App({ session }: { session: AuthSession | null }) {
       )}
 
       <input ref={uploadRef} className="visually-hidden" type="file" multiple onChange={(event) => {
-        const position = uploadPositionRef.current;
+        const context = importOperationRef.current ?? captureImportOperation(uploadParentRef.current, uploadPositionRef.current);
         uploadPositionRef.current = undefined;
-        void handleImport(Array.from(event.target.files ?? []), uploadParentRef.current, position);
+        const files = Array.from(event.target.files ?? []);
+        if (files.length) void handleImportSources(files.map((file) => ({ relativePath: file.name, file })), context);
+        event.target.value = "";
+      }} />
+      <input ref={(element) => { directoryRef.current = element; element?.setAttribute("webkitdirectory", ""); }} className="visually-hidden" type="file" multiple onChange={(event) => {
+        const context = importOperationRef.current ?? captureImportOperation(uploadParentRef.current, uploadPositionRef.current);
+        uploadPositionRef.current = undefined;
+        const files = Array.from(event.target.files ?? []);
+        if (files.length) void handleImportSources(sourcesFromDirectoryPicker(files), context);
+        else reportFolderImportError("No files were selected. This browser fallback cannot represent empty folders; use a browser with the File System Access folder picker or drag the folder onto Hiraya.");
         event.target.value = "";
       }} />
 
       {(error || notice || trashNotifications.length > 0 || appNotifications.length > 0) && <div className="notification-stack">
-        {error && <div className="error-banner" role="alert"><WarningCircle size={19} weight="fill" /><span>{error}</span><button type="button" onClick={() => setError("")} aria-label="Dismiss error">Dismiss</button></div>}
+        {error && <div className="error-banner" role="alert"><WarningCircle size={19} weight="fill" /><span>{error}</span>{error === folderImportError && <button type="button" onClick={() => openHelp("files-and-folders")}>Folder import help</button>}<button type="button" onClick={() => { setError(""); setFolderImportError(""); }} aria-label="Dismiss error">Dismiss</button></div>}
         {notice && <div className="notice" role="status"><span>{notice}</span><button type="button" aria-label="Dismiss notice" onClick={() => setNotice("")}><X size={14} /></button></div>}
         {trashNotifications.map((notification) => <div className="notice notice--actionable" role={notification.state === "failed" ? "alert" : "status"} key={notification.id}><span><strong>{notification.label} moved to Trash</strong>{notification.state === "running" ? " Restoring..." : notification.error ? ` ${notification.error}` : " Undo remains available until dismissed."}</span><button type="button" disabled={notification.state === "running"} onClick={() => void undoMoveToTrash(notification)}>{notification.state === "failed" ? "Retry Undo" : "Undo"}</button><button type="button" disabled={notification.state === "running"} onClick={() => void openTrashNotification(notification)}>View Trash</button><button type="button" disabled={notification.state === "running"} aria-label={`Dismiss Trash notification for ${notification.label}`} onClick={() => setTrashNotifications((current) => dismissTrashNotification(current, notification.id))}>Dismiss</button></div>)}
         {appNotifications.map((notification) => <div className="notice" role="status" key={notification.id}><span>{[notification.title, notification.body].filter(Boolean).join(": ")}</span><button type="button" aria-label="Dismiss app notification" onClick={() => appHostServices.notifications.dismiss(notification.owner, notification.id)}><X size={14} /></button></div>)}
       </div>}
-      {importProgress && <div className="import-progress" role="status" aria-live="polite"><SpinnerGap size={18} /><div><strong>{importProgress.phase === "preparing" ? "Preparing import" : importProgress.phase === "saving" ? "Saving files locally" : "Saving and synchronizing files"}</strong><span>{importProgress.count} {importProgress.count === 1 ? "file" : "files"}. This API does not support safe cancellation or byte-level progress.</span></div></div>}
+      {importProgress && <div className="import-progress" role="status" aria-live="polite"><SpinnerGap size={18} /><div><strong>{importProgress.phase === "preparing" ? "Preparing import" : importProgress.phase === "saving" ? "Staging and saving import" : "Staging and synchronizing import"}</strong><span>{importProgress.folderCount} {importProgress.folderCount === 1 ? "folder" : "folders"}, {importProgress.fileCount} {importProgress.fileCount === 1 ? "file" : "files"}, {formatImportBytes(importProgress.totalBytes)}</span></div></div>}
       {showUpdateToast && (
         <UpdateToast
           applying={updateApplying}
@@ -3160,10 +3396,16 @@ function App({ session }: { session: AuthSession | null }) {
           onDownload={contextMenuEntry.kind === "file" ? () => void download(contextMenuEntry) : undefined}
           onCopy={() => void copySelection()}
           onCopyLink={contextMenuEntries.length === 1 ? () => void copyDeepLink(contextMenuEntry) : undefined}
-          offlineAvailable={contextMenuEntry.kind === "file" ? offlineAvailability[contextMenuEntry.id] ?? null : undefined}
-          onMakeAvailableOffline={contextMenuEntry.kind === "file" && syncStatus !== "local" ? () => void changeOfflineAvailability(contextMenuEntry, true) : undefined}
-          onRemoveOfflineCopy={contextMenuEntry.kind === "file" && syncStatus !== "local" ? () => void changeOfflineAvailability(contextMenuEntry, false) : undefined}
+          onMakeAvailableOffline={syncStatus !== "local" && contextMenuEntries.some((entry) => !offlineModel.entries[entry.id]?.pinned) ? () => void makeAvailableOffline(contextMenuEntries.map((entry) => entry.id)) : undefined}
+          onUnpinOffline={contextMenuEntries.some((entry) => offlineModel.entries[entry.id]?.directlyPinned) ? () => void unpinOffline(contextMenuEntries.map((entry) => entry.id)) : undefined}
+          onRemoveOfflineCopy={syncStatus !== "local" && contextMenuEntries.some((entry) => {
+            const availability = offlineModel.entries[entry.id]; return availability?.cached && !availability.pinned && !availability.protected;
+          }) ? () => void removeDownloadedCopies(contextMenuEntries.map((entry) => entry.id)) : undefined}
+          onOpenOfflineStorage={() => { setActivePanel("offline"); setContextMenu(null); }}
+          offlineBusy={offlineBusy || offlineProgress?.phase === "downloading"}
           onPasteInto={contextMenuEntry.kind === "folder" && clipboardRef.current ? () => void beginPaste(contextMenuEntry.id) : undefined}
+          onUploadInto={contextMenuEntry.kind === "folder" ? () => { chooseUpload(contextMenuEntry.id); setContextMenu(null); } : undefined}
+          onImportFolderInto={contextMenuEntry.kind === "folder" ? () => { chooseFolderImport(contextMenuEntry.id); setContextMenu(null); } : undefined}
           onMove={() => { setMoveDialogSubmitting(false); setMoveDialogEntryIds(contextMenuEntries.map((entry) => entry.id)); setContextMenu(null); }}
           onProperties={() => { openPropertiesWindow(contextMenuEntry.id); setContextMenu(null); }}
           onDelete={() => { setDialog({ type: "delete", entryIds: contextMenuEntries.map((entry) => entry.id) }); setContextMenu(null); }}
@@ -3185,6 +3427,10 @@ function App({ session }: { session: AuthSession | null }) {
           }}
           onUpload={() => {
             chooseUpload(contextMenu.parentId, contextMenu.position);
+            setContextMenu(null);
+          }}
+          onImportFolder={() => {
+            chooseFolderImport(contextMenu.parentId, contextMenu.position);
             setContextMenu(null);
           }}
           onSettings={() => {
@@ -3258,15 +3504,18 @@ function App({ session }: { session: AuthSession | null }) {
             : operation.kind === "update-entry" || operation.kind === "save-content" ? [operation.entry.id]
               : operation.kind === "create" ? operation.entries.map((entry) => entry.id) : [];
         return ids.map((id) => entriesRef.current.find((entry) => entry.id === id)?.name).filter((name): name is string => Boolean(name));
-      }} onRetry={(record) => void retryBlockedOutboxRecord(record.operationId).catch((reason) => setError(reason instanceof Error ? reason.message : "The queued change could not be retried."))} onDiscard={(record) => void requestConfirmation({ title: "Discard queued change?", message: "Discard this blocked local change and restore the server version? This cannot be undone.", confirmLabel: "Discard change", danger: true }).then(async (confirmed) => {
+      }} onOpenHelp={() => openHelp("troubleshooting")} onRetry={(record) => void retryBlockedOutboxRecord(record.operationId).catch((reason) => setError(reason instanceof Error ? reason.message : "The queued change could not be retried."))} onDiscard={(record) => void requestConfirmation({ title: "Discard queued change?", message: "Discard this blocked local change and restore the server version? This cannot be undone.", confirmLabel: "Discard change", danger: true }).then(async (confirmed) => {
         if (!confirmed) return;
         try { setOutboxRecords(await discardBlockedOutboxRecord(record.operationId)); }
         catch (reason) { setError(reason instanceof Error ? reason.message : "The queued change could not be discarded."); }
       })} /></PanelDialog>}
+      {activePanel === "offline" && <PanelDialog title="Offline Storage" onClose={() => setActivePanel(null)}><OfflineStoragePanel entries={entries} inventory={offlineInventory} model={offlineModel} progress={offlineProgress} online={syncStatus === "online"} onRetry={() => void refreshPinnedContent()} onUnpin={(ids) => void unpinOffline(ids)} onReleaseAll={() => void removeDownloadedCopies()} onOpenHelp={() => openHelp("offline")} /></PanelDialog>}
       {activePanel === "windows" && <PanelDialog title="All windows" onClose={() => setActivePanel(null)}><AllWindowsPanel windows={windowItems} activeAreaId={activeSegmentKey} focusedWindowId={focusedAppId ?? undefined} onFocusWindow={(id) => { focusApp(id); setActivePanel(null); }} onNavigateArea={(id) => { const [row, column] = id.split(":").map(Number); if (Number.isSafeInteger(row) && Number.isSafeInteger(column)) goToSegment({ row, column }); }} /></PanelDialog>}
+      {activePanel === "areas" && <PanelDialog title="Areas" onClose={() => setActivePanel(null)}><AreasPanel areas={areaItems} canMutate={canMutate} selectedRootCount={selectedRootIds.length} focusedWindowTitle={focusedApp ? runningAppLabel(focusedApp) : undefined} arranging={editingAreas} onArrangeChange={setEditingAreas} onCreateAdjacent={(direction) => { goToSegment(adjacentArea(activeSegment, direction)); setActivePanel(null); }} onGo={(segment) => { goToSegment(segment); setActivePanel(null); }} onMoveSelected={(segment) => void moveRootItemsToSegment(selectedRootIds, segment)} onMoveFocusedWindow={(segment) => { if (focusedAppId) moveAppToSegment(focusedAppId, segment); setActivePanel(null); }} onMoveContentsAndRemove={(segment) => void moveAreaContentsToCurrent(segment)} onArrange={(key, offset) => { const index = occupiedSegments.findIndex((area) => area.key === key); if (index < 0) return; const initial = entriesRef.current.filter((entry) => entry.parentId === null).map((entry) => ({ entryId: entry.id, position: { ...entry.position } })); const initialApps = runningAppsRef.current.map((app) => ({ appId: app.id, bounds: { ...app.bounds } })); if (previewSegmentMove(key, index + offset)) persistArrangement(initial, initialApps); }} onOpenHelp={() => openHelp("desktops-and-areas")} /></PanelDialog>}
+      {activePanel === "help" && <PanelDialog title="User Guide" onClose={() => setActivePanel(null)}><HelpPanel section={helpSection} onSectionChange={setHelpSection} /></PanelDialog>}
       {activePanel === "shortcuts" && <PanelDialog title="Keyboard shortcuts" onClose={() => setActivePanel(null)}><KeyboardShortcutsPanel shortcuts={keyboardShortcuts} /></PanelDialog>}
       {activePanel === "trash" && activeDesktop?.capabilities.read && syncStatus !== "local" && <PanelDialog title="Trash" onClose={() => setActivePanel(null)}><TrashWindow readOnly={!canMutate} onListTrash={() => listTrash(activeDesktopId)} onRestore={async (item, destination) => { await restoreTrash(activeDesktopId, item.entry.id, destination); setNotice(`${item.entry.name} restored`); }} onPermanentlyDelete={async (item) => { await permanentlyDeleteTrash(activeDesktopId, item.entry.id); setNotice(`${item.entry.name} permanently deleted`); }} onRequestPermanentDelete={(item: TrashItem, confirmedDelete) => { void requestConfirmation({ title: `Delete ${item.entry.name} permanently?`, message: "This item and everything inside it will be permanently deleted. This cannot be undone.", confirmLabel: "Delete permanently", danger: true }).then((confirmed) => { if (confirmed) void confirmedDelete().catch(() => undefined); }); }} /></PanelDialog>}
-      {sharingOpen && activeDesktop?.capabilities.manage && <SharingDialog desktop={activeDesktop} onClose={() => setSharingOpen(false)} />}
+      {sharingOpen && activeDesktop?.capabilities.manage && <SharingDialog desktop={activeDesktop} onClose={() => setSharingOpen(false)} onOpenHelp={() => { setSharingOpen(false); openHelp("sharing"); }} />}
       {confirmation && <ConfirmationDialog {...confirmation} onClose={resolveConfirmation} />}
       {showGettingStarted && <GettingStartedDialog local={syncStatus === "local"} installState={installState} onInstall={() => void installPwa()} onClose={() => void closeGettingStarted()} />}
     </main>

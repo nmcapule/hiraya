@@ -11,7 +11,7 @@ import {
   type PersistedDesktopState,
 } from "./desktop-state";
 import { normalizeDesktopName, parseDesktopIdentity, parseLayout, parsePosition, parseRootEntryPositionUpdates } from "./contracts";
-import { createStorageDbRequest, type StorageDbMethod, type StorageDbRequests, type StorageDbResponse, type StorageDbResponses } from "./opfs-db-protocol";
+import { createStorageDbRequest, parseOfflinePinResponse, parseStorageProtocol, type StorageDbMethod, type StorageDbRequests, type StorageDbResponse, type StorageDbResponses } from "./opfs-db-protocol";
 import { wallpaperAfterEntryRemoval, type OutboxOperation, type OutboxRecord } from "./outbox";
 import { DEFAULT_THEME_STATE, parseCustomTheme, parseThemeState, type CustomTheme, type ThemeState } from "./themes";
 import { parseWindowSession, type WindowSession } from "./window-session";
@@ -21,6 +21,7 @@ import { localDesktopIdentity } from "./permissions";
 import { parseInstalledApp, type InstalledApp } from "../apps/installed-apps";
 import { parseJsonValue, type JsonValue } from "@hiraya/apps-contracts";
 import { storageWorkerName } from "./storage-worker";
+import { buildOfflineAvailability, dedupeOfflineRoots, offlineFilesUnderRoots, outboxProtectedFileIds, type OfflineStorageInventory } from "./offline-availability";
 
 const FILES_DIRECTORY = "files";
 const PENDING_DIRECTORY = "pending";
@@ -220,6 +221,7 @@ function isNotFound(error: unknown): error is DOMException {
 async function initializeDatabase(): Promise<void> {
   await getRoot();
   await callDatabase("status", undefined);
+  parseStorageProtocol(await callDatabase("protocol", undefined, null));
 }
 
 async function readActiveDesktopState(seeded: SeededManifest | null = null): Promise<DesktopState> {
@@ -273,11 +275,32 @@ function operationContentIds(operation: OutboxOperation) {
   return [];
 }
 
-async function stageOperationContents(operationId: string, contents: Map<string, Blob>) {
+async function globallyProtectedFileIdsUnsafe(records: readonly OutboxRecord[]) {
+  const registry = await callDatabase("listDesktops", undefined, null);
+  const states: Manifest[] = [];
+  for (const desktop of registry.desktops) states.push(parseManifestV13(await callDatabase("readDesktop", { desktopId: desktop.id }, null)));
+  return outboxProtectedFileIds(records, states);
+}
+
+export async function stageOperationContentsInDirectory(
+  pending: FileSystemDirectoryHandle,
+  operationId: string,
+  contents: Map<string, Blob>,
+  write: (directory: FileSystemDirectoryHandle, name: string, content: Blob) => Promise<void> = writeHandleContent,
+) {
   if (contents.size === 0) return;
-  const pending = await getPendingDirectory();
-  const operationDirectory = await pending.getDirectoryHandle(operationId, { create: true });
-  for (const [id, content] of contents) await writeHandleContent(operationDirectory, id, content);
+  try {
+    const operationDirectory = await pending.getDirectoryHandle(operationId, { create: true });
+    for (const [id, content] of contents) await write(operationDirectory, id, content);
+  } catch (error) {
+    try { await pending.removeEntry(operationId, { recursive: true }); }
+    catch (cleanupError) { if (!isNotFound(cleanupError)) console.warn("Hiraya could not clean up partially staged content.", cleanupError); }
+    throw error;
+  }
+}
+
+async function stageOperationContents(operationId: string, contents: Map<string, Blob>) {
+  await stageOperationContentsInDirectory(await getPendingDirectory(), operationId, contents);
 }
 
 async function readStagedContent(operationId: string, id: string) {
@@ -345,7 +368,7 @@ let hostedDatabaseRequestId: number | null = null;
 let requestId = 0;
 const pendingRequests = new Map<number, { resolve(value: unknown): void; reject(error: Error): void }>();
 const OWNER_CHANGED_MESSAGE = "The local database owner changed. Retry the operation.";
-const RETRYABLE_OWNER_CHANGE_METHODS = new Set<StorageDbMethod>(["status", "listDesktops", "readDesktop", "readPreferences", "readWindowSession", "readOutbox", "listActivity"]);
+const RETRYABLE_OWNER_CHANGE_METHODS = new Set<StorageDbMethod>(["status", "protocol", "listDesktops", "readDesktop", "readPreferences", "readWindowSession", "readOutbox", "listActivity", "listOfflinePins"]);
 const DATABASE_REQUEST_TIMEOUT_MS = 15_000;
 const STORAGE_LOCK_TIMEOUT_MS = 30_000;
 
@@ -1154,8 +1177,8 @@ async function removeCachedFileUnsafe(desktopId: string, catalogId: string, id: 
   const manifest = parseManifestV13(await callDatabase("readDesktop", { desktopId }, null));
   const entry = getFileEntry(manifest.entries, id);
   if (manifest.sync.catalogId !== catalogId || manifest.sync.contentRevisions[id] !== contentRevision) return false;
-  const hasPendingContent = (await callDatabase("readOutbox", undefined, null)).some((record) => operationContentIds(record.operation).includes(id));
-  if (hasPendingContent) throw new Error("Pending file content cannot be removed from offline storage.");
+  const protectedIds = await globallyProtectedFileIdsUnsafe(await callDatabase("readOutbox", undefined, null));
+  if (protectedIds.has(id)) throw new Error("Pending file content cannot be removed from offline storage.");
   const marker = await readContentCacheMarker(id);
   if (!marker || marker.catalogId !== catalogId || marker.contentRevision !== contentRevision || marker.size !== entry.size) return false;
 
@@ -1167,6 +1190,75 @@ async function removeCachedFileUnsafe(desktopId: string, catalogId: string, id: 
     if (!isNotFound(error)) throw error;
   }
   return true;
+}
+
+async function loadOfflineInventoryUnsafe(desktopId: string): Promise<OfflineStorageInventory> {
+  const manifest = parseManifestV13(await callDatabase("readDesktop", { desktopId }, null));
+  const pinIds = parseOfflinePinResponse(await callDatabase("listOfflinePins", { desktopId }, desktopId), desktopId);
+  const outbox = await callDatabase("readOutbox", undefined, null);
+  const pendingIds = new Set(outbox.flatMap((record) => operationContentIds(record.operation)));
+  const globallyProtectedIds = await globallyProtectedFileIdsUnsafe(outbox);
+  const authoritativeLocal = FRONTEND_ONLY || manifest.sync.catalogId === null;
+  const files: OfflineStorageInventory["files"] = {};
+  let cachedBytes = 0;
+  let protectedBytes = 0;
+  let releasableBytes = 0;
+  const directory = await getFilesDirectory();
+
+  for (const entry of manifest.entries) {
+    if (entry.kind !== "file") continue;
+    const pending = pendingIds.has(entry.id) || globallyProtectedIds.has(entry.id);
+    const protectedContent = authoritativeLocal || globallyProtectedIds.has(entry.id);
+    let storedSize: number | null = null;
+    try { storedSize = (await (await directory.getFileHandle(entry.id)).getFile()).size; }
+    catch (error) { if (!isNotFound(error)) throw error; }
+    if (protectedContent) {
+      const available = storedSize === entry.size;
+      files[entry.id] = { cached: available, cachedBytes: 0, storedBytes: storedSize ?? 0, pending, protected: true };
+      if (available) protectedBytes += entry.size;
+      continue;
+    }
+    const marker = await readContentCacheMarker(entry.id);
+    const revision = manifest.sync.contentRevisions[entry.id];
+    const valid = marker !== null && marker.catalogId === manifest.sync.catalogId && marker.contentRevision === revision && marker.size === entry.size && storedSize === entry.size;
+    files[entry.id] = { cached: valid, cachedBytes: valid ? entry.size : 0, storedBytes: storedSize ?? 0, pending: false, protected: false };
+    if (valid) cachedBytes += entry.size;
+    if (storedSize !== null) releasableBytes += storedSize;
+  }
+  let browserStorage: OfflineStorageInventory["browserStorage"] = null;
+  try {
+    const estimate = await navigator.storage.estimate();
+    if (Number.isFinite(estimate.usage) && Number.isFinite(estimate.quota)) browserStorage = { usage: estimate.usage!, quota: estimate.quota! };
+  } catch { /* Browser-wide storage estimates are optional. */ }
+  return { desktopId, pinIds, files, cachedBytes, protectedBytes, releasableBytes, browserStorage };
+}
+
+async function setOfflinePinsUnsafe(desktopId: string, entryIds: string[], pinned: boolean) {
+  const manifest = parseManifestV13(await callDatabase("readDesktop", { desktopId }, null));
+  const roots = pinned ? dedupeOfflineRoots(manifest.entries, entryIds) : [...new Set(entryIds)];
+  if (!pinned && (roots.length !== entryIds.length || roots.some((id) => !manifest.entries.some((entry) => entry.id === id)))) throw new Error("An offline selection contains an entry that no longer exists.");
+  return parseOfflinePinResponse(await callDatabase("setOfflinePins", { desktopId, entryIds: roots, pinned, createdAt: Date.now() }, desktopId), desktopId);
+}
+
+async function releaseOfflineCopiesUnsafe(desktopId: string, rootIds?: string[]) {
+  const manifest = parseManifestV13(await callDatabase("readDesktop", { desktopId }, null));
+  const inventory = await loadOfflineInventoryUnsafe(desktopId);
+  const model = buildOfflineAvailability(manifest.entries, inventory);
+  const candidates = rootIds ? offlineFilesUnderRoots(manifest.entries, rootIds) : manifest.entries.filter((entry): entry is FileEntry => entry.kind === "file");
+  let releasedBytes = 0;
+  let releasedFiles = 0;
+  let skippedFiles = 0;
+  const directory = await getFilesDirectory();
+  for (const file of candidates) {
+    const stored = inventory.files[file.id];
+    if (!stored?.storedBytes) continue;
+    if (stored.protected || model.entries[file.id]?.pinned) { skippedFiles += 1; continue; }
+    await removeContentCacheMarker(file.id);
+    try { await directory.removeEntry(file.id); } catch (error) { if (!isNotFound(error)) throw error; }
+    releasedBytes += stored.storedBytes;
+    releasedFiles += 1;
+  }
+  return { releasedBytes, releasedFiles, skippedFiles };
 }
 
 async function captureDesktopStateUnsafe(): Promise<{
@@ -1311,6 +1403,9 @@ export function readFile(id: FileEntry["id"]) { return serializeStorage(() => re
 export function readCachedFile(desktopId: string, catalogId: string, id: FileEntry["id"], contentRevision: number) { return serializeStorage(() => readCachedFileUnsafe(desktopId, catalogId, id, contentRevision)); }
 export function cacheRemoteFile(desktopId: string, catalogId: string, id: FileEntry["id"], contentRevision: number, content: Blob) { return serializeStorage(() => cacheRemoteFileUnsafe(desktopId, catalogId, id, contentRevision, content)); }
 export function removeCachedFile(desktopId: string, catalogId: string, id: FileEntry["id"], contentRevision: number) { return serializeStorage(() => removeCachedFileUnsafe(desktopId, catalogId, id, contentRevision)); }
+export function loadOfflineInventory(desktopId: string) { return serializeStorage(() => loadOfflineInventoryUnsafe(desktopId)); }
+export function setOfflinePins(desktopId: string, entryIds: string[], pinned: boolean) { return serializeStorage(() => setOfflinePinsUnsafe(desktopId, entryIds, pinned)); }
+export function releaseOfflineCopies(desktopId: string, rootIds?: string[]) { return serializeStorage(() => releaseOfflineCopiesUnsafe(desktopId, rootIds)); }
 export function captureDesktopState() { return serializeStorage(() => captureDesktopStateUnsafe()); }
 export function readDesktopState(desktopId: string) { return serializeStorage(() => readDesktopStateUnsafe(desktopId)); }
 export function readFileByRelativePath(fromFileId: FileEntry["id"], relativePath: string) { return serializeStorage(() => readFileByRelativePathUnsafe(fromFileId, relativePath)); }

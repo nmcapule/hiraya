@@ -6,6 +6,7 @@ import {
   File as FileGlyph,
   FilePlus,
   Folder,
+  FolderOpen,
   FolderPlus,
   ListBullets,
   MagnifyingGlass,
@@ -19,6 +20,7 @@ import type { DesktopEntry, FolderEntry } from "../types";
 import { filterAndSortEntries, formatEntrySize, type FolderSortKey, type SortDirection } from "../ui/folder-explorer";
 import type { AppWindowHeaderElements } from "./AppWindow";
 import { MobileHeaderMenu } from "./MobileHeaderMenu";
+import { offlineStatusLabel, type OfflineEntryAvailability } from "../lib/offline-availability";
 
 export interface FolderExplorerProps {
   folder: FolderEntry | null;
@@ -31,6 +33,8 @@ export interface FolderExplorerProps {
   onCreateFolder: (parentId: string | null) => void;
   onCreateFile: (parentId: string | null) => void;
   onUpload: (parentId: string | null) => void;
+  onImportFolder: (parentId: string | null) => void;
+  onExternalDrop: (dataTransfer: DataTransfer, parentId: string | null) => void;
   onContextMenu: (entry: DesktopEntry, x: number, y: number) => void;
   onBlankContextMenu: (parentId: string | null, x: number, y: number) => void;
   selectedIds: ReadonlySet<string>;
@@ -38,6 +42,7 @@ export interface FolderExplorerProps {
   onMove: (entry: DesktopEntry, targetParentId: string | null) => void;
   readOnly?: boolean;
   headerElements?: AppWindowHeaderElements;
+  offlineAvailability?: Readonly<Record<string, OfflineEntryAvailability>>;
 }
 
 type DragState = {
@@ -65,6 +70,8 @@ export function FolderExplorer({
   onCreateFolder,
   onCreateFile,
   onUpload,
+  onImportFolder,
+  onExternalDrop,
   onContextMenu,
   onBlankContextMenu,
   selectedIds,
@@ -72,6 +79,7 @@ export function FolderExplorer({
   onMove,
   readOnly = false,
   headerElements,
+  offlineAvailability = {},
 }: FolderExplorerProps) {
   const drag = useRef<DragState | null>(null);
   const dropTarget = useRef<HTMLElement | null>(null);
@@ -191,6 +199,7 @@ export function FolderExplorer({
               <button type="button" disabled={readOnly} onClick={() => { dismiss(); onCreateFolder(parentId); }}><FolderPlus size={17} /> New folder</button>
               <button type="button" disabled={readOnly} onClick={() => { dismiss(); onCreateFile(parentId); }}><FilePlus size={17} /> New text file</button>
               <button type="button" disabled={readOnly} onClick={() => { dismiss(); onUpload(parentId); }}><UploadSimple size={17} /> Upload files</button>
+              <button type="button" disabled={readOnly} onClick={() => { dismiss(); onImportFolder(parentId); }}><FolderOpen size={17} /> Import folder</button>
             </>}
           </MobileHeaderMenu>,
           headerElements.actions,
@@ -219,9 +228,15 @@ export function FolderExplorer({
             <button type="button" aria-label="List view" aria-pressed={view === "list"} onClick={() => setView("list")}><ListBullets size={18} /></button>
             <button type="button" aria-label="Grid view" aria-pressed={view === "grid"} onClick={() => setView("grid")}><SquaresFour size={18} /></button>
           </div>
+          <button className="folder-explorer__tool-button folder-explorer__import" type="button" disabled={readOnly} onClick={() => onUpload(parentId)}><UploadSimple size={18} /><span>Upload files</span></button>
+          <button className="folder-explorer__tool-button folder-explorer__import" type="button" disabled={readOnly} onClick={() => onImportFolder(parentId)}><FolderOpen size={18} /><span>Import folder</span></button>
         </div>
 
-        <div className="folder-explorer__content" onContextMenu={(event) => {
+        <div className="folder-explorer__content" onDragOver={(event) => { if (!readOnly) event.preventDefault(); }} onDrop={(event) => {
+          if (readOnly || (event.target as Element).closest(".folder-explorer__row[data-folder-target]")) return;
+          event.preventDefault();
+          onExternalDrop(event.dataTransfer, parentId);
+        }} onContextMenu={(event) => {
           if ((event.target as Element).closest(".folder-explorer__row")) return;
           event.preventDefault();
           onBlankContextMenu(parentId, event.clientX, event.clientY);
@@ -234,6 +249,7 @@ export function FolderExplorer({
                 <button className="button button--primary" type="button" onClick={() => onCreateFile(parentId)}><FilePlus size={17} /> New text file</button>
                 <button className="button button--quiet" type="button" onClick={() => onCreateFolder(parentId)}><FolderPlus size={17} /> New folder</button>
                 <button className="button button--quiet" type="button" onClick={() => onUpload(parentId)}><UploadSimple size={17} /> Upload</button>
+                <button className="button button--quiet" type="button" onClick={() => onImportFolder(parentId)}><FolderOpen size={17} /> Import folder</button>
               </div>}
             </div>
           ) : orderedChildren.length === 0 ? (
@@ -250,6 +266,7 @@ export function FolderExplorer({
                   key={entry.id}
                   type="button"
                   aria-pressed={selectedIds.has(entry.id)}
+                  aria-label={`${entry.name}, ${entry.kind === "folder" ? "folder" : entry.mimeType || "file"}${offlineAvailability[entry.id] ? `, ${offlineStatusLabel(offlineAvailability[entry.id])}` : ""}`}
                   data-selected={selectedIds.has(entry.id) || undefined}
                   data-folder-target={entry.kind === "folder" ? entry.id : undefined}
                   onClick={(event) => {
@@ -280,6 +297,9 @@ export function FolderExplorer({
                     if (!selectedIds.has(entry.id)) onSelect(entry, { toggle: false, range: false, orderedIds });
                     onContextMenu(entry, event.clientX, event.clientY);
                   }}
+                  onDragOver={entry.kind === "folder" && !readOnly ? (event) => { event.preventDefault(); event.currentTarget.dataset.dropTarget = "true"; } : undefined}
+                  onDragLeave={entry.kind === "folder" && !readOnly ? (event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) delete event.currentTarget.dataset.dropTarget; } : undefined}
+                  onDrop={entry.kind === "folder" && !readOnly ? (event) => { event.preventDefault(); event.stopPropagation(); delete event.currentTarget.dataset.dropTarget; onExternalDrop(event.dataTransfer, entry.id); } : undefined}
                   onPointerDown={(event) => handlePointerDown(event, entry)}
                   onPointerMove={handlePointerMove}
                   onPointerUp={(event) => finishPointer(event)}
@@ -287,7 +307,7 @@ export function FolderExplorer({
                 >
                   {entry.kind === "folder" ? <Folder size={24} weight="duotone" /> : <FileGlyph size={24} weight="duotone" />}
                   <span className="folder-explorer__name">{entry.name}</span>
-                  <span className="folder-explorer__kind">{entry.kind === "folder" ? "Folder" : entry.mimeType || "File"}</span>
+                  <span className="folder-explorer__kind">{entry.kind === "folder" ? "Folder" : entry.mimeType || "File"}{offlineAvailability[entry.id] && <small data-offline-status={offlineAvailability[entry.id].status}>{offlineStatusLabel(offlineAvailability[entry.id])}</small>}</span>
                   <time className="folder-explorer__date" dateTime={new Date(entry.modifiedAt).toISOString()}>{dateFormatter.format(entry.modifiedAt)}</time>
                   <span className="folder-explorer__size">{formatEntrySize(entry)}</span>
                 </button>

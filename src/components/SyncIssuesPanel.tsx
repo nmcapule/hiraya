@@ -11,6 +11,7 @@ export type SyncIssuesPanelProps = {
   affectedLabels?: (record: OutboxRecord) => readonly string[];
   onRetry: (record: OutboxRecord) => void;
   onDiscard: (record: OutboxRecord) => void;
+  onOpenHelp?: () => void;
 };
 
 function statusCopy(status: SyncStatus, recordCount: number, lastSyncedAt?: number | null) {
@@ -21,7 +22,7 @@ function statusCopy(status: SyncStatus, recordCount: number, lastSyncedAt?: numb
   return recordCount > 0 ? "Connected. Pending changes will sync automatically." : "Connected. Everything is up to date.";
 }
 
-export function SyncIssuesPanel({ status, records, lastSyncedAt, affectedLabels, onRetry, onDiscard }: SyncIssuesPanelProps) {
+export function SyncIssuesPanel({ status, records, lastSyncedAt, affectedLabels, onRetry, onDiscard, onOpenHelp }: SyncIssuesPanelProps) {
   const groups = partitionSyncRecords(records);
   const titleId = useId();
   return <section className="sync-issues-panel" aria-labelledby={titleId}>
@@ -45,5 +46,6 @@ export function SyncIssuesPanel({ status, records, lastSyncedAt, affectedLabels,
         </li>;
       })}</ul>
     </section>)}
+    {onOpenHelp && <button className="inline-help-link" type="button" onClick={onOpenHelp}>Sync and offline troubleshooting</button>}
   </section>;
 }

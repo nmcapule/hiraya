@@ -67,6 +67,7 @@ describe("app command contributions", () => {
       createFile: () => calls.push("file"),
       createFolder: () => calls.push("folder"),
       uploadFiles: () => calls.push("upload"),
+      importFolder: () => calls.push("import-folder"),
       openSettings: () => calls.push("settings"),
       openPanel: (panel) => calls.push(panel),
     };
@@ -76,8 +77,12 @@ describe("app command contributions", () => {
       APP_COMMAND_IDS.newFile,
       APP_COMMAND_IDS.newFolder,
       APP_COMMAND_IDS.upload,
+      APP_COMMAND_IDS.importFolder,
       APP_COMMAND_IDS.trash,
+      APP_COMMAND_IDS.areas,
+      APP_COMMAND_IDS.offline,
       APP_COMMAND_IDS.windows,
+      APP_COMMAND_IDS.help,
       APP_COMMAND_IDS.shortcuts,
       APP_COMMAND_IDS.sync,
     ]);

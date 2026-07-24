@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowClockwise, ArrowLeft, ArrowsOut, CaretRight, ClockCounterClockwise, CornersIn, CornersOut, DownloadSimple, ExportIcon, GlobeSimple, GridFour, ImageSquare, Info, MagnifyingGlass, PaintBrush, Package, Play, Trash, UploadSimple } from "@phosphor-icons/react";
+import { ArrowClockwise, ArrowLeft, ArrowsOut, BookOpenText, CaretRight, ClockCounterClockwise, CloudCheck, CornersIn, CornersOut, DownloadSimple, ExportIcon, GlobeSimple, GridFour, ImageSquare, Info, MagnifyingGlass, PaintBrush, Package, Play, Trash, UploadSimple } from "@phosphor-icons/react";
 import { ActivityLog } from "./ActivityLog";
 import type { ActivityPage, ActivityQuery } from "../lib/activity";
 import type { ActivityRecord } from "../lib/activity";
@@ -100,6 +100,8 @@ type Props = {
   onSearchAllDesktopsChange: (enabled: boolean) => void;
   onOpenGettingStarted: () => void;
   onInstall: () => void;
+  onOpenOfflineStorage: () => void;
+  onOpenHelp: (section?: "start-here" | "installation-and-updates" | "apps-and-permissions" | "export-backup-and-recovery") => void;
 };
 
 type NumberControlProps = {
@@ -196,6 +198,8 @@ export function SettingsWindow({
   onSearchAllDesktopsChange,
   onOpenGettingStarted,
   onInstall,
+  onOpenOfflineStorage,
+  onOpenHelp,
 }: Props) {
   const [draft, setDraft] = useState<CustomTheme | null>(null);
   const [saving, setSaving] = useState(false);
@@ -402,6 +406,12 @@ export function SettingsWindow({
               </button>
             </section>
 
+            <section className="settings-section" aria-labelledby="offline-storage-link-heading">
+              <button className="settings-row settings-row--navigation" type="button" onClick={onOpenOfflineStorage}>
+                <span className="settings-row__icon"><CloudCheck size={17} /></span><span className="settings-row__copy"><strong id="offline-storage-link-heading">Offline Storage</strong><small>Pin folders and selections, inspect downloaded bytes, or safely release cache.</small></span><CaretRight className="settings-row__chevron" size={17} aria-hidden="true" />
+              </button>
+            </section>
+
             <section className="settings-section" aria-labelledby="desktop-heading">
               <div className="settings-section__heading">
                 <ArrowsOut size={18} />
@@ -445,9 +455,11 @@ export function SettingsWindow({
             <section className="settings-section" aria-labelledby="getting-started-heading">
               <div className="settings-section__heading"><Info size={18} /><div><h3 id="getting-started-heading">Help and installation</h3><p>Device-local guidance and app installation.</p></div></div>
               <div className="settings-list">
+                <div className="settings-row"><span className="settings-row__icon"><BookOpenText size={17} /></span><span className="settings-row__copy"><strong>User Guide</strong><small>Read about files, desktops, areas, sharing, offline use, apps, backup, and troubleshooting.</small></span><button className="button button--quiet" type="button" onClick={() => onOpenHelp("start-here")}>Open</button></div>
                 <div className="settings-row"><span className="settings-row__icon"><Info size={17} /></span><span className="settings-row__copy"><strong>Getting Started</strong><small>Review storage, offline use, export, backup, and desktop areas.</small></span><button className="button button--quiet" type="button" onClick={onOpenGettingStarted}>Open</button></div>
                 <div className="settings-row"><span className="settings-row__icon"><DownloadSimple size={17} /></span><span className="settings-row__copy"><strong>Install Hiraya</strong><small>{installState === "standalone" ? "Running as an installed app." : installState === "installed" ? "Installed on this device." : installState === "promptable" ? "Ready to install from Hiraya." : "Use your browser's Install app or Add to Home Screen menu."}</small></span>{installState === "promptable" && <button className="button button--quiet" type="button" onClick={onInstall}>Install</button>}</div>
               </div>
+              <button className="inline-help-link" type="button" onClick={() => onOpenHelp("installation-and-updates")}>Installation requirements and alternatives</button>
             </section>
 
             <section className="settings-section" aria-labelledby="updates-heading">
@@ -475,17 +487,19 @@ export function SettingsWindow({
                   <span className="settings-row__copy"><strong>Server build</strong><small>{serverBuildTimestamp ? <time dateTime={serverBuildTimestamp}>{formatBuildTimestamp(serverBuildTimestamp)}</time> : "Unavailable"}</small></span>
                 </div>
               </div>
+              <button className="inline-help-link" type="button" onClick={() => onOpenHelp("installation-and-updates")}>How Hiraya updates work</button>
             </section>
 
             <section className="settings-section" aria-labelledby="export-heading">
               <div className="settings-section__heading">
                 <ExportIcon size={18} />
-                <div><h3 id="export-heading">Export</h3><p>Package saved items and settings for another Hiraya app.</p></div>
+                <div><h3 id="export-heading">Export</h3><p>Create a seeded ZIP for a fresh frontend-only deployment.</p></div>
               </div>
               <div className="settings-export">
-                <span>Unsaved editor changes are not included.</span>
-                <button className="button button--quiet" type="button" disabled={exportDisabled || exporting} onClick={onExport}><ExportIcon size={16} /> {exporting ? "Exporting..." : "Export desktop package"}</button>
+                <span>No in-product restore. Unsaved editor changes are not included.</span>
+                <button className="button button--quiet" type="button" disabled={exportDisabled || exporting} onClick={onExport}><ExportIcon size={16} /> {exporting ? "Exporting..." : "Export deployment seed"}</button>
               </div>
+              <button className="inline-help-link" type="button" onClick={() => onOpenHelp("export-backup-and-recovery")}>Export versus server backup and recovery</button>
             </section>
 
             {!canMutate && <p className="settings-window__offline" role="status">{restrictionReason}</p>}
@@ -688,6 +702,7 @@ export function SettingsWindow({
               })}
               {!installedApps.length && <p className="theme-custom__empty">No apps are approved on this device. Open a <code>.hiraya.app</code> package to install one.</p>}
             </div>
+            <button className="inline-help-link" type="button" onClick={() => onOpenHelp("apps-and-permissions")}>App packages, permissions, and updates</button>
           </div>
         )}
       </div>

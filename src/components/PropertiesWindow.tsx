@@ -1,14 +1,16 @@
 import { CloudArrowDown, CloudCheck, CloudSlash, File as FileGlyph, Folder, SpinnerGap } from "@phosphor-icons/react";
 import type { DesktopEntry, FolderEntry } from "../types";
+import { offlineStatusLabel, type OfflineEntryAvailability } from "../lib/offline-availability";
 
 type Props = {
   entry: DesktopEntry;
   rootLabel: string;
   ancestors: FolderEntry[];
   descendants: DesktopEntry[];
-  offlineAvailable?: boolean | null;
+  offlineAvailability?: OfflineEntryAvailability;
   offlineBusy?: boolean;
   onMakeAvailableOffline?: () => void;
+  onUnpin?: () => void;
   onRemoveOfflineCopy?: () => void;
 };
 
@@ -31,7 +33,7 @@ function formatSize(bytes: number) {
   return `${new Intl.NumberFormat(undefined, { maximumFractionDigits: value < 10 ? 2 : 1 }).format(value)} ${units[unit]} (${numberFormatter.format(bytes)} bytes)`;
 }
 
-export function PropertiesWindow({ entry, rootLabel, ancestors, descendants, offlineAvailable, offlineBusy = false, onMakeAvailableOffline, onRemoveOfflineCopy }: Props) {
+export function PropertiesWindow({ entry, rootLabel, ancestors, descendants, offlineAvailability, offlineBusy = false, onMakeAvailableOffline, onUnpin, onRemoveOfflineCopy }: Props) {
   const files = entry.kind === "folder" ? descendants.filter((item) => item.kind === "file") : [];
   const folders = entry.kind === "folder" ? descendants.filter((item) => item.kind === "folder") : [];
   const size = entry.kind === "file" ? entry.size : files.reduce((total, file) => total + file.size, 0);
@@ -52,10 +54,11 @@ export function PropertiesWindow({ entry, rootLabel, ancestors, descendants, off
         <div><dt>Modified</dt><dd><time dateTime={new Date(entry.modifiedAt).toISOString()}>{formatDate(entry.modifiedAt)}</time></dd></div>
         <div><dt>ID</dt><dd className="properties-window__id">{entry.id}</dd></div>
       </dl>
-      {entry.kind === "file" && offlineAvailable !== undefined && <section className="properties-window__offline" aria-label="Offline availability">
-        <div>{offlineAvailable === null ? <SpinnerGap size={18} className="activity-spinner" /> : offlineAvailable ? <CloudCheck size={18} /> : <CloudSlash size={18} />}<span><strong>Offline availability</strong><small>{offlineAvailable === null ? "Checking this file..." : offlineAvailable ? "Available without a connection." : "Requires a connection to open."}</small></span></div>
-        {offlineAvailable === false && onMakeAvailableOffline && <button className="button button--quiet" type="button" disabled={offlineBusy} onClick={onMakeAvailableOffline}><CloudArrowDown size={15} /> {offlineBusy ? "Saving..." : "Make available"}</button>}
-        {offlineAvailable === true && onRemoveOfflineCopy && <button className="button button--quiet" type="button" disabled={offlineBusy} onClick={onRemoveOfflineCopy}><CloudSlash size={15} /> {offlineBusy ? "Removing..." : "Remove copy"}</button>}
+      {offlineAvailability && <section className="properties-window__offline" aria-label="Offline availability">
+        <div>{offlineAvailability.status === "updating" ? <SpinnerGap size={18} className="activity-spinner" /> : offlineAvailability.cached || offlineAvailability.protected ? <CloudCheck size={18} /> : <CloudSlash size={18} />}<span><strong>Offline availability</strong><small>{offlineStatusLabel(offlineAvailability)}. {offlineAvailability.fileCount} {offlineAvailability.fileCount === 1 ? "file" : "files"}.</small></span></div>
+        {!offlineAvailability.pinned && onMakeAvailableOffline && <button className="button button--quiet" type="button" disabled={offlineBusy} onClick={onMakeAvailableOffline}><CloudArrowDown size={15} /> {offlineBusy ? "Saving..." : "Make available"}</button>}
+        {offlineAvailability.directlyPinned && onUnpin && <button className="button button--quiet" type="button" disabled={offlineBusy} onClick={onUnpin}><CloudSlash size={15} /> Unpin</button>}
+        {offlineAvailability.cached && !offlineAvailability.pinned && !offlineAvailability.protected && onRemoveOfflineCopy && <button className="button button--quiet" type="button" disabled={offlineBusy} onClick={onRemoveOfflineCopy}><CloudSlash size={15} /> {offlineBusy ? "Removing..." : "Remove copy"}</button>}
       </section>}
     </div>
   );

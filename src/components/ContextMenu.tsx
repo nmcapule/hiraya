@@ -48,20 +48,24 @@ type Props = {
   onDownload?: () => void;
   onCopy: () => void;
   onPasteInto?: () => void;
+  onUploadInto?: () => void;
+  onImportFolderInto?: () => void;
   onMove: () => void;
   onProperties: () => void;
   onDelete: () => void;
   onCopyLink?: () => void;
-  offlineAvailable?: boolean | null;
   onMakeAvailableOffline?: () => void;
+  onUnpinOffline?: () => void;
   onRemoveOfflineCopy?: () => void;
+  onOpenOfflineStorage?: () => void;
+  offlineBusy?: boolean;
   readOnly?: boolean;
   selectionCount?: number;
   trashSupported?: boolean;
   openWith?: readonly { id: string; label: string; onOpen: () => void }[];
 };
 
-export function ContextMenu({ menu, entry, onOpen, onEditFile, onRename, onDownload, onCopy, onPasteInto, onMove, onProperties, onDelete, onCopyLink, offlineAvailable, onMakeAvailableOffline, onRemoveOfflineCopy, readOnly = false, selectionCount = 1, trashSupported = true, openWith = [] }: Props) {
+export function ContextMenu({ menu, entry, onOpen, onEditFile, onRename, onDownload, onCopy, onPasteInto, onUploadInto, onImportFolderInto, onMove, onProperties, onDelete, onCopyLink, onMakeAvailableOffline, onUnpinOffline, onRemoveOfflineCopy, onOpenOfflineStorage, offlineBusy = false, readOnly = false, selectionCount = 1, trashSupported = true, openWith = [] }: Props) {
   const position = useMenuPosition(menu.x, menu.y);
 
   return (
@@ -86,9 +90,13 @@ export function ContextMenu({ menu, entry, onOpen, onEditFile, onRename, onDownl
       )}
       <button type="button" role="menuitem" onClick={onCopy}><Copy size={17} /> Copy {selectionCount > 1 ? `${selectionCount} items` : ""}<kbd>Ctrl/⌘ C</kbd></button>
       {selectionCount === 1 && onCopyLink && <button type="button" role="menuitem" onClick={onCopyLink}><LinkSimple size={17} /> Copy link</button>}
-      {selectionCount === 1 && entry.kind === "file" && onMakeAvailableOffline && offlineAvailable === false && <button type="button" role="menuitem" onClick={onMakeAvailableOffline}><CloudArrowDown size={17} /> Make available offline</button>}
-      {selectionCount === 1 && entry.kind === "file" && onRemoveOfflineCopy && offlineAvailable === true && <button type="button" role="menuitem" onClick={onRemoveOfflineCopy}><CloudSlash size={17} /> Remove offline copy</button>}
+      {onMakeAvailableOffline && <button type="button" role="menuitem" disabled={offlineBusy} onClick={onMakeAvailableOffline}><CloudArrowDown size={17} /> Make available offline{selectionCount > 1 ? ` (${selectionCount})` : ""}</button>}
+      {onUnpinOffline && <button type="button" role="menuitem" disabled={offlineBusy} onClick={onUnpinOffline}><CloudSlash size={17} /> Unpin offline availability</button>}
+      {onRemoveOfflineCopy && <button type="button" role="menuitem" disabled={offlineBusy} onClick={onRemoveOfflineCopy}><CloudSlash size={17} /> Remove downloaded copies</button>}
+      {onOpenOfflineStorage && <button type="button" role="menuitem" onClick={onOpenOfflineStorage}><GearSix size={17} /> Offline Storage</button>}
       {onPasteInto && <button type="button" role="menuitem" disabled={readOnly} onClick={onPasteInto}><ClipboardText size={17} /> Paste into</button>}
+      {selectionCount === 1 && entry.kind === "folder" && onUploadInto && <button type="button" role="menuitem" disabled={readOnly} onClick={onUploadInto}><UploadSimple size={17} /> Upload files into</button>}
+      {selectionCount === 1 && entry.kind === "folder" && onImportFolderInto && <button type="button" role="menuitem" disabled={readOnly} onClick={onImportFolderInto}><FolderOpen size={17} /> Import folder into</button>}
       <button type="button" role="menuitem" disabled={readOnly} onClick={onMove}>
         <FolderSimplePlus size={17} /> Move to...
       </button>
@@ -107,12 +115,13 @@ type DesktopProps = {
   onCreateFile: () => void;
   onCreateFolder: () => void;
   onUpload: () => void;
+  onImportFolder: () => void;
   onSettings?: () => void;
   onPaste?: () => void;
   readOnly?: boolean;
 };
 
-export function DesktopContextMenu({ menu, onCreateFile, onCreateFolder, onUpload, onSettings, onPaste, readOnly = false }: DesktopProps) {
+export function DesktopContextMenu({ menu, onCreateFile, onCreateFolder, onUpload, onImportFolder, onSettings, onPaste, readOnly = false }: DesktopProps) {
   const position = useMenuPosition(menu.x, menu.y);
 
   return (
@@ -125,6 +134,9 @@ export function DesktopContextMenu({ menu, onCreateFile, onCreateFolder, onUploa
       </button>
       <button type="button" role="menuitem" disabled={readOnly} onClick={onUpload}>
         <UploadSimple size={17} /> Upload files
+      </button>
+      <button type="button" role="menuitem" disabled={readOnly} onClick={onImportFolder}>
+        <FolderOpen size={17} /> Import folder
       </button>
       {onPaste && <button type="button" role="menuitem" disabled={readOnly} onClick={onPaste}><ClipboardText size={17} /> Paste<kbd>Ctrl/⌘ V</kbd></button>}
       {onSettings && <button className="context-menu__separated" type="button" role="menuitem" autoFocus={readOnly} onClick={onSettings}>

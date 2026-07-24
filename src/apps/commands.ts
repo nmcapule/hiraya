@@ -55,15 +55,19 @@ export const APP_COMMAND_IDS = {
   newFile: "desktop.new-file",
   newFolder: "desktop.new-folder",
   upload: "desktop.upload",
+  importFolder: "desktop.import-folder",
   trash: "desktop.trash",
   settings: "desktop.settings",
   windows: "desktop.windows",
+  areas: "desktop.areas",
+  offline: "desktop.offline-storage",
+  help: "desktop.help",
   shortcuts: "desktop.shortcuts",
   sync: "desktop.sync",
 } as const satisfies Record<string, CommandId>;
 
 export type AppCommandId = typeof APP_COMMAND_IDS[keyof typeof APP_COMMAND_IDS];
-export type AppCommandPanel = "trash" | "windows" | "shortcuts" | "sync";
+export type AppCommandPanel = "trash" | "windows" | "areas" | "offline" | "help" | "shortcuts" | "sync";
 
 export type AppCommandContext = {
   canMutate: boolean;
@@ -72,6 +76,7 @@ export type AppCommandContext = {
   createFile: () => void;
   createFolder: () => void;
   uploadFiles: () => void;
+  importFolder: () => void;
   openSettings: () => void;
   openPanel: (panel: AppCommandPanel) => void;
 };
@@ -122,11 +127,15 @@ export function createAppCommandService(): CommandService<AppCommandContext> {
     { id: APP_COMMAND_IDS.newFile, order: 10, label: "New text file", keywords: ["create"], enabled: ({ canMutate }) => canMutate, execute: ({ createFile }) => createFile() },
     { id: APP_COMMAND_IDS.newFolder, order: 20, label: "New folder", keywords: ["create directory"], enabled: ({ canMutate }) => canMutate, execute: ({ createFolder }) => createFolder() },
     { id: APP_COMMAND_IDS.upload, order: 30, label: "Upload files", keywords: ["import add"], enabled: ({ canMutate }) => canMutate, execute: ({ uploadFiles }) => uploadFiles() },
+    { id: APP_COMMAND_IDS.importFolder, order: 35, label: "Import folder", keywords: ["directory upload hierarchy"], enabled: ({ canMutate }) => canMutate, execute: ({ importFolder }) => importFolder() },
     { id: APP_COMMAND_IDS.trash, order: 40, label: "Open Trash", keywords: ["deleted restore"], visible: ({ canOpenTrash }) => canOpenTrash, enabled: ({ canMutate }) => canMutate, execute: ({ openPanel }) => openPanel("trash") },
     { id: APP_COMMAND_IDS.settings, order: 50, label: "Open Settings", visible: ({ canOpenSettings }) => canOpenSettings, execute: ({ openSettings }) => openSettings() },
-    { id: APP_COMMAND_IDS.windows, order: 60, label: "Show all windows", keywords: ["areas"], execute: ({ openPanel }) => openPanel("windows") },
-    { id: APP_COMMAND_IDS.shortcuts, order: 70, label: "Show keyboard shortcuts", keywords: ["keys help"], execute: ({ openPanel }) => openPanel("shortcuts") },
-    { id: APP_COMMAND_IDS.sync, order: 80, label: "Show sync status", keywords: ["offline queue issues"], execute: ({ openPanel }) => openPanel("sync") },
+    { id: APP_COMMAND_IDS.areas, order: 60, label: "Open Areas", detail: "Navigate and arrange desktop areas", keywords: ["spaces coordinates move"], execute: ({ openPanel }) => openPanel("areas") },
+    { id: APP_COMMAND_IDS.offline, order: 65, label: "Open Offline Storage", detail: "Manage pinned and downloaded copies", keywords: ["cache pin download release"], execute: ({ openPanel }) => openPanel("offline") },
+    { id: APP_COMMAND_IDS.windows, order: 70, label: "Show all windows", keywords: ["areas"], execute: ({ openPanel }) => openPanel("windows") },
+    { id: APP_COMMAND_IDS.help, order: 75, label: "Open User Guide", detail: "Bundled product help and troubleshooting", keywords: ["help documentation manual offline"], execute: ({ openPanel }) => openPanel("help") },
+    { id: APP_COMMAND_IDS.shortcuts, order: 80, label: "Show keyboard shortcuts", keywords: ["keys help"], execute: ({ openPanel }) => openPanel("shortcuts") },
+    { id: APP_COMMAND_IDS.sync, order: 90, label: "Show sync status", keywords: ["offline queue issues"], execute: ({ openPanel }) => openPanel("sync") },
   ];
   for (const command of commands) service.register(command);
   return service;

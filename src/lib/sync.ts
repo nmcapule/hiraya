@@ -2,7 +2,7 @@ import type { SeededManifest } from "./seeded-manifest";
 import * as storage from "./opfs";
 import { assertUniqueName, namesMatch, validateEntryName } from "./entry-validation";
 import { API_ROUTES } from "./api-routes";
-import { assertValidId, parseBlobMutationPreparation, parseContentAccessDescriptor, parseLayout, parsePosition, parseRemoteDesktopState, parseRootEntryPositionUpdates, parseTrashDeleteResult, parseTrashDocument, parseTrashRestoreResult, type RemoteDesktopState, type RemoteEntry, type TrashDeleteResult, type TrashDocument, type TrashRestoreResult } from "./contracts";
+import { assertValidId, parseBlobMutationPreparation, parseContentAccessDescriptor, parseEntries, parseLayout, parsePosition, parseRemoteDesktopState, parseRootEntryPositionUpdates, parseTrashDeleteResult, parseTrashDocument, parseTrashRestoreResult, type RemoteDesktopState, type RemoteEntry, type TrashDeleteResult, type TrashDocument, type TrashRestoreResult } from "./contracts";
 import type { DesktopEntry, DesktopIdentity, DesktopLayout, RootEntryPositionUpdate, EditorSettings, EntryPosition, FileEntry, FolderEntry } from "../types";
 import type { OutboxOperation, OutboxRecord } from "./outbox";
 import { desktopPendingOperationProtection, outboxDesktopRetentionIds } from "./outbox";
@@ -12,6 +12,7 @@ import { parseActivityPage, parseActivityQuery, type ActivityQuery } from "./act
 import { parseDesktopCatalog, type CatalogQuota } from "./desktop-catalog";
 import { AuthenticationRequiredError, redirectToLogin, requireAuthenticatedResponse } from "./auth";
 import { mapWithConcurrency, sha256Blob, uploadBlobDigests } from "./blob-transfer";
+import { buildOfflineAvailability, dedupeOfflineRoots, offlineFilesUnderRoots, type OfflineStorageInventory } from "./offline-availability";
 
 type OutboxOperationInput = OutboxOperation extends infer Operation
   ? Operation extends OutboxOperation ? Omit<Operation, "schemaVersion"> : never
@@ -42,7 +43,22 @@ type StorageBoundary = Pick<typeof storage,
   | "createOfflineDesktop"
   | "listDesktops" | "ensureDesktop"
   | "pruneLocalDesktops"
+  | "loadOfflineInventory" | "setOfflinePins" | "releaseOfflineCopies"
 >;
+
+export type OfflineOperationProgress = {
+  desktopId: string;
+  generation: number;
+  operationId: string;
+  phase: "downloading" | "complete" | "error";
+  completed: number;
+  total: number;
+  failed: number;
+  bytesCompleted: number;
+  totalBytes: number;
+  updatingIds: ReadonlySet<string>;
+  errors: ReadonlyMap<string, string>;
+};
 
 export type SyncEngineOptions = {
   frontendOnly?: boolean;
@@ -159,6 +175,10 @@ export class SyncEngine {
   private readonly outboxListeners = new Set<(records: readonly OutboxRecord[]) => void>();
   private readonly catalogListeners = new Set<(catalog: DesktopRegistry) => void>();
   private readonly contentLoads = new Map<string, Promise<File>>();
+  private readonly offlineInventoryListeners = new Set<(inventory: OfflineStorageInventory) => void>();
+  private readonly offlineProgressListeners = new Set<(progress: OfflineOperationProgress | null) => void>();
+  private offlineInventoryLoad: { desktopId: string; generation: number; promise: Promise<OfflineStorageInventory> } | null = null;
+  private offlineRefresh: { desktopId: string; generation: number; promise: Promise<OfflineStorageInventory> } | null = null;
 
   constructor(options: SyncEngineOptions = {}) {
     this.frontendOnly = options.frontendOnly ?? false;
@@ -218,6 +238,8 @@ export class SyncEngine {
     if (this.healthTimer !== null) this.clearIntervalImpl(this.healthTimer);
     this.healthTimer = null;
     this.contentLoads.clear();
+    this.offlineInventoryLoad = null;
+    this.offlineRefresh = null;
     await Promise.all([this.work, starting?.catch(() => undefined)]);
   }
 
@@ -266,6 +288,29 @@ export class SyncEngine {
   subscribeDesktopCatalog(listener: (catalog: DesktopRegistry) => void) {
     this.catalogListeners.add(listener);
     return () => { this.catalogListeners.delete(listener); };
+  }
+
+  subscribeOfflineStorage(onInventory: (inventory: OfflineStorageInventory) => void, onProgress?: (progress: OfflineOperationProgress | null) => void) {
+    this.offlineInventoryListeners.add(onInventory);
+    if (onProgress) this.offlineProgressListeners.add(onProgress);
+    return () => { this.offlineInventoryListeners.delete(onInventory); if (onProgress) this.offlineProgressListeners.delete(onProgress); };
+  }
+
+  private publishOfflineProgress(progress: OfflineOperationProgress | null) {
+    for (const listener of this.offlineProgressListeners) listener(progress);
+  }
+
+  async loadOfflineInventory() {
+    const desktopId = this.desktopId;
+    const generation = this.generation;
+    const existing = this.offlineInventoryLoad;
+    if (existing?.desktopId === desktopId && existing.generation === generation) return existing.promise;
+    const promise = this.storage.loadOfflineInventory(desktopId).then((inventory) => {
+      if (this.desktopId === desktopId && this.generation === generation) for (const listener of this.offlineInventoryListeners) listener(inventory);
+      return inventory;
+    }).finally(() => { if (this.offlineInventoryLoad?.promise === promise) this.offlineInventoryLoad = null; });
+    this.offlineInventoryLoad = { desktopId, generation, promise };
+    return promise;
   }
 
   private publishCatalog(catalog: DesktopRegistry) {
@@ -378,6 +423,7 @@ export class SyncEngine {
     this.assertActive(generation);
     if (desktopId === this.desktopId) this.publish(applied);
     this.publishActivityChange();
+    if (desktopId === this.desktopId && this.status !== "offline") void this.refreshPinnedContent().catch(() => undefined);
     return applied;
   }
 
@@ -763,6 +809,17 @@ export class SyncEngine {
     return this.mutate({ kind: "create", entries }, (next) => entries.map((entry) => next.entries.find((item) => item.id === entry.id) as FileEntry), new Map(entries.map((entry, index) => [entry.id, files[index]])));
   }
 
+  createEntries(entriesValue: DesktopEntry[], contentsValue: Map<string, Blob>) {
+    const entries = parseEntries([...this.current().entries, ...entriesValue]).slice(this.current().entries.length) as DesktopEntry[];
+    const files = entries.filter((entry): entry is FileEntry => entry.kind === "file");
+    if (contentsValue.size !== files.length || files.some((entry) => !(contentsValue.get(entry.id) instanceof Blob) || contentsValue.get(entry.id)!.size !== entry.size)) {
+      throw new Error("Imported file content is incomplete.");
+    }
+    const contents = new Map(files.map((entry) => [entry.id, contentsValue.get(entry.id)!.slice(0, entry.size, entry.mimeType)]));
+    if (this.frontendOnly) return this.localMutation(() => this.storage.createEntries(entries, contents));
+    return this.mutate({ kind: "create", entries }, (next) => entries.map((entry) => next.entries.find((item) => item.id === entry.id)!), contents);
+  }
+
   renameEntry(id: string, nameValue: string) {
     if (this.frontendOnly) return this.localMutation(() => this.storage.renameEntry(id, nameValue));
     const existing = this.current().entries.find((entry) => entry.id === id);
@@ -944,8 +1001,7 @@ export class SyncEngine {
       if (!content || content.size !== entry.size) throw new Error(`The copied contents of “${entry.name}” are unavailable.`);
       contents.set(idMap.get(entry.id)!, content);
     }
-    if (this.frontendOnly) return this.localMutation(() => this.storage.createEntries(entries, contents));
-    return this.mutate({ kind: "create", entries }, (next) => entries.map((entry) => next.entries.find((item) => item.id === entry.id)!), contents);
+    return this.createEntries(entries, contents);
   }
 
   updateEntryPosition(id: string, position: EntryPosition) {
@@ -1089,27 +1145,28 @@ export class SyncEngine {
     }
   }
 
+  async estimateOfflineOperation(rootIds: readonly string[]) {
+    const roots = dedupeOfflineRoots(this.current().entries, rootIds);
+    const inventory = await this.storage.loadOfflineInventory(this.desktopId);
+    const model = buildOfflineAvailability(this.current().entries, inventory);
+    const files = offlineFilesUnderRoots(this.current().entries, roots);
+    return { roots, fileCount: files.length, downloadBytes: files.reduce((total, file) => total + (model.entries[file.id]?.downloadBytes ?? file.size), 0) };
+  }
+
   async isFileAvailableOffline(id: FileEntry["id"]) {
     const entry = this.current().entries.find((candidate): candidate is FileEntry => candidate.id === id && candidate.kind === "file");
     if (!entry) throw new Error("That file no longer exists.");
     const catalogId = this.current().sync.catalogId;
     if (this.frontendOnly || !catalogId) {
-      try {
-        await this.storage.readFile(id);
-        return true;
-      } catch (error) {
-        if (error instanceof DOMException && error.name === "NotFoundError") return false;
-        throw error;
-      }
+      try { await this.storage.readFile(id); return true; }
+      catch (error) { if (error instanceof DOMException && error.name === "NotFoundError") return false; throw error; }
     }
     const contentRevision = this.current().sync.contentRevisions[id];
     if (!Number.isSafeInteger(contentRevision)) throw new Error("That file has invalid synchronization metadata.");
     return await this.storage.readCachedFile(this.desktopId, catalogId, id, contentRevision) !== null;
   }
 
-  makeFileAvailableOffline(id: FileEntry["id"]) {
-    return this.readFile(id);
-  }
+  makeFileAvailableOffline(id: FileEntry["id"]) { return this.readFile(id); }
 
   removeFileFromOfflineCache(id: FileEntry["id"]) {
     return this.queue(async () => {
@@ -1121,6 +1178,61 @@ export class SyncEngine {
       if (!Number.isSafeInteger(contentRevision)) throw new Error("That file has invalid synchronization metadata.");
       return this.storage.removeCachedFile(this.desktopId, catalogId, id, contentRevision);
     });
+  }
+
+  async setOfflinePinIntent(rootIds: readonly string[], pinned: boolean) {
+    const roots = pinned ? dedupeOfflineRoots(this.current().entries, rootIds) : [...new Set(rootIds)];
+    if (!pinned && (roots.length !== rootIds.length || roots.some((id) => !this.current().entries.some((entry) => entry.id === id)))) throw new Error("An offline selection contains an entry that no longer exists.");
+    await this.storage.setOfflinePins(this.desktopId, roots, pinned);
+    const inventory = await this.loadOfflineInventory();
+    if (pinned && this.status !== "offline") await this.refreshPinnedContent(roots);
+    return inventory;
+  }
+
+  refreshPinnedContent(_rootIds?: readonly string[]) {
+    void _rootIds;
+    const desktopId = this.desktopId;
+    const generation = this.generation;
+    const existing = this.offlineRefresh;
+    if (existing?.desktopId === desktopId && existing.generation === generation) return existing.promise;
+    const promise = this.refreshPinnedContentInternal(desktopId, generation).finally(() => { if (this.offlineRefresh?.promise === promise) this.offlineRefresh = null; });
+    this.offlineRefresh = { desktopId, generation, promise };
+    return promise;
+  }
+
+  private async refreshPinnedContentInternal(desktopId: string, generation: number) {
+    if (this.frontendOnly || this.status === "offline") return this.loadOfflineInventory();
+    const inventory = await this.loadOfflineInventory();
+    if (this.desktopId !== desktopId || this.generation !== generation) return inventory;
+    const model = buildOfflineAvailability(this.current().entries, inventory);
+    const files = this.current().entries.filter((entry): entry is FileEntry => entry.kind === "file" && model.entries[entry.id]?.pinned);
+    const targets = files.filter((file) => !inventory.files[file.id]?.cached && !inventory.files[file.id]?.protected);
+    if (!targets.length) { for (const listener of this.offlineInventoryListeners) listener(inventory); return inventory; }
+    const updatingIds = new Set(targets.map((file) => file.id));
+    const errors = new Map<string, string>();
+    let completed = 0;
+    let bytesCompleted = 0;
+    const totalBytes = targets.reduce((total, file) => total + file.size, 0);
+    const operationId = crypto.randomUUID();
+    const report = (phase: OfflineOperationProgress["phase"]) => {
+      if (this.desktopId !== desktopId || this.generation !== generation) return;
+      this.publishOfflineProgress({ desktopId, generation, operationId, phase, completed, total: targets.length, failed: errors.size, bytesCompleted, totalBytes, updatingIds: new Set(updatingIds), errors: new Map(errors) });
+    };
+    report("downloading");
+    await mapWithConcurrency(targets, 3, async (file) => {
+      try { await this.readFile(file.id); bytesCompleted += file.size; }
+      catch (error) { errors.set(file.id, error instanceof Error ? error.message : "The offline copy could not be downloaded."); }
+      finally { completed += 1; updatingIds.delete(file.id); report("downloading"); }
+    });
+    report(errors.size ? "error" : "complete");
+    return this.loadOfflineInventory();
+  }
+
+  async releaseOfflineCopies(rootIds?: readonly string[]) {
+    const roots = rootIds ? dedupeOfflineRoots(this.current().entries, rootIds) : undefined;
+    const released = await this.storage.releaseOfflineCopies(this.desktopId, roots);
+    await this.loadOfflineInventory();
+    return released;
   }
 
   async readFileByRelativePath(fromFileId: FileEntry["id"], relativePath: string) {
@@ -1271,6 +1383,7 @@ export const createTextFile = defaultEngine.createTextFile.bind(defaultEngine);
 export const createFile = defaultEngine.createFile.bind(defaultEngine);
 export const createFolder = defaultEngine.createFolder.bind(defaultEngine);
 export const importFiles = defaultEngine.importFiles.bind(defaultEngine);
+export const createEntries = defaultEngine.createEntries.bind(defaultEngine);
 export const renameEntry = defaultEngine.renameEntry.bind(defaultEngine);
 export const deleteEntry = defaultEngine.deleteEntry.bind(defaultEngine);
 export const deleteEntries = defaultEngine.deleteEntries.bind(defaultEngine);
@@ -1298,6 +1411,12 @@ export const readFileByRelativePath = defaultEngine.readFileByRelativePath.bind(
 export const isFileAvailableOffline = defaultEngine.isFileAvailableOffline.bind(defaultEngine);
 export const makeFileAvailableOffline = defaultEngine.makeFileAvailableOffline.bind(defaultEngine);
 export const removeFileFromOfflineCache = defaultEngine.removeFileFromOfflineCache.bind(defaultEngine);
+export const loadOfflineInventory = defaultEngine.loadOfflineInventory.bind(defaultEngine);
+export const subscribeToOfflineStorage = defaultEngine.subscribeOfflineStorage.bind(defaultEngine);
+export const estimateOfflineOperation = defaultEngine.estimateOfflineOperation.bind(defaultEngine);
+export const setOfflinePinIntent = defaultEngine.setOfflinePinIntent.bind(defaultEngine);
+export const refreshPinnedContent = defaultEngine.refreshPinnedContent.bind(defaultEngine);
+export const releaseOfflineCopies = defaultEngine.releaseOfflineCopies.bind(defaultEngine);
 export const getOutboxStatus = defaultEngine.getOutboxStatus.bind(defaultEngine);
 export const listOutboxRecords = defaultEngine.listOutboxRecords.bind(defaultEngine);
 export const retryBlockedOutboxRecord = defaultEngine.retryBlockedOutboxRecord.bind(defaultEngine);
