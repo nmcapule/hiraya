@@ -358,7 +358,13 @@ function openDatabasePort(): RpcPort {
   if (typeof SharedWorker !== "undefined") {
     const shared = new SharedWorker(new URL("./opfs-shared.worker.ts", import.meta.url), { type: "module", name: storageWorkerName(FRONTEND_ONLY, key) });
     shared.port.addEventListener("message", (event) => {
-      const message = event.data as { type?: string; requestId?: number };
+      const message = event.data as { type?: string; requestId?: number; error?: string };
+      if (message.type === "terminate-engine" && message.requestId === hostedDatabaseRequestId) {
+        hostedDatabaseWorker?.terminate();
+        hostedDatabaseWorker = null;
+        hostedDatabaseRequestId = null;
+        return;
+      }
       if (message.type !== "need-engine" || message.requestId === undefined) return;
       if (hostedDatabaseWorker && hostedDatabaseRequestId === message.requestId) return;
       hostedDatabaseWorker?.terminate();
@@ -367,16 +373,25 @@ function openDatabasePort(): RpcPort {
       hostedDatabaseRequestId = candidateRequestId;
       hostedDatabaseWorker = worker;
       const channel = new MessageChannel();
+      let failed = false;
+      const fail = (error: string) => {
+        if (failed) return;
+        failed = true;
+        worker.terminate();
+        channel.port2.close();
+        if (hostedDatabaseWorker === worker) {
+          hostedDatabaseWorker = null;
+          hostedDatabaseRequestId = null;
+        }
+        shared.port.postMessage({ type: "engine-failed", requestId: candidateRequestId, error });
+      };
       channel.port2.onmessage = (message: MessageEvent<{ type?: string; error?: string }>) => {
         if (message.data.type === "engine-error") {
-          worker.terminate();
-          if (hostedDatabaseWorker === worker) {
-            hostedDatabaseWorker = null;
-            hostedDatabaseRequestId = null;
-          }
+          fail(message.data.error ?? "The local database engine could not start.");
           return;
         }
         if (message.data.type !== "engine-ready") return;
+        failed = true;
         channel.port2.onmessage = null;
         if (hostedDatabaseWorker !== worker) {
           channel.port2.close();
@@ -384,6 +399,8 @@ function openDatabasePort(): RpcPort {
         }
         shared.port.postMessage({ type: "attach-engine", requestId: candidateRequestId, port: channel.port2 }, [channel.port2]);
       };
+      worker.addEventListener("error", (workerError) => { workerError.preventDefault(); fail(workerError.message || "The local database worker failed to load."); });
+      worker.addEventListener("messageerror", () => fail("The local database worker sent an invalid startup message."));
       channel.port2.start();
       worker.postMessage({ type: "attach", storage: key, port: channel.port1 }, [channel.port1]);
     });

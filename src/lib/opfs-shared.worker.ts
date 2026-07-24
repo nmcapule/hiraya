@@ -26,10 +26,13 @@ function requestHost(candidate?: MessagePort) {
     candidate.postMessage({ type: "need-engine", requestId: hostRequestId });
     return;
   }
-  for (const port of clients) port.postMessage({ type: "need-engine", requestId: hostRequestId });
+  const first = clients.values().next().value;
+  first?.postMessage({ type: "need-engine", requestId: hostRequestId });
 }
 
 function loseEngine(message: string) {
+  const previousHost = engineHost;
+  const previousRequestId = hostRequestId;
   engine?.close();
   engine = null;
   engineHost = null;
@@ -41,7 +44,14 @@ function loseEngine(message: string) {
     destination.port.postMessage({ id: destination.requestId, error: message });
   }
   pending.clear();
-  requestHost();
+  previousHost?.postMessage({ type: "terminate-engine", requestId: previousRequestId });
+  setTimeout(requestHost, 0);
+}
+
+function failEngine(message: string) {
+  hostRequested = false;
+  hostRequestedAt = 0;
+  for (const item of queued.splice(0)) item.port.postMessage({ id: item.request.id, error: message });
 }
 
 function handleEngineMessage(event: MessageEvent<StorageDbResponse>) {
@@ -75,7 +85,7 @@ scope.onconnect = (event) => {
   const port = event.ports[0];
   clients.add(port);
   let storageNamespace = "";
-  port.onmessage = (message: MessageEvent<StorageDbRequest | { type: "configure-storage"; storage: string } | { type: "attach-engine"; requestId: number; port: MessagePort } | { type: "release-engine"; requestId: number } | { type: "reset-engine" }>) => {
+  port.onmessage = (message: MessageEvent<StorageDbRequest | { type: "configure-storage"; storage: string } | { type: "attach-engine"; requestId: number; port: MessagePort } | { type: "engine-failed"; requestId: number; error: string } | { type: "release-engine"; requestId: number } | { type: "reset-engine" }>) => {
     if ("type" in message.data && message.data.type === "configure-storage") {
       if (!/^[a-f\d]{64}$/.test(message.data.storage)) throw new Error("The shared storage worker has no valid storage namespace.");
       if (storageNamespace && storageNamespace !== message.data.storage) throw new Error("The shared storage worker storage namespace cannot change.");
@@ -96,6 +106,10 @@ scope.onconnect = (event) => {
       engine.onmessage = handleEngineMessage;
       engine.start();
       for (const item of queued.splice(0)) forward(item.port, item.request);
+      return;
+    }
+    if ("type" in message.data && message.data.type === "engine-failed") {
+      if (!engine && message.data.requestId === hostRequestId) failEngine(message.data.error);
       return;
     }
     if ("type" in message.data && message.data.type === "release-engine") {

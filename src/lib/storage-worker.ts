@@ -5,5 +5,5 @@ export function storageWorkerName(frontendOnly: boolean, namespace: string): str
 }
 
 export function storageOwnerLockName(frontendOnly: boolean, namespace: string): string {
-  return frontendOnly ? `hiraya-sqlite-v${STORAGE_PROTOCOL_VERSION}-owner` : `hiraya-sqlite-v${STORAGE_PROTOCOL_VERSION}-owner-${namespace}`;
+  return frontendOnly ? "hiraya-sqlite-v1-owner" : `hiraya-sqlite-v1-owner-${namespace}`;
 }

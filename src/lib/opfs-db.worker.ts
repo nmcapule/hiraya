@@ -252,8 +252,15 @@ function writePreferences(db: Database, value: StoredPreferences) {
 }
 
 let existedBeforeOpen = false;
-const database = (async () => {
-  const namespace = await storageNamespace;
+const ownedNamespace = storageNamespace.then((namespace) => new Promise<string>((resolve, reject) => {
+  if (!("locks" in navigator)) { reject(new Error("SharedWorker is unavailable and this browser cannot guarantee a single SQLite owner.")); return; }
+  void navigator.locks.request(storageOwnerLockName(FRONTEND_ONLY, namespace), { mode: "exclusive", ifAvailable: true }, async (lock) => {
+    if (!lock) { reject(new Error("Another Hiraya tab owns local storage. Close it before using this browser.")); return; }
+    resolve(namespace);
+    await new Promise(() => undefined);
+  }).catch(reject);
+}));
+const database = ownedNamespace.then(async (namespace) => {
   const databaseName = FRONTEND_ONLY ? "/hiraya-catalog-v1.sqlite3" : `/hiraya-catalog-v1-${namespace}.sqlite3`;
   const sqlite3 = await sqlite3InitModule();
   const pool = await sqlite3.installOpfsSAHPoolVfs({ directory: FRONTEND_ONLY ? ".hiraya-sqlite-v1" : `.hiraya-sqlite-v1-${namespace}`, initialCapacity: 6 });
@@ -264,7 +271,7 @@ const database = (async () => {
   db.exec("PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON");
   createSchema(db);
   return db;
-})();
+});
 
 async function dispatch<M extends StorageDbMethod>(method: M, params: StorageDbRequests[M], desktopId: string | null): Promise<StorageDbResponses[M]> {
   const db = await database;
@@ -401,13 +408,9 @@ function attach(port: WorkerPort, ready: Promise<void> = Promise.resolve()) {
 
 const workerScope = self as typeof self & { onconnect?: ((event: MessageEvent & { ports: MessagePort[] }) => void) | null };
 if (!("onconnect" in workerScope)) {
-  const owner = storageNamespace.then((namespace) => new Promise<void>((resolve, reject) => {
-    if (!("locks" in navigator)) { reject(new Error("SharedWorker is unavailable and this browser cannot guarantee a single SQLite owner.")); return; }
-    void navigator.locks.request(storageOwnerLockName(FRONTEND_ONLY, namespace), { mode: "exclusive", ifAvailable: true }, async (lock) => { if (!lock) { reject(new Error("Another Hiraya tab owns local storage. Close it before using this browser.")); return; } resolve(); await new Promise(() => undefined); }).catch(reject);
-  }));
   workerScope.onmessage = (event: MessageEvent<StorageDbRequest | { type: "configure-storage"; storage: string } | { type: "attach"; storage: string; port: MessagePort }>) => {
     if ("type" in event.data && event.data.type === "configure-storage") { configureStorageNamespace(event.data.storage); return; }
-    if ("type" in event.data && event.data.type === "attach") { const port = event.data.port; configureStorageNamespace(event.data.storage); void owner.then(() => database).then(() => { port.postMessage({ type: "engine-ready" }); attach(port); }).catch((error: unknown) => port.postMessage({ type: "engine-error", error: error instanceof Error ? error.message : String(error) })); return; }
-    const request = event.data as StorageDbRequest; void owner.then(() => dispatch(request.method, request.params, request.desktopId)).then((result) => workerScope.postMessage({ id: request.id, result }), (error: unknown) => workerScope.postMessage({ id: request.id, error: error instanceof Error ? error.message : String(error) }));
+    if ("type" in event.data && event.data.type === "attach") { const port = event.data.port; configureStorageNamespace(event.data.storage); void database.then(() => { port.postMessage({ type: "engine-ready" }); attach(port); }).catch((error: unknown) => port.postMessage({ type: "engine-error", error: error instanceof Error ? error.message : String(error) })); return; }
+    const request = event.data as StorageDbRequest; void dispatch(request.method, request.params, request.desktopId).then((result) => workerScope.postMessage({ id: request.id, result }), (error: unknown) => workerScope.postMessage({ id: request.id, error: error instanceof Error ? error.message : String(error) }));
   };
 }

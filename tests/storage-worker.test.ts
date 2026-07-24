@@ -6,8 +6,8 @@ describe("storage worker identity", () => {
     expect(storageWorkerName(false, "account-a")).toBe("hiraya-storage-v2-account-a");
     expect(storageWorkerName(false, "account-b")).not.toBe(storageWorkerName(false, "account-a"));
     expect(storageWorkerName(true, "ignored")).toBe("hiraya-storage-v2");
-    expect(storageOwnerLockName(false, "account-a")).toBe("hiraya-sqlite-v2-owner-account-a");
+    expect(storageOwnerLockName(false, "account-a")).toBe("hiraya-sqlite-v1-owner-account-a");
     expect(storageOwnerLockName(false, "account-b")).not.toBe(storageOwnerLockName(false, "account-a"));
-    expect(storageOwnerLockName(true, "ignored")).toBe("hiraya-sqlite-v2-owner");
+    expect(storageOwnerLockName(true, "ignored")).toBe("hiraya-sqlite-v1-owner");
   });
 });
