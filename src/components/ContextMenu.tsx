@@ -81,7 +81,7 @@ function MenuSubmenu({ icon, label, items }: { icon: ReactNode; label: string; i
       const next = linearNavigationIndex(menuItems.indexOf(document.activeElement as HTMLButtonElement), menuItems.length, event.key, "vertical");
       if (next < 0) return;
       event.preventDefault(); event.stopPropagation(); menuItems[next]?.focus();
-    }}>{items.map((item) => <button type="button" role="menuitem" tabIndex={-1} disabled={item.disabled} key={item.id} onClick={item.onSelect}>{item.icon}{item.label}</button>)}</div>
+    }}>{items.map((item) => <button type="button" role="menuitem" tabIndex={-1} disabled={item.disabled} key={item.id} onClick={item.onSelect}><span className="context-menu__submenu-item-icon" aria-hidden="true">{item.icon}</span><span className="context-menu__submenu-item-label">{item.label}</span></button>)}</div>
   </div>;
 }
 
