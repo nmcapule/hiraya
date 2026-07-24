@@ -25,7 +25,7 @@ let resolveStorageNamespace!: (value: string) => void;
 const storageNamespace = new Promise<string>((resolve) => { resolveStorageNamespace = resolve; });
 
 function configureStorageNamespace(value: unknown) {
-  if (typeof value !== "string" || !/^[a-f\d]{64}$/.test(value)) throw new Error("The SQLite worker has no valid storage namespace.");
+  if (typeof value !== "string" || !/^[a-f\d]{64}$/.test(value)) throw new Error("The SQLite worker v2 has no valid storage namespace.");
   if (selectedStorageNamespace && selectedStorageNamespace !== value) throw new Error("The SQLite worker storage namespace cannot change.");
   if (!selectedStorageNamespace) {
     selectedStorageNamespace = value;
