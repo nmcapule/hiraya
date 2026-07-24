@@ -1,0 +1,40 @@
+:root {
+  color: #f5eedc;
+  background: #13231f;
+  font-family: Georgia, serif;
+}
+
+body {
+  display: grid;
+  min-height: 100vh;
+  margin: 0;
+  place-items: center;
+}
+
+main {
+  max-width: 32rem;
+  padding: 3rem;
+  border: 1px solid #526a60;
+  background: #1b3029;
+}
+
+.eyebrow {
+  color: #e1a854;
+  font: 700 0.7rem/1.2 system-ui, sans-serif;
+  letter-spacing: 0.18em;
+}
+
+h1 {
+  margin: 1rem 0 2rem;
+  font-size: clamp(2.5rem, 10vw, 5rem);
+  line-height: 0.95;
+}
+
+button {
+  padding: 0.8rem 1rem;
+  border: 0;
+  background: #e1a854;
+  color: #172019;
+  cursor: pointer;
+  font: 700 0.9rem system-ui, sans-serif;
+}

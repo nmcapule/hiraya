@@ -1,6 +1,8 @@
 {
   "files": [],
   "references": [
+    { "path": "./packages/app-cli" },
+    { "path": "./packages/app-runtime" },
     { "path": "./packages/apps-contracts" },
     { "path": "./packages/apps-sdk" },
     { "path": "./tsconfig.app.json" },

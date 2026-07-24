@@ -1,0 +1,22 @@
+{
+  "name": "@hiraya/app-cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "hiraya-app": "./src/cli.ts"
+  },
+  "exports": {
+    ".": "./src/archive.ts"
+  },
+  "types": "./src/archive.ts",
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@hiraya/apps-contracts": "workspace:*",
+    "fflate": "^0.8.3",
+    "parse5": "^8.0.0"
+  }
+}

@@ -1,7 +1,9 @@
 import {
   APPS_PROTOCOL_VERSION,
+  parseHostInit,
   parseRpcEvent,
   parseRpcResponse,
+  parseServiceResult,
   type CommandDefinition,
   type FileHandle,
   type FolderHandle,
@@ -22,12 +24,13 @@ export interface RequestOptions {
 
 export interface ConnectOptions {
   port?: MessagePort;
-  targetOrigin?: string;
   appId?: string;
   requestTimeoutMs?: number;
+  handshakeTimeoutMs?: number;
 }
 
 type PendingRequest = {
+  method: ServiceMethod;
   resolve(value: unknown): void;
   reject(reason: unknown): void;
   cleanup(): void;
@@ -139,6 +142,7 @@ export class HirayaClient {
         settle();
       };
       this.pending.set(id, {
+        method,
         resolve: (value) => finish(() => resolve(value as ServiceMethods[M]["result"])),
         reject: (reason) => finish(() => reject(reason)),
         cleanup,
@@ -181,7 +185,7 @@ export class HirayaClient {
         const response = parseRpcResponse(message.data);
         const pending = this.pending.get(response.id);
         if (!pending) return;
-        if (response.ok) pending.resolve(response.result);
+        if (response.ok) pending.resolve(parseServiceResult(pending.method, response.result));
         else pending.reject(new HirayaSdkError(response.error.message, response.error.code, response.error.details));
         return;
       }
@@ -200,21 +204,47 @@ export class HirayaClient {
   };
 }
 
-export function connectHiraya(options: ConnectOptions = {}): HirayaClient {
-  let port = options.port;
-  if (port === undefined) {
-    if (options.targetOrigin === undefined) throw new TypeError("targetOrigin is required for the Hiraya parent handshake.");
-    if (typeof window === "undefined" || window.parent === window) throw new HirayaSdkError("Hiraya must run inside its host or receive a MessagePort.", "UNAVAILABLE");
-    const channel = new MessageChannel();
-    port = channel.port1;
-    const handshake = { type: "hiraya:connect", protocolVersion: APPS_PROTOCOL_VERSION, ...(options.appId === undefined ? {} : { appId: options.appId }) };
-    window.parent.postMessage(handshake, options.targetOrigin, [channel.port2]);
-  }
+export async function connectHiraya(options: ConnectOptions = {}): Promise<HirayaClient> {
+  const port = options.port ?? await waitForHostInit(options);
   return new HirayaClient(port, options.requestTimeoutMs);
+}
+
+async function waitForHostInit(options: ConnectOptions): Promise<MessagePort> {
+  if (typeof window === "undefined" || window.parent === window) throw new HirayaSdkError("Hiraya must run inside its host or receive a MessagePort.", "UNAVAILABLE");
+  if (options.appId === undefined) throw new TypeError("appId is required when connecting to the Hiraya host.");
+  const timeoutMs = options.handshakeTimeoutMs ?? 15_000;
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new TypeError("Handshake timeout must be positive.");
+  return new Promise<MessagePort>((resolve, reject) => {
+    const timer = setTimeout(() => finish(() => reject(new HirayaSdkError("Hiraya host initialization timed out.", "TIMEOUT"))), timeoutMs);
+    const finish = (settle: () => void) => {
+      clearTimeout(timer);
+      window.removeEventListener("message", onMessage);
+      settle();
+    };
+    const onMessage = (event: MessageEvent<unknown>) => {
+      if (event.source !== window.parent || !isHostInit(event.data)) return;
+      try {
+        const init = parseHostInit(event.data);
+        if (options.appId !== undefined && init.appId !== options.appId) throw new TypeError("Host init app ID does not match this app.");
+        if (event.ports.length !== 1) throw new TypeError("Host init must transfer exactly one message port.");
+        const port = event.ports[0];
+        port.postMessage({ protocolVersion: APPS_PROTOCOL_VERSION, type: "hiraya:ready", appId: init.appId, nonce: init.nonce });
+        finish(() => resolve(port));
+      } catch (error) {
+        finish(() => reject(error));
+      }
+    };
+    window.addEventListener("message", onMessage);
+    window.parent.postMessage({ protocolVersion: APPS_PROTOCOL_VERSION, type: "hiraya:connect", appId: options.appId }, "*");
+  });
 }
 
 function isMessageType(value: unknown, type: "response" | "event"): boolean {
   return typeof value === "object" && value !== null && "type" in value && value.type === type;
+}
+
+function isHostInit(value: unknown): boolean {
+  return typeof value === "object" && value !== null && "type" in value && value.type === "hiraya:init";
 }
 
 function messageId(value: unknown): string | undefined {

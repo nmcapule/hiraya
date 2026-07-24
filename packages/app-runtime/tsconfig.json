@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "tsBuildInfoFile": "../../node_modules/.tmp/app-runtime.tsbuildinfo",
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "outDir": "dist",
+    "rootDir": "src",
+    "jsx": "react-jsx",
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "skipLibCheck": true
+  },
+  "references": [{ "path": "../apps-contracts" }, { "path": "../app-cli" }],
+  "include": ["src"],
+  "exclude": ["src/**/*.test.ts"]
+}

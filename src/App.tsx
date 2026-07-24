@@ -71,7 +71,7 @@ import { topOverlay } from "./ui/overlay";
 import { createEntryIndex } from "./ui/entry-index";
 import { clampWindowBounds, initialWindowBounds, type WindowBounds } from "./ui/window-manager";
 import { namesMatch } from "./lib/entry-validation";
-import { parseWindowTargets, restoreWindowSession, type WindowSession, type WindowSessionApp, type WindowTarget } from "./lib/window-session";
+import { createWindowSession, parseWindowTargets, restoreWindowSession, type WindowSession, type WindowTarget } from "./lib/window-session";
 import { parseInternetShortcut } from "./lib/internet-shortcut";
 import { createSerialTaskQueue } from "./lib/serial-task";
 import { validateWallpaperImage } from "./lib/wallpaper-image";
@@ -93,13 +93,19 @@ import type { KeyboardShortcut, WindowListItem } from "./ui/panel-data";
 import { canMutateDesktop, sharedOfflineMessage } from "./lib/permissions";
 import { builtinAppEntryDependency, builtinAppMaximizeRestoreWindow, builtinAppTargetId, builtinAppWindow, extractBuiltinAppTarget } from "./apps/registry";
 import { createAppCommandService, type AppCommandContext, type AppCommandId } from "./apps/commands";
+import type { AppPackageInspection } from "@hiraya/app-cli";
+import { isAppPackageName, RpcDispatcher } from "@hiraya/app-runtime";
+import { SandboxAppFrame } from "@hiraya/app-runtime/react";
+import { AppHostServices, AppLifecycleService, AppThemeService, CapabilityStore, FileService, HostServiceError, mapThemeTokens } from "./apps/host";
+import { createFile as createAppFile, deleteEntry as deleteAppEntry, moveEntry as moveAppEntry, saveFile as saveAppFile } from "./lib/sync";
 
 type BaseRunningApp = { id: string; bounds: WindowBounds; minimized: boolean; zIndex: number };
 type FileApp = BaseRunningApp & { kind: "file"; fileId: string; file?: FileEntry; blob?: File; editable?: boolean; loadError?: string; editMode: boolean; contentRevision: number; remoteChanged: boolean };
 type ExplorerApp = BaseRunningApp & { kind: "explorer"; folderId: string | null };
 type SettingsApp = BaseRunningApp & { kind: "settings" };
 type PropertiesApp = BaseRunningApp & { kind: "properties"; entryId: string };
-type RunningApp = FileApp | ExplorerApp | PropertiesApp | SettingsApp;
+type SandboxApp = BaseRunningApp & { kind: "sandbox"; fileId: string; title: string; dirty: boolean; package: AppPackageInspection; dispatcher: RpcDispatcher };
+type RunningApp = FileApp | ExplorerApp | PropertiesApp | SettingsApp | SandboxApp;
 type RouteHistoryState = { hiraya: true; schemaVersion: 1; parentHash?: string; apps: WindowTarget[] };
 type PendingPaste = { snapshot: ClipboardEntrySnapshot; parentId: string | null; position?: EntryPosition };
 const MINIMAP_LONG_PRESS_MS = 500;
@@ -120,6 +126,10 @@ function topRunningAppInSegment(apps: RunningApp[], segment: SurfaceSegment, siz
 
 function App({ session }: { session: AuthSession | null }) {
   const commandService = useMemo(createAppCommandService, []);
+  const appLifecycle = useMemo(() => new AppLifecycleService(2_000, ({ instanceId }) => closeAppRef.current(instanceId)), []);
+  const appTheme = useMemo(() => new AppThemeService(resolveTheme(DEFAULT_THEME_STATE)), []);
+  const appHostServices = useMemo(() => new AppHostServices(appLifecycle, appTheme), [appLifecycle, appTheme]);
+  const appCapabilities = useMemo(() => new CapabilityStore(), []);
   const [entries, setEntries] = useState<DesktopEntry[]>([]);
   const [desktops, setDesktops] = useState<DesktopIdentity[]>([]);
   const [catalogQuota, setCatalogQuota] = useState<CatalogQuota | null>(null);
@@ -249,6 +259,8 @@ function App({ session }: { session: AuthSession | null }) {
   const activationQueueRef = useRef(createSerialTaskQueue());
   const activationGenerationRef = useRef(0);
   const fileDirtyRef = useRef<Record<string, boolean>>({});
+  const appSnapshotRef = useRef<DesktopStateSnapshot | null>(null);
+  const sandboxFullscreenBoundsRef = useRef(new Map<string, WindowBounds>());
   const windowSessionReadyRef = useRef(false);
   const windowSessionSaveRef = useRef<Promise<void>>(Promise.resolve());
   const updaterRef = useRef<PwaUpdater | null>(null);
@@ -318,6 +330,36 @@ function App({ session }: { session: AuthSession | null }) {
   const contextMenuEntry = contextMenu?.type === "entry" ? entryIndex.byId.get(contextMenu.entryId) ?? null : null;
   const contextMenuEntries = contextMenuEntry && selectedIdSet.has(contextMenuEntry.id) ? selectedEntries : contextMenuEntry ? [contextMenuEntry] : [];
   const moveDialogEntries = moveDialogEntryIds.map((id) => entryIndex.byId.get(id)).filter((entry): entry is DesktopEntry => Boolean(entry));
+
+  useEffect(() => {
+    appTheme.set(activeTheme);
+    const tokens = mapThemeTokens(activeTheme);
+    for (const app of runningAppsRef.current) if (app.kind === "sandbox") app.dispatcher.emit("theme.changed", tokens);
+  }, [activeTheme, appTheme]);
+
+  useEffect(() => appLifecycle.subscribe((owner, state) => {
+    fileDirtyRef.current[owner.instanceId] = state.dirty;
+    setDirtyAppIds((current) => {
+      if (current.has(owner.instanceId) === state.dirty) return current;
+      const next = new Set(current);
+      if (state.dirty) next.add(owner.instanceId); else next.delete(owner.instanceId);
+      return next;
+    });
+    updateRunningApps((current) => current.map((app) => {
+      if (app.id !== owner.instanceId || app.kind !== "sandbox") return app;
+      app.dispatcher.emit("window.stateChanged", { focused: state.focused, maximized: state.maximized, fullscreen: state.fullscreen, width: state.width, height: state.height });
+      let bounds = { ...app.bounds, width: state.width, height: state.height };
+      if (state.fullscreen) {
+        if (!sandboxFullscreenBoundsRef.current.has(app.id)) sandboxFullscreenBoundsRef.current.set(app.id, app.bounds);
+        const segment = projectLogicalPosition(app.bounds, desktopSizeRef.current).segment;
+        bounds = { ...restoreLogicalPosition({ x: 0, y: 0 }, segment, desktopSizeRef.current), ...desktopSizeRef.current };
+      } else {
+        bounds = sandboxFullscreenBoundsRef.current.get(app.id) ?? bounds;
+        sandboxFullscreenBoundsRef.current.delete(app.id);
+      }
+      return { ...app, title: state.title, bounds };
+    }));
+  }), [appLifecycle]);
   function setCurrentRoute(next: DesktopRoute) {
     routeRef.current = next;
     setRoute(next);
@@ -363,10 +405,9 @@ function App({ session }: { session: AuthSession | null }) {
   }
 
   function runningAppTargets(apps = runningAppsRef.current): WindowTarget[] {
-    return apps.map((app) => {
+    return apps.flatMap((app): WindowTarget[] => {
       const target = extractBuiltinAppTarget(app);
-      if (!target) throw new Error(`Unknown built-in app: ${app.kind}`);
-      return target;
+      return target ? [target] : [];
     });
   }
 
@@ -417,6 +458,7 @@ function App({ session }: { session: AuthSession | null }) {
     if (app.kind === "file") return { ...base, fileId: app.fileId };
     if (app.kind === "explorer") return { ...base, explorerFolderId: app.folderId };
     if (app.kind === "properties") return { ...base, propertiesEntryId: app.entryId };
+    if (app.kind === "sandbox") return base;
     return { ...base, settings: true };
   }
 
@@ -456,6 +498,7 @@ function App({ session }: { session: AuthSession | null }) {
     if (!target) return;
     const zIndex = ++nextWindowZRef.current;
     updateRunningApps((current) => current.map((app) => app.id === id ? { ...app, minimized: false, zIndex } : app));
+    for (const app of runningAppsRef.current) if (app.kind === "sandbox") appLifecycle.setHostState({ appId: app.package.manifest.id, instanceId: app.id }, { focused: app.id === id });
     setFocusedApp(id);
     const currentRoute = routeRef.current;
     if (syncRoute && currentRoute) goToSegment(segmentForApp(target), "replace", { ...target, minimized: false, zIndex });
@@ -471,6 +514,12 @@ function App({ session }: { session: AuthSession | null }) {
       return next;
     });
     delete fileLoadGenerationsRef.current[id];
+    sandboxFullscreenBoundsRef.current.delete(id);
+    const closing = runningAppsRef.current.find((app) => app.id === id);
+    if (closing?.kind === "sandbox") {
+      closing.dispatcher.dispose();
+      appCapabilities.revokeInstance(id);
+    }
     const remaining = runningAppsRef.current.filter((app) => app.id !== id);
     updateRunningApps(remaining);
     if (focusedAppIdRef.current === id) {
@@ -491,6 +540,8 @@ function App({ session }: { session: AuthSession | null }) {
   }
 
   function minimizeApp(id: string) {
+    const target = runningAppsRef.current.find((app) => app.id === id);
+    if (target?.kind === "sandbox") appLifecycle.setHostState({ appId: target.package.manifest.id, instanceId: target.id }, { focused: false });
     updateRunningApps((current) => current.map((app) => app.id === id ? { ...app, minimized: true } : app));
     if (focusedAppIdRef.current === id) {
       const next = topAppInSegment(runningAppsRef.current, activeSegment, id);
@@ -501,6 +552,8 @@ function App({ session }: { session: AuthSession | null }) {
   }
 
   function updateAppBounds(id: string, bounds: WindowBounds) {
+    const target = runningAppsRef.current.find((app) => app.id === id);
+    if (target?.kind === "sandbox") appLifecycle.setHostState({ appId: target.package.manifest.id, instanceId: target.id }, { width: Math.round(bounds.width), height: Math.round(bounds.height) });
     updateRunningApps((current) => current.map((app) => app.id === id ? {
       ...app,
       bounds: { ...bounds, ...restoreLogicalPosition(bounds, segmentForApp(app), desktopSize) },
@@ -509,7 +562,7 @@ function App({ session }: { session: AuthSession | null }) {
 
   function createAppBase(id: string, kind: RunningApp["kind"], index?: number, segment = activeSegment): BaseRunningApp {
     const staggerIndex = index ?? runningAppsRef.current.filter((app) => appIsInSegment(app, segment)).length;
-    const { width, height, minWidth, minHeight } = builtinAppWindow(kind);
+    const { width, height, minWidth, minHeight } = kind === "sandbox" ? { width: 820, height: 620, minWidth: 360, minHeight: 260 } : builtinAppWindow(kind);
     const localBounds = initialWindowBounds(desktopSize, { width, height, minWidth, minHeight, index: staggerIndex });
     return {
       id,
@@ -698,6 +751,7 @@ function App({ session }: { session: AuthSession | null }) {
       setEditorSettings(synced.editorSettings);
       setAppearance(synced.appearance);
       const syncedIds = new Set(synced.entries.map((entry) => entry.id));
+      appSnapshotRef.current = synced;
       setSelectedIds((current) => current.filter((id) => syncedIds.has(id)));
       setContextMenu((current) => current?.type === "entry" && !syncedIds.has(current.entryId) ? null : current);
       setMoveDialogEntryIds((current) => current.filter((id) => syncedIds.has(id)));
@@ -709,9 +763,11 @@ function App({ session }: { session: AuthSession | null }) {
         return current.type === "rename" ? syncedIds.has(current.entryId) ? current : null : current.entryIds.some((id) => syncedIds.has(id)) ? { ...current, entryIds: current.entryIds.filter((id) => syncedIds.has(id)) } : null;
       });
       const availableApps = runningAppsRef.current.filter((app) => {
+        if (app.kind === "sandbox") return syncedIds.has(app.fileId);
         const dependency = builtinAppEntryDependency(app);
         return !dependency || syncedIds.has(dependency.entryId);
       });
+      for (const app of runningAppsRef.current) if (app.kind === "sandbox" && !availableApps.includes(app)) app.dispatcher.dispose();
       updateRunningApps(availableApps);
       if (focusedAppIdRef.current && !availableApps.some((app) => app.id === focusedAppIdRef.current)) {
         const currentRoute = routeRef.current;
@@ -768,6 +824,7 @@ function App({ session }: { session: AuthSession | null }) {
         if (!active) return;
         const { entries: loadedEntries, layout: loadedLayout, editorSettings: loadedEditorSettings, appearance: loadedAppearance, sync } = loadedDesktop;
         contentRevisionsRef.current = sync.contentRevisions;
+        appSnapshotRef.current = loadedDesktop;
         layoutRef.current = loadedLayout;
         entriesRef.current = loadedEntries;
         setLayout(loadedLayout);
@@ -846,15 +903,7 @@ function App({ session }: { session: AuthSession | null }) {
 
   useEffect(() => {
     if (windowSessionReadyRef.current) {
-      const session: WindowSession = {
-        schemaVersion: 1,
-        apps: runningApps.map((app): WindowSessionApp => {
-          const base = { bounds: app.bounds, minimized: app.minimized, zIndex: app.zIndex };
-          const target = extractBuiltinAppTarget(app);
-          if (!target) throw new Error(`Unknown built-in app: ${app.kind}`);
-          return { ...base, ...target };
-        }),
-      };
+      const session = createWindowSession(runningApps);
       windowSessionSaveRef.current = windowSessionSaveRef.current
         .then(() => saveWindowSession(activeDesktopIdRef.current, session))
         .catch(() => { setError("The open app session could not be saved."); });
@@ -1007,7 +1056,7 @@ function App({ session }: { session: AuthSession | null }) {
     }, "replace");
     updateRunningApps((currentApps) => currentApps.map((app) => {
       const projection = projectLogicalPosition(app.bounds, desktopSize);
-      const { minWidth, minHeight } = builtinAppWindow(app.kind);
+      const { minWidth, minHeight } = app.kind === "sandbox" ? { minWidth: 360, minHeight: 260 } : builtinAppWindow(app.kind);
       const localBounds = clampWindowBounds({ ...app.bounds, ...projection.local }, desktopSize, { minWidth, minHeight });
       return { ...app, bounds: { ...localBounds, ...restoreLogicalPosition(localBounds, projection.segment, desktopSize) } };
     }));
@@ -1017,6 +1066,7 @@ function App({ session }: { session: AuthSession | null }) {
     if (loading) return;
     const currentApps = runningAppsRef.current;
     const reconciledApps = currentApps.flatMap((app): RunningApp[] => {
+      if (app.kind === "sandbox") return entryIndex.byId.has(app.fileId) ? [app] : [];
       const dependency = builtinAppEntryDependency(app);
       if (!dependency) return [app];
       const entry = entryIndex.byId.get(dependency.entryId);
@@ -1445,7 +1495,9 @@ function App({ session }: { session: AuthSession | null }) {
     setEditorSettings(desktop.editorSettings);
     setAppearance(desktop.appearance);
     replaceSelection("desktop", []);
+    for (const app of runningAppsRef.current) if (app.kind === "sandbox") app.dispatcher.dispose();
     updateRunningApps([]);
+    appSnapshotRef.current = desktop;
     setFocusedApp(null);
     writeRoute(normalizeDesktopRoute({ desktopId, column: 0, row: 0 }, desktop.entries, desktopId), "replace");
     restoreRunningApps(await readWindowSession(desktopId), desktop.entries);
@@ -1787,6 +1839,73 @@ function App({ session }: { session: AuthSession | null }) {
     return true;
   }
 
+  async function openAppPackage(file: FileEntry) {
+    const existing = runningAppsRef.current.find((app): app is SandboxApp => app.kind === "sandbox" && app.fileId === file.id);
+    if (existing) { focusApp(existing.id); return; }
+    setError("");
+    try {
+      const blob = await readFile(file.id);
+      const { inspectAppArchive } = await import("@hiraya/app-cli");
+      const appPackage = await inspectAppArchive(new Uint8Array(await blob.arrayBuffer()));
+      const permissions = appPackage.manifest.permissions.length ? appPackage.manifest.permissions.join(", ") : "None";
+      const confirmed = await requestConfirmation({
+        title: `Run ${appPackage.manifest.name}?`,
+        message: `This package will run only for this session. Requested permissions: ${permissions}. It is isolated from Hiraya and the network except through approved host services.`,
+        confirmLabel: "Run app",
+      });
+      if (!confirmed || !entriesRef.current.some((entry) => entry.id === file.id)) return;
+      const id = `sandbox:${file.id}:${crypto.randomUUID()}`;
+      const base = createAppBase(id, "sandbox");
+      const host = appHostServices.openInstance({
+        instanceId: id,
+        launch: {
+          protocolVersion: 1,
+          appId: appPackage.manifest.id,
+          launchId: crypto.randomUUID(),
+          source: "launcher",
+          files: [],
+          folders: [],
+          arguments: [],
+          theme: mapThemeTokens(activeTheme),
+        },
+        window: { focused: true, maximized: false, fullscreen: false, width: Math.round(base.bounds.width), height: Math.round(base.bounds.height) },
+        title: appPackage.manifest.name,
+      });
+      const unavailablePicker = async () => { throw new HostServiceError("File pickers are not supported for session apps yet.", "UNAVAILABLE"); };
+      const runtimeHost = {
+        ...host,
+        dialogs: {
+          openFile: unavailablePicker,
+          openFolder: unavailablePicker,
+          saveFile: unavailablePicker,
+          confirm: async (params: { title: string; message: string; confirmLabel?: string; destructive?: boolean }) => requestConfirmation({ title: params.title, message: params.message, confirmLabel: params.confirmLabel ?? "Confirm", danger: params.destructive }),
+        },
+      };
+      const files = new FileService({
+        appInstanceId: id,
+        permissions: appPackage.manifest.permissions,
+        capabilities: appCapabilities,
+        getSnapshot: () => appSnapshotRef.current ?? (() => { throw new HostServiceError("The desktop is unavailable.", "UNAVAILABLE"); })(),
+        sync: {
+          readFile,
+          saveFile: saveAppFile,
+          createFile: createAppFile,
+          createFolder,
+          renameEntry,
+          moveEntry: moveAppEntry,
+          deleteEntry: deleteAppEntry,
+        },
+        createPosition: () => positionFor(null),
+      });
+      const dispatcher = new RpcDispatcher({ permissions: appPackage.manifest.permissions, host: runtimeHost, files });
+      const app: SandboxApp = { ...base, kind: "sandbox", fileId: file.id, title: appPackage.manifest.name, dirty: false, package: appPackage, dispatcher };
+      updateRunningApps([...runningAppsRef.current, app]);
+      setFocusedApp(id);
+    } catch (openError) {
+      setError(openError instanceof Error ? openError.message : "The app package could not be opened.");
+    }
+  }
+
   async function openInternetShortcut(file: FileEntry, popup: Window | null) {
     if (!popup) {
       setError("The link was blocked by the browser. Allow pop-ups for Hiraya and try again.");
@@ -1808,6 +1927,10 @@ function App({ session }: { session: AuthSession | null }) {
 
   function handleOpen(entry: DesktopEntry) {
     setContextMenu(null);
+    if (entry.kind === "file" && isAppPackageName(entry.name)) {
+      void openAppPackage(entry);
+      return;
+    }
     if (entry.kind === "file" && fileCapabilities(entry).preview === "url") {
       setError("");
       void openInternetShortcut(entry, window.open("about:blank", "_blank"));
@@ -2024,13 +2147,14 @@ function App({ session }: { session: AuthSession | null }) {
     const segment = projectLogicalPosition(app.bounds, size).segment;
     const restored = restoredWindowBoundsRef.current.get(id);
     const maximized = appIsMaximized(app);
-    const fallback = initialWindowBounds(size, builtinAppMaximizeRestoreWindow(app.kind));
+    const fallback = initialWindowBounds(size, app.kind === "sandbox" ? { width: 820, height: 620, minWidth: 360, minHeight: 260 } : builtinAppMaximizeRestoreWindow(app.kind));
     const bounds = maximized
       ? restored ?? { ...fallback, ...restoreLogicalPosition(fallback, segment, size) }
       : { ...restoreLogicalPosition({ x: 0, y: 0 }, segment, size), width: size.width, height: size.height };
     if (!maximized) restoredWindowBoundsRef.current.set(id, app.bounds);
     else restoredWindowBoundsRef.current.delete(id);
     updateRunningApps((current) => current.map((candidate) => candidate.id === id ? { ...candidate, bounds } : candidate));
+    if (app.kind === "sandbox") appLifecycle.setHostState({ appId: app.package.manifest.id, instanceId: app.id }, { maximized: !maximized, width: Math.round(bounds.width), height: Math.round(bounds.height) });
     focusApp(id);
   }
 
@@ -2415,7 +2539,7 @@ function App({ session }: { session: AuthSession | null }) {
 
   function runningAppLabel(app: RunningApp) {
     const entry = app.kind === "file" ? entryIndex.byId.get(app.fileId) : app.kind === "properties" ? entryIndex.byId.get(app.entryId) : app.kind === "explorer" && app.folderId ? entryIndex.byId.get(app.folderId) : null;
-    return app.kind === "settings" ? "Settings" : app.kind === "properties" ? `${entry?.name ?? "Item"} properties` : app.kind === "explorer" ? entry?.name ?? activeDesktopName : entry?.name ?? app.file?.name ?? "File";
+    return app.kind === "sandbox" ? app.title : app.kind === "settings" ? "Settings" : app.kind === "properties" ? `${entry?.name ?? "Item"} properties` : app.kind === "explorer" ? entry?.name ?? activeDesktopName : entry?.name ?? app.file?.name ?? "File";
   }
 
   const windowItems: WindowListItem[] = runningApps.map((app) => {
@@ -2628,8 +2752,8 @@ function App({ session }: { session: AuthSession | null }) {
             const fileEntry = app.kind === "file" ? app.file ?? entryIndex.byId.get(app.fileId) : null;
             const file = fileEntry?.kind === "file" ? fileEntry : null;
             const propertiesEntry = app.kind === "properties" ? entryIndex.byId.get(app.entryId) : null;
-            const title = app.kind === "settings" ? isMobile && settingsPage !== "main" ? settingsPage === "themes" ? "Themes" : "Activity" : "Settings" : app.kind === "properties" ? `${propertiesEntry?.name ?? "Item"} properties` : app.kind === "explorer" ? folder?.name ?? activeDesktopName : file?.name ?? "Opening file";
-            const appWindow = builtinAppWindow(app.kind);
+            const title = app.kind === "sandbox" ? app.title : app.kind === "settings" ? isMobile && settingsPage !== "main" ? settingsPage === "themes" ? "Themes" : "Activity" : "Settings" : app.kind === "properties" ? `${propertiesEntry?.name ?? "Item"} properties` : app.kind === "explorer" ? folder?.name ?? activeDesktopName : file?.name ?? "Opening file";
+            const appWindow = app.kind === "sandbox" ? { minWidth: 360, minHeight: 260 } : builtinAppWindow(app.kind);
             return (
               <AppWindow
                 key={app.id}
@@ -2654,7 +2778,7 @@ function App({ session }: { session: AuthSession | null }) {
                 canMoveArea={!isMobile}
                 onToggleMaximize={toggleMaximizeApp}
                 onMoveArea={moveAppToArea}
-                 titleArea={<div><span className="window-kicker">{app.kind === "file" ? app.editMode || file && ["text", "url"].includes(fileCapabilities(file).preview) ? "Text editor" : file && fileCapabilities(file).preview === "markdown" ? "Markdown" : "Preview" : app.kind === "explorer" ? "Folder" : app.kind === "properties" ? "Properties" : "Hiraya desktop"}</span><h2 id={titleId}>{title}</h2></div>}
+                 titleArea={<div><span className="window-kicker">{app.kind === "sandbox" ? "Session app" : app.kind === "file" ? app.editMode || file && ["text", "url"].includes(fileCapabilities(file).preview) ? "Text editor" : file && fileCapabilities(file).preview === "markdown" ? "Markdown" : "Preview" : app.kind === "explorer" ? "Folder" : app.kind === "properties" ? "Properties" : "Hiraya desktop"}</span><h2 id={titleId}>{title}</h2></div>}
               >
                 {(headerElements) => <>
                 {app.kind === "file" && file && app.blob ? (
@@ -2692,6 +2816,7 @@ function App({ session }: { session: AuthSession | null }) {
                     <button className="button button--primary" type="button" onClick={() => loadFileApp(app.id, file, app.contentRevision)}>Retry</button>
                   </div>
                 ) : app.kind === "file" ? <div className="app-window__loading" role="status"><SpinnerGap size={22} /> Opening {file?.name ?? "file"}...</div> : null}
+                {app.kind === "sandbox" && <SandboxAppFrame package={app.package} dispatcher={app.dispatcher} title={app.title} />}
                 {app.kind === "explorer" && (
                   <FolderExplorer
                     folder={folder}

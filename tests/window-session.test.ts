@@ -1,8 +1,15 @@
 import { describe, expect, test } from "bun:test";
-import { parseWindowSession, parseWindowTargets, restoreWindowSession } from "../src/lib/window-session";
+import { createWindowSession, parseWindowSession, parseWindowTargets, restoreWindowSession } from "../src/lib/window-session";
 import type { DesktopEntry } from "../src/types";
 
 describe("window and browser sessions", () => {
+  test("omits ephemeral sandbox apps from strict v1 sessions", () => {
+    const bounds = { x: 0, y: 0, width: 500, height: 400 };
+    expect(createWindowSession([
+      { kind: "settings", bounds, minimized: false, zIndex: 1 },
+      { kind: "sandbox", packageId: "dev.hiraya.test", bounds, minimized: false, zIndex: 2 },
+    ])).toEqual({ schemaVersion: 1, apps: [{ kind: "settings", bounds, minimized: false, zIndex: 1 }] });
+  });
   test("requires window session schema version 1", () => {
     const value = { schemaVersion: 1, apps: [{ kind: "settings", bounds: { x: 0, y: 0, width: 500, height: 400 }, minimized: false, zIndex: 1 }] };
     expect(parseWindowSession(value)).toEqual(value);

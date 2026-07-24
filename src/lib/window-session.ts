@@ -19,6 +19,16 @@ export type WindowTarget = BuiltinAppTarget;
 
 export const EMPTY_WINDOW_SESSION: WindowSession = { schemaVersion: 1, apps: [] };
 
+export function createWindowSession(apps: readonly (WindowSessionBase & Record<string, unknown>)[]): WindowSession {
+  return {
+    schemaVersion: 1,
+    apps: apps.flatMap((app): WindowSessionApp[] => {
+      const target = extractBuiltinAppTarget(app);
+      return target ? [{ bounds: app.bounds, minimized: app.minimized, zIndex: app.zIndex, ...target }] : [];
+    }),
+  };
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
