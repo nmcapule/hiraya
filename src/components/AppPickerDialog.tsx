@@ -23,6 +23,23 @@ export function AppPickerDialog({ request, entries, onCancel, onOpenFiles, onOpe
   const [busy, setBusy] = useState(false);
   useModalDialog(backdropRef, dialogRef, onCancel, busy);
   const folders = useMemo(() => entries.filter((entry): entry is FolderEntry => entry.kind === "folder"), [entries]);
+  const folderLabels = useMemo(() => {
+    const byId = new Map(entries.map((entry) => [entry.id, entry]));
+    return new Map(folders.map((folder) => {
+      const names = [folder.name];
+      const seen = new Set([folder.id]);
+      let parentId = folder.parentId;
+      while (parentId) {
+        if (seen.has(parentId)) break;
+        seen.add(parentId);
+        const parent = byId.get(parentId);
+        if (!parent || parent.kind !== "folder") break;
+        names.unshift(parent.name);
+        parentId = parent.parentId;
+      }
+      return [folder.id, names.join(" / ")] as const;
+    }));
+  }, [entries, folders]);
   const files = useMemo(() => entries.filter((entry): entry is FileEntry => entry.kind === "file" && (request.kind !== "openFile" || !request.params.mimeTypes?.length || request.params.mimeTypes.includes(entry.mimeType))), [entries, request]);
   const title = request.kind === "openFile" ? "Choose file" : request.kind === "openFolder" ? "Choose folder" : "Save file";
 
@@ -46,9 +63,9 @@ export function AppPickerDialog({ request, entries, onCancel, onOpenFiles, onOpe
           {files.map((file) => <label className="app-picker__item" key={file.id}><input type={request.params.multiple ? "checkbox" : "radio"} name="picked-file" checked={selected.includes(file.id)} onChange={(event) => setSelected(event.target.checked ? request.params.multiple ? [...selected, file.id] : [file.id] : selected.filter((id) => id !== file.id))} /><FileIcon size={17} /><span>{file.name}</span></label>)}
           {!files.length && <p>No matching files are available.</p>}
         </div> : <>
-          <label>Location<select value={folderId} onChange={(event) => setFolderId(event.target.value)}><option value="">Desktop</option>{folders.map((folder) => <option key={folder.id} value={folder.id}>{folder.name}</option>)}</select></label>
+          <label>Location<select value={folderId} onChange={(event) => setFolderId(event.target.value)}><option value="">Desktop</option>{folders.map((folder) => <option key={folder.id} value={folder.id}>{folderLabels.get(folder.id)}</option>)}</select></label>
           {request.kind === "saveFile" && <label>File name<input autoFocus value={name} maxLength={180} onChange={(event) => setName(event.target.value)} /></label>}
-          {request.kind === "openFolder" && <div className="app-picker__folder"><Folder size={22} /><span>{folders.find((folder) => folder.id === folderId)?.name ?? "Desktop"}</span></div>}
+          {request.kind === "openFolder" && <div className="app-picker__folder"><Folder size={22} /><span>{folderLabels.get(folderId) ?? "Desktop"}</span></div>}
         </>}
         {error && <p className="form-error" role="alert">{error}</p>}
         <div className="dialog-actions"><button className="button button--quiet" type="button" onClick={onCancel} disabled={busy}>Cancel</button><button className="button button--primary" type="button" disabled={busy || request.kind === "openFile" && selected.length === 0 || request.kind === "saveFile" && !name.trim()} onClick={() => void submit()}>{busy ? "Saving..." : request.kind === "saveFile" ? "Save" : "Choose"}</button></div>

@@ -268,7 +268,7 @@ a:focus-visible {
 .menu-bar__clock {
   min-width: 98px;
   margin-left: 7px;
-  font-family: "DM Mono", ui-monospace, monospace;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
   font-size: 10px;
   text-align: right;
   color: rgba(255, 255, 255, 0.76);
@@ -623,7 +623,7 @@ a:focus-visible {
   margin: 15vh auto;
   padding: 24px;
   color: #e9eee9;
-  font-family: "Space Grotesk", system-ui, sans-serif;
+  font-family: var(--theme-font, system-ui, sans-serif);
 }
 
 .startup-state {
@@ -766,7 +766,7 @@ a:focus-visible {
 
 .properties-window__identity strong {
   overflow: hidden;
-  font-family: "Fraunces", Georgia, serif;
+  font-family: var(--theme-font, system-ui, sans-serif);
   font-size: 20px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -807,7 +807,7 @@ a:focus-visible {
 }
 
 .properties-window__id {
-  font-family: "DM Mono", monospace;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
   font-size: 10px !important;
 }
 
@@ -1043,7 +1043,7 @@ a:focus-visible {
 }
 
 .empty-state {
-  width: min(390px, calc(100% - 36px));
+  width: min(500px, calc(100% - 36px));
   padding: 32px;
   border: 1px solid rgba(255, 255, 255, 0.2);
   border-radius: 18px;
@@ -1987,7 +1987,7 @@ a:focus-visible {
 .window-kicker {
   display: block;
   color: #777d78;
-  font-family: "DM Mono", ui-monospace, monospace;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
   font-size: 9px;
   font-weight: 500;
   letter-spacing: 0.09em;
@@ -2342,7 +2342,7 @@ a:focus-visible {
   min-height: 100%;
   margin: 0 auto;
   padding: clamp(28px, 5vw, 64px);
-  color: var(--ink);
+  color: var(--theme-text, var(--ink));
   font-size: 16px;
   line-height: 1.7;
   overflow-wrap: anywhere;
@@ -2353,8 +2353,8 @@ a:focus-visible {
 .markdown-renderer h1,
 .markdown-renderer h2,
 .markdown-renderer h3,
-.markdown-renderer h4 { margin: 1.6em 0 0.55em; line-height: 1.2; color: var(--ink); }
-.markdown-renderer h1 { padding-bottom: 0.35em; border-bottom: 1px solid rgba(25, 34, 41, 0.16); font-size: 2.25em; }
+.markdown-renderer h4 { margin: 1.6em 0 0.55em; line-height: 1.2; color: var(--theme-text, var(--ink)); }
+.markdown-renderer h1 { padding-bottom: 0.35em; border-bottom: var(--theme-border-width, 1px) solid var(--theme-border, rgba(25, 34, 41, 0.16)); font-size: 2.25em; }
 .markdown-renderer h2 { font-size: 1.65em; }
 .markdown-renderer h3 { font-size: 1.3em; }
 .markdown-renderer p,
@@ -2363,22 +2363,22 @@ a:focus-visible {
 .markdown-renderer blockquote,
 .markdown-renderer pre,
 .markdown-renderer table { margin: 0 0 1.1em; }
-.markdown-renderer a { color: color-mix(in srgb, var(--accent) 65%, var(--ink)); text-underline-offset: 0.18em; }
-.markdown-renderer blockquote { margin-left: 0; padding: 0.2em 1em; border-left: 3px solid var(--accent); color: var(--window-muted); }
-.markdown-renderer code { border-radius: 4px; background: rgba(25, 34, 41, 0.08); padding: 0.12em 0.35em; font-family: "SFMono-Regular", Consolas, monospace; font-size: 0.9em; }
-.markdown-renderer pre { overflow: auto; border: 1px solid rgba(25, 34, 41, 0.16); border-radius: 8px; padding: 1em; background: rgba(25, 34, 41, 0.06); }
+.markdown-renderer a { color: color-mix(in srgb, var(--theme-accent, var(--accent)) 65%, var(--theme-text, var(--ink))); text-underline-offset: 0.18em; }
+.markdown-renderer blockquote { margin-left: 0; padding: 0.2em 1em; border-left: 3px solid var(--theme-accent, var(--accent)); color: var(--theme-text-muted, var(--window-muted)); }
+.markdown-renderer code { border-radius: var(--theme-radius-small, 4px); background: color-mix(in srgb, var(--theme-text, var(--ink)) 8%, transparent); padding: 0.12em 0.35em; font-family: "SFMono-Regular", Consolas, monospace; font-size: 0.9em; }
+.markdown-renderer pre { overflow: auto; border: var(--theme-border-width, 1px) solid var(--theme-border, rgba(25, 34, 41, 0.16)); border-radius: var(--theme-radius-small, 8px); padding: 1em; background: color-mix(in srgb, var(--theme-text, var(--ink)) 6%, transparent); }
 .markdown-renderer pre code { padding: 0; background: none; }
 .markdown-renderer img { display: block; max-width: 100%; height: auto; margin: 1.25em auto; border-radius: 8px; }
 .markdown-renderer table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; }
 .markdown-renderer th,
-.markdown-renderer td { border: 1px solid rgba(25, 34, 41, 0.16); padding: 0.45em 0.7em; text-align: left; }
-.markdown-renderer__missing-media { display: inline-block; border: 1px dashed rgba(25, 34, 41, 0.24); border-radius: 6px; padding: 0.4em 0.65em; color: var(--window-muted); }
+.markdown-renderer td { border: var(--theme-border-width, 1px) solid var(--theme-border, rgba(25, 34, 41, 0.16)); padding: 0.45em 0.7em; text-align: left; }
+.markdown-renderer__missing-media { display: inline-block; border: var(--theme-border-width, 1px) dashed var(--theme-border, rgba(25, 34, 41, 0.24)); border-radius: var(--theme-radius-small, 6px); padding: 0.4em 0.65em; color: var(--theme-text-muted, var(--window-muted)); }
 
 .text-editor .cm-editor {
   height: 100%;
   color: #202a29;
   background: #faf9f5;
-  font-family: "DM Mono", ui-monospace, monospace;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
 }
 
 .text-editor .cm-editor.cm-focused {
@@ -2748,7 +2748,7 @@ a:focus-visible {
 
 .context-menu kbd {
   color: rgba(255, 255, 255, 0.47);
-  font-family: "DM Mono", monospace;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
   font-size: 9px;
 }
 
@@ -3323,6 +3323,20 @@ a:focus-visible {
   --theme-focus: color-mix(in srgb, var(--theme-selection) 78%, transparent);
   --theme-shadow: color-mix(in srgb, #071113 calc(var(--theme-shadow-strength) * 62%), transparent);
   --theme-shadow-soft: color-mix(in srgb, #071113 calc(var(--theme-shadow-strength) * 28%), transparent);
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --control-size: 34px;
+  --touch-target: 44px;
+  --overlay-edge: max(10px, env(safe-area-inset-left));
+  --overlay-top: max(10px, env(safe-area-inset-top));
+  --overlay-bottom: max(10px, env(safe-area-inset-bottom));
+  --layer-popover: 5000;
+  --layer-panel: 6000;
+  --layer-command: 6100;
+  --layer-confirmation: 6200;
+  --layer-modal: 6300;
   color: var(--theme-chrome-text);
   background: var(--theme-shell);
   font-family: var(--theme-font);
@@ -3467,7 +3481,6 @@ a:focus-visible {
   text-shadow: 0 1px 3px color-mix(in srgb, var(--theme-shell) 70%, transparent);
   transition: background calc(130ms * var(--theme-motion)) ease, border-color calc(130ms * var(--theme-motion)) ease, box-shadow calc(130ms * var(--theme-motion)) ease;
 }
-.file-icon:hover,
 .file-icon[data-selected] {
   border-color: color-mix(in srgb, var(--theme-desktop-text) 28%, transparent);
   background: color-mix(in srgb, var(--theme-selection) 15%, transparent);
@@ -4376,6 +4389,8 @@ a:focus-visible {
 .command-palette {
   position: relative;
   width: min(760px, calc(100vw - 28px));
+  height: auto;
+  min-height: 0;
   max-height: min(720px, calc(100dvh - 48px));
   overflow: auto;
   border: var(--theme-border-width) solid var(--theme-border);
@@ -4418,6 +4433,7 @@ a:focus-visible {
 .all-windows-panel__groups section > header { display: flex; align-items: center; justify-content: space-between; }
 .all-windows-panel__groups h3 { margin: 0; }
 .all-windows-panel li > button { display: flex; width: 100%; min-height: 46px; align-items: center; gap: 9px; padding: 8px 10px; border: var(--theme-border-width) solid var(--theme-border); border-radius: var(--theme-radius-small); color: var(--theme-text); background: var(--theme-window-muted); text-align: left; cursor: pointer; }
+.all-windows-panel li > button[aria-current="true"] { border-color: var(--theme-selection); background: var(--theme-selected); box-shadow: 0 0 0 var(--theme-border-width) var(--theme-focus); }
 .all-windows-panel li > button > span { display: grid; min-width: 0; flex: 1; }
 .all-windows-panel li small { color: var(--theme-text-muted); }
 
@@ -4442,6 +4458,7 @@ a:focus-visible {
 .command-palette__result small { color: var(--theme-text-muted); }
 
 .confirmation-dialog__body { display: flex; align-items: flex-start; gap: 10px; padding: 18px 18px 4px; }
+.confirmation-dialog > .dialog-actions { margin-top: 0; padding: 18px; }
 .confirmation-dialog__body svg { flex: 0 0 auto; color: var(--theme-danger); }
 .confirmation-dialog__body p { margin: 0; line-height: 1.55; }
 
@@ -4454,4 +4471,138 @@ a:focus-visible {
   .sync-issues-panel__record { align-items: stretch; flex-direction: column; }
   .properties-window__offline { align-items: stretch; flex-direction: column; }
   .import-progress { right: 8px; bottom: 8px; width: calc(100vw - 16px); }
+}
+
+/* Final responsive consistency layer. This intentionally owns only shared
+   chrome, overlays, and controls that previously diverged between breakpoints. */
+.sharing-dialog__backdrop {
+  z-index: var(--layer-modal, 6300);
+  padding: var(--overlay-top, 18px) max(18px, env(safe-area-inset-right)) var(--overlay-bottom, 18px) max(18px, env(safe-area-inset-left));
+}
+
+.utility-panel-backdrop { z-index: var(--layer-panel, 6000); }
+.command-palette-backdrop { z-index: var(--layer-command, 6100); }
+.confirmation-dialog-backdrop { z-index: var(--layer-confirmation, 6200); }
+.mobile-header-menu__panel,
+.desktop-switcher__panel { z-index: var(--layer-popover, 5000); }
+
+.mobile-header-menu__panel {
+  width: min(280px, calc(100vw - max(20px, env(safe-area-inset-left) + env(safe-area-inset-right))));
+  padding: var(--space-2) max(var(--space-2), env(safe-area-inset-right)) max(var(--space-2), env(safe-area-inset-bottom)) max(var(--space-2), env(safe-area-inset-left));
+  overscroll-behavior: contain;
+}
+
+.empty-state__actions,
+.folder-explorer__empty-actions {
+  display: flex;
+  width: 100%;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.empty-state__actions > *,
+.folder-explorer__empty-actions > * {
+  min-width: min(100%, 132px);
+  flex: 1 1 132px;
+  justify-content: center;
+  white-space: nowrap;
+}
+
+.public-icon-grid {
+  overflow: auto;
+  padding-bottom: max(88px, env(safe-area-inset-bottom));
+  overscroll-behavior: contain;
+}
+.public-icon[aria-pressed="true"] { border-color: rgb(255 255 255 / 16%); background: rgb(255 255 255 / 12%); }
+
+.utility-panel-dialog,
+.command-palette {
+  height: auto;
+  min-height: 0;
+  overscroll-behavior: contain;
+}
+
+.command-palette__results { overscroll-behavior: contain; }
+
+@media (hover: hover) and (pointer: fine) {
+  .all-windows-panel li > button:hover { background: var(--theme-hover); }
+  .file-icon:hover {
+    border-color: color-mix(in srgb, var(--theme-desktop-text) 28%, transparent);
+    background: color-mix(in srgb, var(--theme-selection) 15%, transparent);
+    box-shadow: inset 0 var(--theme-border-width) 0 color-mix(in srgb, var(--theme-desktop-text) 10%, transparent);
+    backdrop-filter: blur(calc(var(--theme-blur) * 0.32));
+  }
+  .public-icon:hover { border-color: rgb(255 255 255 / 16%); background: rgb(255 255 255 / 12%); }
+}
+
+@media (max-width: 900px), (max-height: 520px) {
+  .menu-bar { min-width: 0; overflow: visible; }
+  .desktop-switcher { min-width: 0; }
+  .taskbar { flex-basis: 44px; }
+  .menu-bar__actions { min-width: 0; }
+  .menu-bar__actions > button,
+  .menu-bar__actions > .mobile-header-menu > .mobile-header-menu__trigger { width: var(--control-size); padding: 0; justify-content: center; }
+  .menu-bar__actions button span,
+  .menu-bar__clock,
+  .menu-bar__sync span { display: none; }
+}
+
+@media (max-width: 760px), (max-height: 420px) {
+  .taskbar__entry { width: 34px; min-width: 34px; justify-content: center; padding: 0; }
+  .taskbar__entry span { display: none; }
+}
+
+@media (max-width: 620px) {
+  .empty-state { width: min(390px, calc(100% - 36px)); }
+  .empty-state__actions > *,
+  .folder-explorer__empty-actions > * { flex-basis: 100%; }
+  .sharing-dialog__backdrop,
+  .utility-panel-backdrop,
+  .command-palette-backdrop {
+    align-items: end;
+    padding: var(--overlay-top) max(8px, env(safe-area-inset-right)) var(--overlay-bottom) max(8px, env(safe-area-inset-left));
+  }
+  .sharing-dialog {
+    max-height: calc(100dvh - var(--overlay-top));
+    border-radius: var(--theme-radius) var(--theme-radius) max(var(--theme-radius-small), env(safe-area-inset-bottom)) max(var(--theme-radius-small), env(safe-area-inset-bottom));
+  }
+  .sharing-dialog > header { min-height: 60px; padding: var(--space-2) var(--space-3) var(--space-2) var(--space-4); }
+  .sharing-dialog__content { gap: var(--space-4); padding: var(--space-4) var(--space-3) max(var(--space-4), env(safe-area-inset-bottom)); }
+  .sharing-invite input,
+  .sharing-invite select,
+  .sharing-member select { min-height: var(--touch-target); font-size: 16px; }
+  .sharing-dialog button,
+  .sharing-dialog .icon-button,
+  .large-download-gate .icon-button { min-height: var(--touch-target); }
+  .sharing-dialog .icon-button,
+  .large-download-gate .icon-button { min-width: var(--touch-target); }
+  .large-download-gate { padding: 28px max(18px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(18px, env(safe-area-inset-left)); }
+  .utility-panel-dialog,
+  .command-palette {
+    width: 100%;
+    max-height: min(82dvh, calc(100dvh - var(--overlay-top) - var(--overlay-bottom)));
+    border-radius: var(--theme-radius) var(--theme-radius) var(--theme-radius-small) var(--theme-radius-small);
+  }
+  .command-palette__header input { font-size: 16px; }
+  .command-palette__results { max-height: min(60dvh, 580px); }
+  .sync-issues-panel__empty,
+  .all-windows-panel__empty,
+  .keyboard-shortcuts-panel__empty,
+  .command-palette__empty { min-height: 150px; }
+  .folder-explorer__empty { min-height: 180px; }
+}
+
+@media (pointer: coarse) {
+  .update-toast__dismiss,
+  .desktop-minimap__delete,
+  .desktop-minimap__toolbar button,
+  .folder-explorer__search button,
+  .folder-explorer__tool-button,
+  .folder-explorer__view-options button,
+  .app-window__menu button {
+    min-width: var(--touch-target);
+    min-height: var(--touch-target);
+  }
+  .folder-explorer__sort { min-height: var(--touch-target); }
+  .public-icon:not([aria-pressed="true"]):hover { border-color: transparent; background: transparent; }
 }

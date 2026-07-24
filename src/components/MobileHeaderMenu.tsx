@@ -21,15 +21,20 @@ export function MobileHeaderMenu({ label, icon, children }: Props) {
     const trigger = triggerRef.current;
     if (!trigger) return;
     const rect = trigger.getBoundingClientRect();
+    const viewport = window.visualViewport;
+    const viewportLeft = viewport?.offsetLeft ?? 0;
+    const viewportTop = viewport?.offsetTop ?? 0;
+    const viewportWidth = viewport?.width ?? window.innerWidth;
+    const viewportHeight = viewport?.height ?? window.innerHeight;
     const gap = 4;
     const edge = 10;
-    const width = Math.min(280, window.innerWidth - edge * 2);
-    const spaceBelow = window.innerHeight - rect.bottom - gap - edge;
-    const spaceAbove = rect.top - gap - edge;
+    const width = Math.min(280, viewportWidth - edge * 2);
+    const spaceBelow = viewportTop + viewportHeight - rect.bottom - gap - edge;
+    const spaceAbove = rect.top - viewportTop - gap - edge;
     const openAbove = spaceBelow < 180 && spaceAbove > spaceBelow;
     setPanelStyle({
-      left: Math.min(Math.max(edge, rect.right - width), window.innerWidth - width - edge),
-      ...(openAbove ? { bottom: window.innerHeight - rect.top + gap } : { top: rect.bottom + gap }),
+      left: Math.min(Math.max(viewportLeft + edge, rect.right - width), viewportLeft + viewportWidth - width - edge),
+      ...(openAbove ? { top: Math.max(viewportTop + edge, rect.top - gap - (panelRef.current?.offsetHeight ?? Math.min(360, spaceAbove))) } : { top: rect.bottom + gap }),
       maxHeight: Math.max(100, openAbove ? spaceAbove : spaceBelow),
     });
   }, []);
@@ -65,15 +70,22 @@ export function MobileHeaderMenu({ label, icon, children }: Props) {
     const reposition = () => positionPanel();
     window.addEventListener("resize", reposition);
     window.addEventListener("scroll", reposition, true);
+    window.visualViewport?.addEventListener("resize", reposition);
+    window.visualViewport?.addEventListener("scroll", reposition);
     return () => {
       window.removeEventListener("resize", reposition);
       window.removeEventListener("scroll", reposition, true);
+      window.visualViewport?.removeEventListener("resize", reposition);
+      window.visualViewport?.removeEventListener("scroll", reposition);
     };
   }, [open, positionPanel]);
 
   useEffect(() => {
-    if (open) requestAnimationFrame(() => panelRef.current?.querySelector<HTMLElement>("button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled)")?.focus());
-  }, [open]);
+    if (open) requestAnimationFrame(() => {
+      positionPanel();
+      panelRef.current?.querySelector<HTMLElement>("button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled)")?.focus();
+    });
+  }, [open, positionPanel]);
 
   return (
     <div className="mobile-header-menu" ref={menuRef}>

@@ -100,6 +100,7 @@ import { SandboxAppFrame } from "@hiraya/app-runtime/react";
 import { AppHostServices, AppLifecycleService, AppPersistentStorageService, AppThemeService, CapabilityStore, FileService, HostServiceError, grantPickedFiles, grantPickedFolder, mapThemeTokens, type AppNotification, type DialogRequest } from "./apps/host";
 import { createFile as createAppFile, deleteEntry as deleteAppEntry, moveEntry as moveAppEntry, saveFile as saveAppFile } from "./lib/sync";
 import { installedAppAcceptsFile, installedAppIsAvailable, packageMatchesInstall, type InstalledApp } from "./apps/installed-apps";
+import { COMPACT_CHROME_QUERY, MOBILE_WINDOW_QUERY, useMediaQuery } from "./ui/responsive";
 
 type BaseRunningApp = { id: string; bounds: WindowBounds; minimized: boolean; zIndex: number };
 type FileApp = BaseRunningApp & { kind: "file"; fileId: string; file?: FileEntry; blob?: File; editable?: boolean; loadError?: string; editMode: boolean; contentRevision: number; remoteChanged: boolean };
@@ -115,6 +116,10 @@ const DESKTOP_LONG_PRESS_MS = 500;
 
 function formatClock(date: Date) {
   return new Intl.DateTimeFormat(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" }).format(date);
+}
+
+function transientMenuOpen() {
+  return Boolean(document.querySelector(".mobile-header-menu__panel, .desktop-switcher__panel, .app-window__menu"));
 }
 
 function topRunningAppInSegment(apps: RunningApp[], segment: SurfaceSegment, size: { width: number; height: number }, excludedId?: string) {
@@ -167,7 +172,8 @@ function App({ session }: { session: AuthSession | null }) {
   const [editingAreas, setEditingAreas] = useState(false);
   const [draggedSegmentKey, setDraggedSegmentKey] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(() => Boolean(document.fullscreenElement));
-  const [isMobile, setIsMobile] = useState(() => window.matchMedia("(max-width: 620px)").matches);
+  const isMobile = useMediaQuery(MOBILE_WINDOW_QUERY);
+  const compactChrome = useMediaQuery(COMPACT_CHROME_QUERY);
   const [settingsPage, setSettingsPage] = useState<"main" | "themes" | "activity" | "apps">("main");
   const [installedApps, setInstalledApps] = useState<InstalledApp[]>([]);
   const [appDialogRequests, setAppDialogRequests] = useState<readonly DialogRequest[]>([]);
@@ -335,6 +341,7 @@ function App({ session }: { session: AuthSession | null }) {
   const contextMenuEntry = contextMenu?.type === "entry" ? entryIndex.byId.get(contextMenu.entryId) ?? null : null;
   const contextMenuEntries = contextMenuEntry && selectedIdSet.has(contextMenuEntry.id) ? selectedEntries : contextMenuEntry ? [contextMenuEntry] : [];
   const moveDialogEntries = moveDialogEntryIds.map((id) => entryIndex.byId.get(id)).filter((entry): entry is DesktopEntry => Boolean(entry));
+  const shortcutsSuspended = Boolean(dialog || pendingPaste || moveDialogEntryIds.length || activePanel || sharingOpen || confirmation || contextMenu || editingAreas || appDialogRequests.length);
 
   useEffect(() => {
     appTheme.set(activeTheme);
@@ -702,6 +709,7 @@ function App({ session }: { session: AuthSession | null }) {
       const file = resolveOpenFilePath(loadedEntries, openPath);
       const current = normalizeDesktopRoute(parseDesktopRoute(url.hash), loadedEntries, activeDesktopIdRef.current);
       const next: DesktopRoute = {
+        desktopId: current.desktopId ?? activeDesktopIdRef.current,
         column: current.column,
         row: current.row,
         ...(current.explorerFolderId !== undefined ? { explorerFolderId: current.explorerFolderId } : {}),
@@ -1023,13 +1031,6 @@ function App({ session }: { session: AuthSession | null }) {
   }, []);
 
   useEffect(() => {
-    const query = window.matchMedia("(max-width: 620px)");
-    const update = () => setIsMobile(query.matches);
-    query.addEventListener("change", update);
-    return () => query.removeEventListener("change", update);
-  }, []);
-
-  useEffect(() => {
     function syncFullscreen() {
       setIsFullscreen(Boolean(document.fullscreenElement));
     }
@@ -1180,7 +1181,7 @@ function App({ session }: { session: AuthSession | null }) {
       return app?.kind === "explorer" ? app : null;
     }
     function onKeyDown(event: KeyboardEvent) {
-      if (editableTarget(event.target) || dialog || pendingPaste || moveDialogEntryIds.length) return;
+      if (editableTarget(event.target) || shortcutsSuspended || transientMenuOpen()) return;
       const focused = runningAppsRef.current.find((candidate) => candidate.id === focusedAppIdRef.current);
       if (focused && focused.kind !== "explorer") return;
       const modifier = event.metaKey || event.ctrlKey;
@@ -1204,7 +1205,7 @@ function App({ session }: { session: AuthSession | null }) {
       }
     }
     function onPaste(event: ClipboardEvent) {
-      if (editableTarget(event.target) || !canMutate) return;
+      if (editableTarget(event.target) || !canMutate || shortcutsSuspended || transientMenuOpen()) return;
       const files = Array.from(event.clipboardData?.files ?? []);
       if (!files.length || !event.clipboardData) return;
       event.preventDefault();
@@ -1216,10 +1217,11 @@ function App({ session }: { session: AuthSession | null }) {
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("paste", onPaste);
     return () => { window.removeEventListener("keydown", onKeyDown); window.removeEventListener("paste", onPaste); };
-  }, [activeDesktopSegment.entries, canMutate, dialog, entryIndex, moveDialogEntryIds.length, pendingPaste, selectionScope]);
+  }, [activeDesktopSegment.entries, canMutate, entryIndex, selectionScope, shortcutsSuspended]);
 
   useEffect(() => {
     function onGlobalShortcut(event: KeyboardEvent) {
+      if (shortcutsSuspended || transientMenuOpen()) return;
       const modifier = event.metaKey || event.ctrlKey;
       if (modifier && event.key.toLowerCase() === "k") {
         event.preventDefault();
@@ -1241,7 +1243,7 @@ function App({ session }: { session: AuthSession | null }) {
     }
     window.addEventListener("keydown", onGlobalShortcut);
     return () => window.removeEventListener("keydown", onGlobalShortcut);
-  }, []);
+  }, [shortcutsSuspended]);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -2640,7 +2642,7 @@ function App({ session }: { session: AuthSession | null }) {
           })}
         </nav>
         <div className="menu-bar__actions">
-          {isMobile ? (
+          {compactChrome ? (
             <MobileHeaderMenu label="Create or upload" icon={<Plus size={18} weight="bold" />}>
               {(dismiss) => <>
                 <button type="button" disabled={!canMutate} onClick={() => { dismiss(); setDialog({ type: "create-file", parentId: null }); }}><FileGlyph size={17} /> New text file</button>
@@ -2656,16 +2658,17 @@ function App({ session }: { session: AuthSession | null }) {
             <button type="button" aria-label="Show all windows" title="All windows" onClick={() => setActivePanel("windows")}><SquaresFour size={16} /></button>
             {canMutate && <button type="button" aria-label="Open Trash" title="Trash" onClick={() => setActivePanel("trash")}><Trash size={16} /></button>}
           </>}
-          {isMobile ? <MobileHeaderMenu label="Navigation and tools" icon={<GearSix size={18} />}>
+          {compactChrome ? <MobileHeaderMenu label="Navigation and tools" icon={<GearSix size={18} />}>
             {(dismiss) => <>
               <button type="button" onClick={() => { dismiss(); setActivePanel("search"); }}><MagnifyingGlass size={17} /> Search</button>
               <button type="button" onClick={() => { dismiss(); setActivePanel("windows"); }}><SquaresFour size={17} /> All windows</button>
               {canMutate && <button type="button" onClick={() => { dismiss(); setActivePanel("trash"); }}><Trash size={17} /> Trash</button>}
               <button type="button" onClick={() => { dismiss(); setActivePanel("shortcuts"); }}><Keyboard size={17} /> Keyboard shortcuts</button>
               {(activeDesktop?.capabilities.settings || activeDesktop?.capabilities.activity) && <button type="button" onClick={() => { dismiss(); openSettingsWindow(); }}><GearSix size={17} /> Settings</button>}
+              {session && activeDesktop?.capabilities.manage && <button type="button" disabled={!canManage} onClick={() => { dismiss(); setSharingOpen(true); }}><ShareNetwork size={17} /> Share desktop</button>}
             </>}
           </MobileHeaderMenu> : (activeDesktop?.capabilities.settings || activeDesktop?.capabilities.activity) && <button type="button" aria-label="Open settings" title="Settings" onClick={() => openSettingsWindow()}><GearSix size={16} /> <span>Settings</span></button>}
-          {session && activeDesktop?.capabilities.manage && <button type="button" aria-label="Share desktop" title="Share desktop" disabled={!canManage} onClick={() => setSharingOpen(true)}><ShareNetwork size={16} /> <span>Share</span></button>}
+          {!compactChrome && session && activeDesktop?.capabilities.manage && <button type="button" aria-label="Share desktop" title="Share desktop" disabled={!canManage} onClick={() => setSharingOpen(true)}><ShareNetwork size={16} /> <span>Share</span></button>}
           {session && <AccountMenu session={session} />}
           <button className="menu-bar__sync" data-status={syncIndicatorStatus} type="button" aria-label="Open sync status" title={syncIndicatorStatus === "local" ? "Changes are saved only in this browser" : syncIndicatorStatus === "syncing" ? "Synchronizing saved changes" : syncIndicatorStatus === "online" ? "Changes are saved and synchronized" : syncIndicatorStatus === "connecting" ? "Connecting to the Hiraya server" : syncIndicatorStatus === "blocked" ? "A queued change needs attention before synchronization can continue" : "Offline changes are saved and will synchronize after reconnecting"} onClick={() => setActivePanel("sync")}>
             {syncIndicatorStatus === "local" ? <HardDrive size={15} /> : syncIndicatorStatus === "online" ? <CloudCheck size={15} /> : syncIndicatorStatus === "blocked" ? <WarningCircle size={15} weight="fill" /> : syncIndicatorStatus === "connecting" || syncIndicatorStatus === "syncing" ? <SpinnerGap size={15} /> : <CloudSlash size={15} />}

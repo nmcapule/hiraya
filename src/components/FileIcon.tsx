@@ -33,10 +33,10 @@ type Props = {
   onExternalDrop?: (files: File[]) => void;
 };
 
-function FileTypeIcon({ entry }: { entry: DesktopEntry }) {
-  if (entry.kind === "folder") return <Folder size={45} weight="duotone" aria-hidden="true" />;
+export function EntryTypeIcon({ entry, size = 43 }: { entry: DesktopEntry; size?: number }) {
+  if (entry.kind === "folder") return <Folder size={size} weight="duotone" aria-hidden="true" />;
   const { icon } = fileCapabilities(entry);
-  const props = { size: 43, weight: "duotone" as const, "aria-hidden": true };
+  const props = { size, weight: "duotone" as const, "aria-hidden": true };
 
   if (icon === "image") return <FileImage {...props} />;
   if (icon === "video") return <FileVideo {...props} />;
@@ -317,7 +317,7 @@ export function FileIcon({ entry, selected, onSelect, onOpen, onMove, onDragAtEd
         onPointerCancel={(event) => { void finishDrag(event, true); }}
       >
         <span className="file-icon__art">
-          <FileTypeIcon entry={entry} />
+          <EntryTypeIcon entry={entry} />
         </span>
         <span className="file-icon__name">{entry.name}</span>
       </button>

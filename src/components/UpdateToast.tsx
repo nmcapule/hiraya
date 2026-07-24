@@ -34,7 +34,7 @@ export function UpdateToast({ applying, blocked, onConfirm, onDismiss }: Props) 
         <strong id={titleId}>{blocked ? "Save changes before updating" : "A new Hiraya version is ready"}</strong>
         <span id={descriptionId}>{blocked ? "An editor has unsaved changes. Save or discard them, then try again." : "Confirm to apply it and reload the desktop."}</span>
         <div className="update-toast__actions">
-          <button className="button" type="button" disabled={applying} onClick={onConfirm}>{applying ? "Updating" : blocked ? "Try again" : "Update now"}</button>
+          <button className="button button--primary" type="button" disabled={applying} onClick={onConfirm}>{applying ? "Updating" : blocked ? "Try again" : "Update now"}</button>
           <button className="button button--quiet" type="button" disabled={applying} onClick={onDismiss}>Later</button>
         </div>
       </div>

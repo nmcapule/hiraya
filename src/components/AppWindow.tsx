@@ -170,6 +170,17 @@ export function AppWindow({
   useEffect(() => {
     if (!windowMenuOpen) return;
     windowMenuRef.current?.querySelector<HTMLButtonElement>("[role='menuitem']")?.focus();
+    const dismissOutside = (event: PointerEvent | FocusEvent) => {
+      const target = event.target as Node | null;
+      if (!target || windowMenuRef.current?.contains(target) || windowMenuButtonRef.current?.contains(target)) return;
+      setWindowMenuOpen(false);
+    };
+    document.addEventListener("pointerdown", dismissOutside, true);
+    document.addEventListener("focusin", dismissOutside, true);
+    return () => {
+      document.removeEventListener("pointerdown", dismissOutside, true);
+      document.removeEventListener("focusin", dismissOutside, true);
+    };
   }, [windowMenuOpen]);
 
   const style: CSSProperties = mobile
@@ -213,7 +224,18 @@ export function AppWindow({
         <div className="app-window__controls" data-window-no-drag>
           {onToggleMaximize && <div className="app-window__menu-wrap">
             <button ref={windowMenuButtonRef} className="app-window__control" type="button" aria-label={`Window actions for ${title}`} aria-haspopup="menu" aria-expanded={windowMenuOpen} onClick={() => setWindowMenuOpen((open) => !open)}><CaretDown size={15} /></button>
-            {windowMenuOpen && <div ref={windowMenuRef} className="app-window__menu" role="menu" onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); event.nativeEvent.stopImmediatePropagation(); setWindowMenuOpen(false); windowMenuButtonRef.current?.focus(); } }}>
+            {windowMenuOpen && <div ref={windowMenuRef} className="app-window__menu" role="menu" onKeyDown={(event) => {
+              const items = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>("[role='menuitem']:not(:disabled)"));
+              const current = items.indexOf(document.activeElement as HTMLButtonElement);
+              if (event.key === "Escape") {
+                event.preventDefault(); event.stopPropagation(); event.nativeEvent.stopImmediatePropagation();
+                setWindowMenuOpen(false); windowMenuButtonRef.current?.focus();
+              } else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+                event.preventDefault();
+                const index = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : event.key === "ArrowDown" ? (current + 1) % items.length : (current - 1 + items.length) % items.length;
+                items[index]?.focus();
+              }
+            }}>
               <button type="button" role="menuitem" onClick={() => { onToggleMaximize(id); setWindowMenuOpen(false); }}><ArrowsOut size={15} /> {maximized ? "Restore window" : "Maximize window"}<kbd>Alt Enter</kbd></button>
               {canMoveArea && onMoveArea && (["left", "right", "up", "down"] as const).map((direction) => <button type="button" role="menuitem" key={direction} onClick={() => { onMoveArea(id, direction); setWindowMenuOpen(false); }}>Move to area {direction}<kbd>Alt {direction}</kbd></button>)}
             </div>}

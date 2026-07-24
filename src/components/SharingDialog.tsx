@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArrowClockwise, Check, Copy, Globe, LinkSimple, Plus, Trash, UsersThree, X } from "@phosphor-icons/react";
 import { getSharing, inviteMember, publishDesktop, removeMember, revokeInvitation, rotatePublication, unpublishDesktop, updateMember, type SharingRole, type SharingState } from "../lib/sharing";
 import type { DesktopIdentity } from "../types";
+import { useModalDialog } from "../ui/modal-dialog";
 
 const ROLES: SharingRole[] = ["reader", "writer", "manager"];
 
@@ -19,15 +20,12 @@ export function SharingDialog({ desktop, onClose }: { desktop: DesktopIdentity; 
   const [error, setError] = useState("");
   const [lastInvite, setLastInvite] = useState<{ url?: string; invitationUrl?: string; token?: string } | null>(null);
   const [copied, setCopied] = useState("");
+  const backdropRef = useRef<HTMLDivElement>(null);
+  const dialogRef = useRef<HTMLElement>(null);
+  useModalDialog(backdropRef, dialogRef, onClose, busy !== "");
 
   async function refresh() { setSharing(await getSharing(desktop.id)); }
   useEffect(() => { void getSharing(desktop.id).then(setSharing).catch((reason) => setError(reason instanceof Error ? reason.message : "Sharing could not be loaded.")); }, [desktop.id]);
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
-
   async function run(key: string, operation: () => Promise<unknown>) {
     setBusy(key); setError("");
     try { await operation(); await refresh(); } catch (reason) { setError(reason instanceof Error ? reason.message : "The sharing change could not be saved."); }
@@ -53,9 +51,9 @@ export function SharingDialog({ desktop, onClose }: { desktop: DesktopIdentity; 
   async function copy(value: string, key: string) { await navigator.clipboard.writeText(value); setCopied(key); window.setTimeout(() => setCopied(""), 1800); }
   const publicationUrl = sharing ? publicUrl(sharing.publication) : "";
 
-  return <div className="sharing-dialog__backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-    <section className="sharing-dialog" role="dialog" aria-modal="true" aria-labelledby="sharing-title">
-      <header><div><span className="window-kicker">Access and publication</span><h2 id="sharing-title">Share {desktop.name}</h2></div><button className="icon-button" type="button" onClick={onClose} aria-label="Close sharing"><X size={18} /></button></header>
+  return <div ref={backdropRef} className="sharing-dialog__backdrop" role="presentation" onPointerDown={(event) => { if (!busy && event.target === event.currentTarget) onClose(); }}>
+    <section ref={dialogRef} className="sharing-dialog" role="dialog" aria-modal="true" aria-labelledby="sharing-title" tabIndex={-1} aria-busy={busy !== "" || undefined}>
+      <header><div><span className="window-kicker">Access and publication</span><h2 id="sharing-title">Share {desktop.name}</h2></div><button className="icon-button" type="button" disabled={busy !== ""} onClick={onClose} aria-label="Close sharing"><X size={18} /></button></header>
       <div className="sharing-dialog__content">
         <section className="sharing-section"><div className="sharing-section__heading"><UsersThree size={20} /><div><h3>People with access</h3><p>Managers can share and customize. Writers can organize and edit files.</p></div></div>
             <form className="sharing-invite" onSubmit={(event) => { event.preventDefault(); void run("invite", async () => { const result = await inviteMember(desktop.id, { email: email.trim(), role, expiryHours }); if (result && typeof result === "object") setLastInvite(result as { url?: string; invitationUrl?: string; token?: string }); setEmail(""); }); }}>
