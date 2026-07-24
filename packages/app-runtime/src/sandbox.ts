@@ -25,36 +25,45 @@ export class ObjectUrlLease {
   }
 }
 
-const CSP = "default-src 'none'; script-src blob: 'unsafe-inline'; style-src blob: 'unsafe-inline'; img-src blob: data:; font-src blob: data:; media-src blob: data:; connect-src 'none'; frame-src blob: data:; object-src 'none'; base-uri 'none'; form-action 'none'";
+const CSP = "default-src 'none'; script-src data: 'unsafe-inline'; style-src data: 'unsafe-inline'; img-src data:; font-src data:; media-src data:; connect-src 'none'; frame-src data:; object-src 'none'; base-uri 'none'; form-action 'none'";
+const MAX_MATERIALIZED_ASSET_CHARACTERS = 64 * 1024 * 1024;
 
-export function materializeAppPackage(pkg: AppPackageInspection, urls: Pick<typeof URL, "createObjectURL" | "revokeObjectURL"> = URL): MaterializedApp {
-  const lease = new ObjectUrlLease(urls);
-  const objectUrls = new Map<string, string>();
+export function createPackageAssetResolver(files: ReadonlyMap<string, Uint8Array>, entrypoint: string) {
+  const assetURLs = new Map<string, string>();
   const resolving = new Set<string>();
-  const make = (blob: Blob) => lease.create(blob);
+  let materializedCharacters = 0;
   const resolve = (path: string): string | undefined => {
-    const existing = objectUrls.get(path);
+    const existing = assetURLs.get(path);
     if (existing) return existing;
-    const bytes = pkg.files.get(path);
-    if (!bytes || path === pkg.manifest.entrypoint) return undefined;
+    const bytes = files.get(path);
+    if (!bytes || path === entrypoint) return undefined;
     if (resolving.has(path)) throw new TypeError(`Package asset dependency cycle is not supported: ${path}.`);
     resolving.add(path);
-    let body: BlobPart = bytes;
+    let body = bytes;
     if (/\.(?:m?js|css)$/i.test(path)) {
       let text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-      const pattern = /(?:\b(?:import|export)\s+(?:[^"'();]*?\sfrom\s*)?|\bimport\s*\(\s*|url\(\s*)(["']?)([^"')\s]+)\1/g;
+      const pattern = /(?:\b(?:import|export)\s+(?:[^"'();]*?\sfrom\s*)?|\bimport\s*\(\s*|@import\s+(?:url\(\s*)?|url\(\s*)(["']?)([^"')\s;]+)\1/g;
       text = text.replace(pattern, (match, _quote: string, reference: string) => {
         const target = resolvePackagePath(reference, path);
         const replacement = target ? resolve(target) : undefined;
         return replacement ? match.replace(reference, replacement) : match;
       });
-      body = text;
+      body = new TextEncoder().encode(text);
     }
     resolving.delete(path);
-    const url = make(new Blob([body], { type: mimeType(path) }));
-    objectUrls.set(path, url);
+    const url = dataURL(body, mimeType(path));
+    materializedCharacters += url.length;
+    if (materializedCharacters > MAX_MATERIALIZED_ASSET_CHARACTERS) throw new TypeError("Package assets are too large to materialize safely.");
+    assetURLs.set(path, url);
     return url;
   };
+  return resolve;
+}
+
+export function materializeAppPackage(pkg: AppPackageInspection, urls: Pick<typeof URL, "createObjectURL" | "revokeObjectURL"> = URL): MaterializedApp {
+  const lease = new ObjectUrlLease(urls);
+  const make = (blob: Blob) => lease.create(blob);
+  const resolve = createPackageAssetResolver(pkg.files, pkg.manifest.entrypoint);
   const source = new TextDecoder("utf-8", { fatal: true }).decode(pkg.files.get(pkg.manifest.entrypoint)!);
   const document = new DOMParser().parseFromString(source, "text/html");
   document.querySelectorAll("base").forEach((element) => element.remove());
@@ -80,6 +89,14 @@ export function materializeAppPackage(pkg: AppPackageInspection, urls: Pick<type
       const replacement = target ? resolve(target) : undefined;
       return replacement ? match.replace(reference, replacement) : match;
     });
+  }
+  for (const element of document.querySelectorAll<HTMLElement>("[style]")) {
+    const style = element.getAttribute("style") ?? "";
+    element.setAttribute("style", style.replace(/url\(\s*(["']?)([^"')\s]+)\1/g, (match, _quote: string, reference: string) => {
+      const target = resolvePackagePath(reference, pkg.manifest.entrypoint);
+      const replacement = target ? resolve(target) : undefined;
+      return replacement ? match.replace(reference, replacement) : match;
+    }));
   }
   const html = `<!doctype html>\n${document.documentElement.outerHTML}`;
   const url = make(new Blob([html], { type: "text/html" }));
@@ -152,4 +169,13 @@ function mimeType(path: string): string {
   if (/\.gif$/i.test(path)) return "image/gif";
   if (/\.woff2?$/i.test(path)) return path.toLowerCase().endsWith(".woff2") ? "font/woff2" : "font/woff";
   return "application/octet-stream";
+}
+
+function dataURL(bytes: Uint8Array, type: string): string {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return `data:${type};base64,${btoa(binary)}`;
 }

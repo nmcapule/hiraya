@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <title>Calculator</title>
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="calculator" aria-label="Calculator">
+        <header class="app-header">
+          <div>
+            <p class="eyebrow">HIRAYA UTILITY</p>
+            <h1>Calculator</h1>
+          </div>
+          <div class="status-group">
+            <span id="memory-indicator" class="memory-indicator" aria-label="Memory is empty">M</span>
+            <span id="host-status" class="host-status" role="status">Connecting</span>
+          </div>
+        </header>
+
+        <div class="display" aria-live="polite" aria-atomic="true">
+          <div id="expression" class="expression" aria-label="Expression">0</div>
+          <output id="result" class="result" aria-label="Result">0</output>
+        </div>
+
+        <div class="memory-row" aria-label="Memory controls">
+          <button type="button" data-action="memory-clear" aria-label="Clear memory">MC</button>
+          <button type="button" data-action="memory-recall" aria-label="Recall memory">MR</button>
+          <button type="button" data-action="memory-add" aria-label="Add result to memory">M+</button>
+          <button type="button" data-action="memory-subtract" aria-label="Subtract result from memory">M-</button>
+        </div>
+
+        <div class="keypad" aria-label="Calculator keypad">
+          <button type="button" class="key utility" data-action="clear">AC</button>
+          <button type="button" class="key utility" data-action="sign" aria-label="Toggle positive or negative">+/-</button>
+          <button type="button" class="key utility" data-value="%" aria-label="Percent">%</button>
+          <button type="button" class="key operator" data-value="/" aria-label="Divide">/</button>
+
+          <button type="button" class="key" data-value="7">7</button>
+          <button type="button" class="key" data-value="8">8</button>
+          <button type="button" class="key" data-value="9">9</button>
+          <button type="button" class="key operator" data-value="*" aria-label="Multiply">x</button>
+
+          <button type="button" class="key" data-value="4">4</button>
+          <button type="button" class="key" data-value="5">5</button>
+          <button type="button" class="key" data-value="6">6</button>
+          <button type="button" class="key operator" data-value="-" aria-label="Subtract">-</button>
+
+          <button type="button" class="key" data-value="1">1</button>
+          <button type="button" class="key" data-value="2">2</button>
+          <button type="button" class="key" data-value="3">3</button>
+          <button type="button" class="key operator" data-value="+" aria-label="Add">+</button>
+
+          <button type="button" class="key" data-action="parenthesis" aria-label="Add parenthesis">( )</button>
+          <button type="button" class="key" data-value="0">0</button>
+          <button type="button" class="key" data-value=".">.</button>
+          <button type="button" class="key equals" data-action="equals" aria-label="Equals">=</button>
+        </div>
+        <p class="keyboard-hint">Keyboard ready <span aria-hidden="true">/</span> Enter to solve <span aria-hidden="true">/</span> Esc to clear</p>
+      </section>
+
+      <aside class="history-panel" aria-labelledby="history-title">
+        <div class="history-heading">
+          <div>
+            <p class="eyebrow">RECENT WORK</p>
+            <h2 id="history-title">History</h2>
+          </div>
+          <button id="clear-history" class="text-button" type="button">Clear</button>
+        </div>
+        <ol id="history-list" class="history-list"></ol>
+        <p id="empty-history" class="empty-history">Completed calculations will appear here.</p>
+      </aside>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

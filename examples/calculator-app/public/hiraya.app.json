@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "id": "dev.hiraya.calculator",
+  "name": "Calculator",
+  "version": "0.1.0",
+  "entrypoint": "index.html",
+  "description": "A polished calculator with memory and persistent history.",
+  "permissions": ["window", "commands", "theme", "storage"]
+}

@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ZIP Browser</title>
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="toolbar">
+        <div class="brand" aria-label="ZIP Browser">
+          <span class="brand-mark" aria-hidden="true">Z</span>
+          <div><strong>ZIP Browser</strong><span id="archive-name">No archive open</span></div>
+        </div>
+        <div class="actions">
+          <button id="open-button" type="button">Open ZIP</button>
+          <button id="extract-button" class="primary" type="button" disabled>Extract selected</button>
+        </div>
+      </header>
+
+      <section id="summary" class="summary" aria-label="Archive summary" hidden>
+        <span><b id="entry-count">0</b> entries</span>
+        <span><b id="archive-size">0 B</b> archive</span>
+        <span><b id="unpacked-size">0 B</b> unpacked</span>
+        <button id="select-all" class="text-button" type="button">Clear selection</button>
+      </section>
+
+      <div id="empty-state" class="empty-state">
+        <div class="archive-illustration" aria-hidden="true"><i></i><i></i><i></i></div>
+        <p class="eyebrow">SAFE ARCHIVE INSPECTION</p>
+        <h1>See what is inside<br />before it comes out.</h1>
+        <p>Open a ZIP from Hiraya to inspect its folder tree, sizes, and compression details. Nothing is written until you choose a destination.</p>
+        <button id="empty-open-button" class="primary" type="button">Choose a ZIP file</button>
+      </div>
+
+      <section id="browser" class="browser" hidden>
+        <div class="tree-pane">
+          <div class="pane-heading"><span>CONTENTS</span><span id="selected-count">0 selected</span></div>
+          <div id="tree" class="tree" role="tree" aria-label="Archive contents"></div>
+        </div>
+        <aside class="details-pane" aria-labelledby="details-title">
+          <p class="eyebrow">SELECTION DETAILS</p>
+          <h2 id="details-title">Select an entry</h2>
+          <dl id="details-list" hidden>
+            <div><dt>Type</dt><dd id="detail-type"></dd></div>
+            <div><dt>Path</dt><dd id="detail-path"></dd></div>
+            <div><dt>Size</dt><dd id="detail-size"></dd></div>
+            <div><dt>Compressed</dt><dd id="detail-compressed"></dd></div>
+            <div><dt>Modified</dt><dd id="detail-modified"></dd></div>
+          </dl>
+          <p id="details-placeholder" class="muted">Choose a file or folder in the archive tree to view its metadata.</p>
+        </aside>
+      </section>
+
+      <footer><p id="status" role="status" aria-live="polite">Connecting to Hiraya...</p><p class="limits">Limits: 100 MiB ZIP / 2,000 entries / 256 MiB per file / 512 MiB total</p></footer>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

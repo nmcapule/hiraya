@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { RpcDispatcher } from "./dispatcher";
-import { initializeSandboxFrame, isAppPackageName, ObjectUrlLease } from "./sandbox";
+import { createPackageAssetResolver, initializeSandboxFrame, isAppPackageName, ObjectUrlLease } from "./sandbox";
 
 function host() {
   let closed = false;
@@ -84,6 +84,31 @@ describe("app runtime", () => {
     lease.revoke();
     expect(revoked).toEqual(["blob:1", "blob:2"]);
     expect(() => lease.create(new Blob())).toThrow("closed");
+  });
+
+  test("embeds package dependencies for an opaque sandbox origin", () => {
+    const encoder = new TextEncoder();
+    const files = new Map([
+      ["index.html", encoder.encode("<!doctype html>")],
+      ["assets/app.js", encoder.encode('import "./dependency.js";')],
+      ["assets/dependency.js", encoder.encode("globalThis.loaded = true;")],
+      ["assets/app.css", encoder.encode('@import "./theme.css"; body { background: url("./mark.svg") }')],
+      ["assets/theme.css", encoder.encode("body { color: CanvasText; }")],
+      ["assets/mark.svg", encoder.encode("<svg xmlns=\"http://www.w3.org/2000/svg\"/>")],
+    ]);
+    const resolve = createPackageAssetResolver(files, "index.html");
+    const dependencyURL = resolve("assets/dependency.js")!;
+    const markURL = resolve("assets/mark.svg")!;
+    const themeURL = resolve("assets/theme.css")!;
+    const script = atob(resolve("assets/app.js")!.split(",", 2)[1]);
+    const stylesheet = atob(resolve("assets/app.css")!.split(",", 2)[1]);
+
+    expect(resolve("index.html")).toBeUndefined();
+    expect(dependencyURL).toStartWith("data:text/javascript;base64,");
+    expect(markURL).toStartWith("data:image/svg+xml;base64,");
+    expect(script).toContain(dependencyURL);
+    expect(stylesheet).toContain(markURL);
+    expect(stylesheet).toContain(themeURL);
   });
 
   test("recognizes only the exact package extension", () => {

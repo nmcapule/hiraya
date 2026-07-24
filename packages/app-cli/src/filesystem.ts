@@ -1,4 +1,4 @@
-import { lstat, readdir, readFile, realpath, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { parseManifestV1 } from "@hiraya/apps-contracts";
 import { zipSync, type Zippable } from "fflate";
@@ -61,6 +61,7 @@ export async function packageApp(input: string, output?: string) {
   if (!destination.endsWith(APP_ARCHIVE_EXTENSION)) throw new TypeError(`Package output must end with ${APP_ARCHIVE_EXTENSION}.`);
   const archive = createAppArchive(validated.files);
   const inspection = await inspectAppArchive(archive);
+  await mkdir(dirname(destination), { recursive: true });
   await writeFile(destination, archive);
   return { destination, manifest, inspection };
 }

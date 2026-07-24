@@ -5,7 +5,8 @@ export type SharingRole = "manager" | "writer" | "reader";
 export type SharingMember = { userId: string; displayName: string; email?: string; avatar: string | null; role: "owner" | SharingRole };
 export type SharingInvitation = { id: string; email: string; role: SharingRole; expiresAt?: number; url?: string; token?: string };
 export type DesktopPublication = { published: boolean; url?: string; token?: string };
-export type SharingState = { members: SharingMember[]; pending: SharingInvitation[]; publication: DesktopPublication };
+export type DesktopAudience = { kind: "authenticated-users"; role: SharingRole };
+export type SharingState = { members: SharingMember[]; pending: SharingInvitation[]; publication: DesktopPublication; audience: DesktopAudience | null };
 
 function role(value: unknown, allowOwner = false): "owner" | SharingRole {
   if (value === "reader" || value === "writer" || value === "manager" || allowOwner && value === "owner") return value;
@@ -30,7 +31,9 @@ export function parseSharingState(value: unknown): SharingState {
   });
   const publicationValue = isRecord(value.publication) ? value.publication : {};
   const token = typeof publicationValue.token === "string" ? publicationValue.token : undefined;
-  return { members, pending, publication: { published: publicationValue.published === true || Boolean(token), ...(typeof publicationValue.url === "string" ? { url: publicationValue.url } : {}), ...(token ? { token } : {}) } };
+  const audienceValue = value.audience;
+  const audience: DesktopAudience | null = isRecord(audienceValue) && audienceValue.kind === "authenticated-users" ? { kind: "authenticated-users", role: role(audienceValue.role) as SharingRole } : null;
+  return { members, pending, publication: { published: publicationValue.published === true || Boolean(token), ...(typeof publicationValue.url === "string" ? { url: publicationValue.url } : {}), ...(token ? { token } : {}) }, audience };
 }
 
 async function request(input: string, init?: RequestInit) {

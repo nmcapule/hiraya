@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "dev.hiraya.pixel-editor",
+  "name": "Pixel Editor",
+  "version": "0.1.0",
+  "entrypoint": "index.html",
+  "description": "A focused pixel art editor for PNG images.",
+  "permissions": ["files:read", "files:write", "dialogs", "window", "theme", "storage"],
+  "fileTypes": [".png", "image/png"]
+}

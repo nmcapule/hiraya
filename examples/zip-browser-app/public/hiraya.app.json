@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "dev.hiraya.zip-browser",
+  "name": "ZIP Browser",
+  "version": "0.1.0",
+  "entrypoint": "index.html",
+  "description": "Safely inspect and extract selected ZIP archive contents.",
+  "permissions": ["files:read", "files:write", "dialogs", "window", "theme"],
+  "fileTypes": [".zip", "application/zip"]
+}

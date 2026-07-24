@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Pixel Editor</title>
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div class="brand" aria-label="Pixel Editor">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <div><strong>PIXEL EDITOR</strong><span id="document-name">Untitled.png</span></div>
+        </div>
+        <nav class="file-actions" aria-label="File actions">
+          <button id="new-button" type="button">New</button>
+          <button id="open-button" type="button">Open</button>
+          <button id="save-button" class="primary" type="button">Save</button>
+          <button id="save-as-button" type="button">Save As</button>
+        </nav>
+      </header>
+
+      <section class="workspace">
+        <aside class="tools" aria-label="Drawing tools">
+          <p class="section-label">TOOLS</p>
+          <div class="tool-grid" role="group" aria-label="Drawing tool">
+            <button class="tool active" data-tool="pencil" type="button" aria-pressed="true"><span aria-hidden="true">/</span>Pencil <kbd>P</kbd></button>
+            <button class="tool" data-tool="eraser" type="button" aria-pressed="false"><span aria-hidden="true">x</span>Eraser <kbd>E</kbd></button>
+            <button class="tool" data-tool="fill" type="button" aria-pressed="false"><span aria-hidden="true">~</span>Fill <kbd>F</kbd></button>
+          </div>
+
+          <p class="section-label">COLOR</p>
+          <div class="color-row">
+            <input id="color-input" type="color" value="#e1a854" aria-label="Drawing color" />
+            <output id="color-value" for="color-input">#E1A854</output>
+          </div>
+          <div id="palette" class="palette" aria-label="Color palette"></div>
+          <label class="range-label" for="opacity-input"><span>Opacity</span><output id="opacity-value">100%</output></label>
+          <input id="opacity-input" type="range" min="0" max="100" value="100" />
+        </aside>
+
+        <section class="stage" aria-label="Canvas workspace">
+          <div class="stage-toolbar">
+            <div role="group" aria-label="History">
+              <button id="undo-button" type="button" title="Undo (Ctrl+Z)" disabled>Undo</button>
+              <button id="redo-button" type="button" title="Redo (Ctrl+Shift+Z)" disabled>Redo</button>
+            </div>
+            <div class="zoom-control">
+              <button id="zoom-out" type="button" aria-label="Zoom out">-</button>
+              <output id="zoom-value" aria-live="polite">1200%</output>
+              <button id="zoom-in" type="button" aria-label="Zoom in">+</button>
+              <label><input id="grid-toggle" type="checkbox" checked /> Grid</label>
+            </div>
+          </div>
+          <div id="canvas-scroll" class="canvas-scroll">
+            <div id="canvas-frame" class="canvas-frame grid-visible">
+              <canvas id="editor-canvas" width="32" height="32" aria-label="Editable pixel canvas" tabindex="0"></canvas>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <footer class="statusbar">
+        <span id="status" role="status" aria-live="polite">Connecting to Hiraya...</span>
+        <span id="cursor-position">--, --</span>
+        <span id="dimensions">32 x 32 px</span>
+      </footer>
+    </main>
+
+    <dialog id="new-dialog" aria-labelledby="new-title">
+      <form id="new-form" method="dialog">
+        <p class="section-label">NEW DOCUMENT</p>
+        <h1 id="new-title">Set the canvas size</h1>
+        <p>Transparent canvas, from 1 to 512 pixels per side.</p>
+        <div class="dimension-fields">
+          <label>Width<input id="new-width" name="width" type="number" min="1" max="512" value="32" required /></label>
+          <span aria-hidden="true">x</span>
+          <label>Height<input id="new-height" name="height" type="number" min="1" max="512" value="32" required /></label>
+        </div>
+        <div class="dialog-actions">
+          <button id="new-cancel" type="button">Cancel</button>
+          <button class="primary" type="submit">Create canvas</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

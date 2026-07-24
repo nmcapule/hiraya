@@ -1,0 +1,17 @@
+{
+  "name": "hiraya-calculator-app-example",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit && vite build",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@hiraya/apps-sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "~5.8.3",
+    "vite": "^7.0.4"
+  }
+}

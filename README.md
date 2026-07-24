@@ -53,6 +53,8 @@ HIRAYA_SEEDED_DIR=examples/seeded bun run build
 
 Seeded content is used only for a fresh frontend-only origin. Synchronized installs converge from the server catalog.
 
+The production build also packages the Calculator, ZIP Browser, and Pixel Editor examples into `dist/experimental-apps`. A Hiraya server uses these archives when it provisions the deployment's read-only `Experimental Apps` desktop. Users copy packages from that desktop to an owned desktop before approving them for access to personal files.
+
 ## GitHub Pages
 
 ```sh

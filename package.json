@@ -10,7 +10,8 @@
     "app": "bun packages/app-cli/src/cli.ts",
     "app:example": "bun run --cwd examples/hello-app build && bun run app package examples/hello-app/dist examples/hello-app.hiraya.app",
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && bun run apps:examples",
+    "apps:examples": "bun run --cwd examples/calculator-app build && bun run --cwd examples/zip-browser-app build && bun run --cwd examples/pixel-editor-app build && bun run app package examples/calculator-app/dist dist/experimental-apps/calculator.hiraya.app && bun run app package examples/zip-browser-app/dist dist/experimental-apps/zip-browser.hiraya.app && bun run app package examples/pixel-editor-app/dist dist/experimental-apps/pixel-editor.hiraya.app",
     "lint": "eslint .",
     "test": "bun test",
     "preview": "vite preview"
