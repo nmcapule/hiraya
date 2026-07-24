@@ -20,6 +20,7 @@ import { resolveDesktopContext } from "./desktop-catalog";
 import { localDesktopIdentity } from "./permissions";
 import { parseInstalledApp, type InstalledApp } from "../apps/installed-apps";
 import { parseJsonValue, type JsonValue } from "@hiraya/apps-contracts";
+import { storageWorkerName } from "./storage-worker";
 
 const FILES_DIRECTORY = "files";
 const PENDING_DIRECTORY = "pending";
@@ -355,7 +356,7 @@ function openDatabasePort(): RpcPort {
   const key = namespaceKey();
   let port: RpcPort;
   if (typeof SharedWorker !== "undefined") {
-    const shared = new SharedWorker(new URL("./opfs-shared.worker.ts", import.meta.url), { type: "module", name: FRONTEND_ONLY ? "hiraya-storage" : `hiraya-storage-${key}` });
+    const shared = new SharedWorker(new URL("./opfs-shared.worker.ts", import.meta.url), { type: "module", name: storageWorkerName(FRONTEND_ONLY, key, import.meta.env.HIRAYA_BUILD_TIMESTAMP) });
     shared.port.addEventListener("message", (event) => {
       const message = event.data as { type?: string; requestId?: number };
       if (message.type !== "need-engine" || message.requestId === undefined) return;
@@ -1321,10 +1322,15 @@ export function acknowledgeMutation(operationId: string) { return serializeStora
 export function blockMutation(operationId: string, error: string) { return serializeStorage(() => callDatabase("blockMutation", { operationId, error })); }
 export function readPendingContent(operationId: string, entryId: string) { return serializeStorage(() => readStagedContent(operationId, entryId)); }
 export function listActivity(query: ActivityQuery = {}) { return serializeStorage(() => callDatabase("listActivity", query)); }
-export function listInstalledApps() { return serializeStorage(async () => (await callDatabase("listInstalledApps", undefined, null)).map(parseInstalledApp)); }
-export function installApp(install: InstalledApp) { return serializeStorage(() => callDatabase("installApp", { install: parseInstalledApp(install) }, null)); }
-export function uninstallApp(appId: string) { return serializeStorage(() => callDatabase("uninstallApp", { appId }, null)); }
-export function readAppStorage(appId: string, key: string) { return serializeStorage(() => callDatabase("readAppStorage", { appId, key }, null)); }
-export function writeAppStorage(appId: string, key: string, value: JsonValue, maxBytes: number, maxEntries: number) { return serializeStorage(() => callDatabase("writeAppStorage", { appId, key, value: parseJsonValue(value), maxBytes, maxEntries }, null)); }
-export function removeAppStorage(appId: string, key: string) { return serializeStorage(() => callDatabase("removeAppStorage", { appId, key }, null)); }
-export function clearAppStorage(appId: string) { return serializeStorage(() => callDatabase("clearAppStorage", { appId }, null)); }
+export function listInstalledApps() { return serializeStorage(async () => {
+  await initializeDatabase();
+  const apps = await callDatabase("listInstalledApps", undefined, null);
+  if (!Array.isArray(apps)) throw new Error("The local storage worker uses an outdated app protocol. Reload Hiraya and close any older Hiraya tabs.");
+  return apps.map(parseInstalledApp);
+}); }
+export function installApp(install: InstalledApp) { return serializeStorage(async () => { await initializeDatabase(); return callDatabase("installApp", { install: parseInstalledApp(install) }, null); }); }
+export function uninstallApp(appId: string) { return serializeStorage(async () => { await initializeDatabase(); return callDatabase("uninstallApp", { appId }, null); }); }
+export function readAppStorage(appId: string, key: string) { return serializeStorage(async () => { await initializeDatabase(); return callDatabase("readAppStorage", { appId, key }, null); }); }
+export function writeAppStorage(appId: string, key: string, value: JsonValue, maxBytes: number, maxEntries: number) { return serializeStorage(async () => { await initializeDatabase(); return callDatabase("writeAppStorage", { appId, key, value: parseJsonValue(value), maxBytes, maxEntries }, null); }); }
+export function removeAppStorage(appId: string, key: string) { return serializeStorage(async () => { await initializeDatabase(); return callDatabase("removeAppStorage", { appId, key }, null); }); }
+export function clearAppStorage(appId: string) { return serializeStorage(async () => { await initializeDatabase(); return callDatabase("clearAppStorage", { appId }, null); }); }

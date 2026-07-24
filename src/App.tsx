@@ -368,7 +368,10 @@ function App({ session }: { session: AuthSession | null }) {
 
   useEffect(() => appHostServices.dialogs.subscribe(setAppDialogRequests), [appHostServices]);
   useEffect(() => appHostServices.notifications.subscribe(setAppNotifications), [appHostServices]);
-  useEffect(() => { void listInstalledApps().then(setInstalledApps).catch(() => setError("Installed apps could not be loaded.")); }, []);
+  useEffect(() => { void listInstalledApps().then(setInstalledApps).catch((loadError) => {
+    console.error("Installed apps could not be loaded.", loadError);
+    setError(loadError instanceof Error ? loadError.message : "Installed apps could not be loaded.");
+  }); }, []);
   function setCurrentRoute(next: DesktopRoute) {
     routeRef.current = next;
     setRoute(next);
