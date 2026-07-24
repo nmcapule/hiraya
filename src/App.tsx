@@ -78,7 +78,7 @@ import { validateWallpaperImage } from "./lib/wallpaper-image";
 import { AccountMenu } from "./components/AccountMenu";
 import { MobileHeaderMenu } from "./components/MobileHeaderMenu";
 import type { AuthSession } from "./lib/auth";
-import { SearchCommandPalette, type SearchPaletteCommand } from "./components/SearchCommandPalette";
+import { SearchCommandPalette } from "./components/SearchCommandPalette";
 import { SyncIssuesPanel } from "./components/SyncIssuesPanel";
 import { AllWindowsPanel } from "./components/AllWindowsPanel";
 import { KeyboardShortcutsPanel } from "./components/KeyboardShortcutsPanel";
@@ -92,6 +92,7 @@ import type { TrashItem } from "./lib/contracts";
 import type { KeyboardShortcut, WindowListItem } from "./ui/panel-data";
 import { canMutateDesktop, sharedOfflineMessage } from "./lib/permissions";
 import { builtinAppEntryDependency, builtinAppMaximizeRestoreWindow, builtinAppTargetId, builtinAppWindow, extractBuiltinAppTarget } from "./apps/registry";
+import { createAppCommandService, type AppCommandContext, type AppCommandId } from "./apps/commands";
 
 type BaseRunningApp = { id: string; bounds: WindowBounds; minimized: boolean; zIndex: number };
 type FileApp = BaseRunningApp & { kind: "file"; fileId: string; file?: FileEntry; blob?: File; editable?: boolean; loadError?: string; editMode: boolean; contentRevision: number; remoteChanged: boolean };
@@ -118,6 +119,7 @@ function topRunningAppInSegment(apps: RunningApp[], segment: SurfaceSegment, siz
 }
 
 function App({ session }: { session: AuthSession | null }) {
+  const commandService = useMemo(createAppCommandService, []);
   const [entries, setEntries] = useState<DesktopEntry[]>([]);
   const [desktops, setDesktops] = useState<DesktopIdentity[]>([]);
   const [catalogQuota, setCatalogQuota] = useState<CatalogQuota | null>(null);
@@ -2421,16 +2423,17 @@ function App({ session }: { session: AuthSession | null }) {
     const areaIndex = visibleSegments.findIndex((candidate) => candidate.key === segmentKey(area));
     return { id: app.id, title: runningAppLabel(app), areaId: segmentKey(area), areaLabel: `Area ${areaIndex >= 0 ? areaIndex + 1 : `${area.column}, ${area.row}`}`, minimized: app.minimized };
   });
-  const searchCommands: SearchPaletteCommand[] = [
-    { id: "new-file", label: "New text file", keywords: ["create"] },
-    { id: "new-folder", label: "New folder", keywords: ["create directory"] },
-    { id: "upload", label: "Upload files", keywords: ["import add"] },
-    ...(activeDesktop?.capabilities.write ? [{ id: "trash", label: "Open Trash", keywords: ["deleted restore"] }] : []),
-    ...(activeDesktop?.capabilities.settings || activeDesktop?.capabilities.activity ? [{ id: "settings", label: "Open Settings" }] : []),
-    { id: "windows", label: "Show all windows", keywords: ["areas"] },
-    { id: "shortcuts", label: "Show keyboard shortcuts", keywords: ["keys help"] },
-    { id: "sync", label: "Show sync status", keywords: ["offline queue issues"] },
-  ];
+  const commandContext: AppCommandContext = {
+    canMutate,
+    canOpenTrash: activeDesktop?.capabilities.write ?? false,
+    canOpenSettings: Boolean(activeDesktop?.capabilities.settings || activeDesktop?.capabilities.activity),
+    createFile: () => setDialog({ type: "create-file", parentId: null }),
+    createFolder: () => setDialog({ type: "create-folder", parentId: null }),
+    uploadFiles: () => chooseUpload(null),
+    openSettings: openSettingsWindow,
+    openPanel: setActivePanel,
+  };
+  const searchCommands = commandService.list(commandContext);
   const keyboardShortcuts: KeyboardShortcut[] = [
     { id: "search", group: "Navigation", label: "Search files, windows, and commands", keys: ["Ctrl/⌘", "K"] },
     { id: "shortcuts", group: "Navigation", label: "Show keyboard shortcuts", keys: ["?"] },
@@ -2444,13 +2447,8 @@ function App({ session }: { session: AuthSession | null }) {
     { id: "close", group: "Windows", label: "Close the top panel or focused window", keys: ["Escape"] },
   ];
 
-  function runSearchCommand(commandId: string) {
-    if (["new-file", "new-folder", "upload", "trash"].includes(commandId) && !canMutate) return;
-    if (commandId === "new-file") setDialog({ type: "create-file", parentId: null });
-    else if (commandId === "new-folder") setDialog({ type: "create-folder", parentId: null });
-    else if (commandId === "upload") chooseUpload(null);
-    else if (commandId === "settings") openSettingsWindow();
-    else if (["trash", "windows", "shortcuts", "sync"].includes(commandId)) setActivePanel(commandId as "trash" | "windows" | "shortcuts" | "sync");
+  function runSearchCommand(commandId: AppCommandId) {
+    void commandService.execute(commandId, commandContext);
   }
 
   return (

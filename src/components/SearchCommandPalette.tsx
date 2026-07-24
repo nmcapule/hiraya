@@ -3,21 +3,21 @@ import { File, Folder, MagnifyingGlass, SquaresFour, TerminalWindow, X } from "@
 import type { DesktopEntry } from "../types";
 import { filterAndGroupSearchItems, type SearchCategory, type SearchItem } from "../ui/panel-data";
 import { useModalDialog } from "../ui/modal-dialog";
+import type { CommandId, CommandItem } from "../apps/commands";
 
 export type SearchPaletteWindow = { id: string; title: string; detail?: string };
-export type SearchPaletteCommand = { id: string; label: string; detail?: string; keywords?: readonly string[] };
 
-export type SearchCommandPaletteProps = {
+export type SearchCommandPaletteProps<Id extends CommandId> = {
   entries: readonly DesktopEntry[];
   windows: readonly SearchPaletteWindow[];
-  commands: readonly SearchPaletteCommand[];
+  commands: readonly CommandItem<Id>[];
   onOpenEntry: (entry: DesktopEntry) => void;
   onFocusWindow: (windowId: string) => void;
-  onRunCommand: (commandId: string) => void;
+  onRunCommand: (commandId: Id) => void;
   onClose: () => void;
 };
 
-type PaletteItem = SearchItem & { action: () => void };
+type PaletteItem = SearchItem & { action: () => void; disabled?: boolean };
 
 const CATEGORY_LABELS: Record<SearchCategory, string> = {
   files: "Files",
@@ -33,7 +33,7 @@ function ResultIcon({ category }: { category: SearchCategory }) {
   return <TerminalWindow size={18} weight="duotone" aria-hidden="true" />;
 }
 
-export function SearchCommandPalette({ entries, windows, commands, onOpenEntry, onFocusWindow, onRunCommand, onClose }: SearchCommandPaletteProps) {
+export function SearchCommandPalette<Id extends CommandId>({ entries, windows, commands, onOpenEntry, onFocusWindow, onRunCommand, onClose }: SearchCommandPaletteProps<Id>) {
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -52,7 +52,7 @@ export function SearchCommandPalette({ entries, windows, commands, onOpenEntry, 
       action: () => onOpenEntry(entry),
     })),
     ...windows.map((window): PaletteItem => ({ id: `window:${window.id}`, category: "windows", label: window.title, detail: window.detail, action: () => onFocusWindow(window.id) })),
-    ...commands.map((command): PaletteItem => ({ id: `command:${command.id}`, category: "commands", label: command.label, detail: command.detail, keywords: command.keywords, action: () => onRunCommand(command.id) })),
+    ...commands.map((command): PaletteItem => ({ id: `command:${command.id}`, category: "commands", label: command.label, detail: command.detail, keywords: command.keywords, disabled: !command.enabled, action: () => onRunCommand(command.id) })),
   ];
   const groups = filterAndGroupSearchItems(items, deferredQuery);
   const results = groups.flatMap((group) => group.items);
@@ -60,6 +60,7 @@ export function SearchCommandPalette({ entries, windows, commands, onOpenEntry, 
   const selectedId = selectedIndex >= 0 ? `${listId}-option-${selectedIndex}` : undefined;
 
   function choose(item: PaletteItem) {
+    if (item.disabled) return;
     item.action();
     onClose();
   }
@@ -105,7 +106,7 @@ export function SearchCommandPalette({ entries, windows, commands, onOpenEntry, 
           <h2 id={`${listId}-${group.category}`}>{CATEGORY_LABELS[group.category]}</h2>
           {group.items.map((item) => {
             const index = resultIndex++;
-            return <button id={`${listId}-option-${index}`} className="command-palette__result" type="button" role="option" aria-selected={index === selectedIndex} data-active={index === selectedIndex || undefined} key={item.id} onPointerMove={() => setActiveIndex(index)} onClick={() => choose(item)}>
+            return <button id={`${listId}-option-${index}`} className="command-palette__result" type="button" role="option" aria-selected={index === selectedIndex} aria-disabled={item.disabled || undefined} disabled={item.disabled} data-active={index === selectedIndex || undefined} key={item.id} onPointerMove={() => setActiveIndex(index)} onClick={() => choose(item)}>
               <ResultIcon category={item.category} />
               <span><strong>{item.label}</strong>{item.detail && <small>{item.detail}</small>}</span>
             </button>;

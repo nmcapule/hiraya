@@ -1,0 +1,13 @@
+{
+  "name": "@hiraya/apps-sdk",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "types": "./src/index.ts",
+  "dependencies": {
+    "@hiraya/apps-contracts": "workspace:*"
+  }
+}
